@@ -65,6 +65,9 @@ class Platform {
   virtual void CallDelayedOnForegroundThread(Isolate* isolate, Task* task,
                                              double delay_in_seconds) {
     // TODO(ulan): Make this function abstract after V8 roll in Chromium.
+    (void) isolate;
+    (void) task;
+    (void) delay_in_seconds;
   }
 
   /**
