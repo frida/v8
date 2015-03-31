@@ -4589,6 +4589,8 @@ class V8_EXPORT Extension {  // NOLINT
   virtual ~Extension() { }
   virtual v8::Handle<v8::FunctionTemplate> GetNativeFunctionTemplate(
       v8::Isolate* isolate, v8::Handle<v8::String> name) {
+    (void) isolate;
+    (void) name;
     return v8::Handle<v8::FunctionTemplate>();
   }
 
@@ -4967,7 +4969,7 @@ typedef void (*JitCodeEventHandler)(const JitCodeEvent* event);
 class V8_EXPORT ExternalResourceVisitor {  // NOLINT
  public:
   virtual ~ExternalResourceVisitor() {}
-  virtual void VisitExternalString(Handle<String> string) {}
+  virtual void VisitExternalString(Handle<String> string) { (void) string; }
 };
 
 
@@ -4978,7 +4980,10 @@ class V8_EXPORT PersistentHandleVisitor {  // NOLINT
  public:
   virtual ~PersistentHandleVisitor() {}
   virtual void VisitPersistentHandle(Persistent<Value>* value,
-                                     uint16_t class_id) {}
+                                     uint16_t class_id) {
+    (void) value;
+    (void) class_id;
+  }
 };
 
 
@@ -6290,6 +6295,7 @@ class V8_EXPORT ExtensionConfiguration {
   ExtensionConfiguration() : name_count_(0), names_(NULL) { }
   ExtensionConfiguration(int name_count, const char* names[])
       : name_count_(name_count), names_(names) { }
+  ExtensionConfiguration& operator=(const ExtensionConfiguration&);
 
   const char** begin() const { return &names_[0]; }
   const char** end()  const { return &names_[name_count_]; }
@@ -6742,6 +6748,8 @@ class Internals {
   V8_INLINE static void CheckInitialized(v8::Isolate* isolate) {
 #ifdef V8_ENABLE_CHECKS
     CheckInitializedImpl(isolate);
+#else
+    (void) isolate;
 #endif
   }
 
