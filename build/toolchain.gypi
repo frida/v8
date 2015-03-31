@@ -166,6 +166,15 @@
   ],
   'target_defaults': {
     'conditions': [
+      ['component=="shared_library"', {
+        'variables': {
+          'v8_msvcrt%': 'dynamic',
+        },
+      }, {
+        'variables': {
+          'v8_msvcrt%': 'static',
+        },
+      }],
       ['v8_target_arch=="arm"', {
         'defines': [
           'V8_TARGET_ARCH_ARM',
@@ -1041,7 +1050,7 @@
           'VCCLCompilerTool': {
             'Optimization': '0',
             'conditions': [
-              ['component=="shared_library"', {
+              ['v8_msvcrt=="dynamic"', {
                 'RuntimeLibrary': '3',  # /MDd
               }, {
                 'RuntimeLibrary': '1',  # /MTd
@@ -1094,7 +1103,7 @@
             'BasicRuntimeChecks': '0',
             'AdditionalOptions': ['/bigobj'],
             'conditions': [
-              ['component=="shared_library"', {
+              ['v8_msvcrt=="dynamic"', {
                 'RuntimeLibrary': '3',  #/MDd
               }, {
                 'RuntimeLibrary': '1',  #/MTd
@@ -1283,7 +1292,7 @@
                 'StringPooling': 'true',
                 'AdditionalOptions': ['/bigobj'],
                 'conditions': [
-                  ['component=="shared_library"', {
+                  ['v8_msvcrt=="dynamic"', {
                     'RuntimeLibrary': '2',  #/MD
                   }, {
                     'RuntimeLibrary': '0',  #/MT
