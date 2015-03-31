@@ -868,6 +868,9 @@
       ['OS=="win"', {
         'defines': [
           'WIN32',
+          'WINVER=0x0501',
+          '_WIN32_WINNT=0x0501',
+          '_USING_V110_SDK71_',
         ],
         # 4351: VS 2005 and later are warning us that they've fixed a bug
         #       present in VS 2003 and earlier.
@@ -876,6 +879,15 @@
           'OutputDirectory': '<(DEPTH)\\build\\$(ConfigurationName)',
           'IntermediateDirectory': '$(OutDir)\\obj\\$(ProjectName)',
           'CharacterSet': '1',
+        },
+        'msvs_settings': {
+          'VCCLCompilerTool': {
+            'conditions': [
+              ['component=="static_library"', {
+                'ProgramDataBaseFileName': '$(OutDir)\\$(TargetName).pdb',
+              }]
+            ],
+          },
         },
       }],
       ['OS=="win" and v8_target_arch=="ia32"', {
@@ -1046,6 +1058,7 @@
             'FavorSizeOrSpeed': '0',
             'StringPooling': 'true',
             'BasicRuntimeChecks': '0',
+            'AdditionalOptions': ['/bigobj'],
             'conditions': [
               ['component=="shared_library"', {
                 'RuntimeLibrary': '3',  #/MDd
@@ -1234,6 +1247,7 @@
                 'EnableIntrinsicFunctions': 'true',
                 'FavorSizeOrSpeed': '0',
                 'StringPooling': 'true',
+                'AdditionalOptions': ['/bigobj'],
                 'conditions': [
                   ['component=="shared_library"', {
                     'RuntimeLibrary': '2',  #/MD
