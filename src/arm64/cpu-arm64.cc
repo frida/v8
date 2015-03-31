@@ -11,8 +11,14 @@
 #include "src/arm64/utils-arm64.h"
 #include "src/assembler.h"
 
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace v8 {
 namespace internal {
+
+#ifndef __APPLE__
 
 class CacheLineSizes {
  public:
@@ -39,6 +45,8 @@ class CacheLineSizes {
   uint32_t cache_type_register_;
 };
 
+#endif
+
 
 void CpuFeatures::FlushICache(void* address, size_t length) {
   if (length == 0) return;
@@ -50,6 +58,8 @@ void CpuFeatures::FlushICache(void* address, size_t length) {
   // run has been synced.
   USE(address);
   USE(length);
+#elif defined(__APPLE__)
+  sys_icache_invalidate(address, length);
 #else
   // The code below assumes user space cache operations are allowed. The goal
   // of this routine is to make sure the code generated is visible to the I

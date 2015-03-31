@@ -19,6 +19,12 @@
 
 #if V8_OS_MACOSX
 #include <mach/mach.h>
+#if defined(__aarch64__)
+#include <sys/_types/_ucontext64.h>
+typedef _STRUCT_MCONTEXT64 *mcontext_t;
+#elif defined(__arm__)
+typedef _STRUCT_MCONTEXT *mcontext_t;
+#endif
 // OpenBSD doesn't have <ucontext.h>. ucontext_t lives in <signal.h>
 // and is a typedef for struct sigcontext. There is no uc_mcontext.
 #elif(!V8_OS_ANDROID || defined(__BIONIC_HAVE_UCONTEXT_T)) && \
@@ -366,9 +372,14 @@ void SignalHandler::HandleProfilerSignal(int signal, siginfo_t* info,
   if (state.sp == 0 || state.fp == 0) return;
 #else
   // Extracting the sample from the context is extremely machine dependent.
+#if V8_OS_MACOSX && defined(__aarch64__)
+  ucontext64_t* ucontext = reinterpret_cast<ucontext64_t*>(context);
+  mcontext_t& mcontext = ucontext->uc_mcontext64;
+#else
   ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(context);
 #if !(V8_OS_OPENBSD || (V8_OS_LINUX && V8_HOST_ARCH_PPC))
   mcontext_t& mcontext = ucontext->uc_mcontext;
+#endif
 #endif
 #if V8_OS_LINUX
 #if V8_HOST_ARCH_IA32
@@ -430,7 +441,27 @@ void SignalHandler::HandleProfilerSignal(int signal, siginfo_t* info,
   state.sp = reinterpret_cast<Address>(mcontext->ss.esp);
   state.fp = reinterpret_cast<Address>(mcontext->ss.ebp);
 #endif  // __DARWIN_UNIX03
-#endif  // V8_HOST_ARCH_IA32
+#elif V8_HOST_ARCH_ARM
+#if __DARWIN_UNIX03
+  state.pc = reinterpret_cast<Address>(mcontext->__ss.__pc);
+  state.sp = reinterpret_cast<Address>(mcontext->__ss.__sp);
+  state.fp = reinterpret_cast<Address>(mcontext->__ss.__r[7]);
+#else  // !__DARWIN_UNIX03
+  state.pc = reinterpret_cast<Address>(mcontext->ss.pc);
+  state.sp = reinterpret_cast<Address>(mcontext->ss.sp);
+  state.fp = reinterpret_cast<Address>(mcontext->ss.r[7]);
+#endif  // __DARWIN_UNIX03
+#elif V8_HOST_ARCH_ARM64
+#if __DARWIN_UNIX03
+  state.pc = reinterpret_cast<Address>(mcontext->__ss.__pc);
+  state.sp = reinterpret_cast<Address>(mcontext->__ss.__sp);
+  state.fp = reinterpret_cast<Address>(mcontext->__ss.__fp);
+#else  // !__DARWIN_UNIX03
+  state.pc = reinterpret_cast<Address>(mcontext->ss.pc);
+  state.sp = reinterpret_cast<Address>(mcontext->ss.sp);
+  state.fp = reinterpret_cast<Address>(mcontext->ss.fp);
+#endif  // __DARWIN_UNIX03
+#endif  // V8_HOST_ARCH_*
 #elif V8_OS_FREEBSD
 #if V8_HOST_ARCH_IA32
   state.pc = reinterpret_cast<Address>(mcontext.mc_eip);
