@@ -143,6 +143,7 @@
     {
       'target_name': 'v8_snapshot',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'conditions': [
         ['want_separate_host_toolset==1', {
           'toolsets': ['host', 'target'],
@@ -214,6 +215,7 @@
     {
       'target_name': 'v8_nosnapshot',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'dependencies': [
         'v8_base',
       ],
@@ -244,6 +246,7 @@
     {
       'target_name': 'v8_external_snapshot',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'conditions': [
         [ 'v8_use_external_startup_data==1', {
           'conditions': [
@@ -352,6 +355,7 @@
     {
       'target_name': 'v8_base',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'dependencies': [
         'v8_libbase',
       ],
@@ -1320,6 +1324,7 @@
     {
       'target_name': 'v8_libbase',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'variables': {
         'optimize': 'max',
       },
@@ -1580,6 +1585,7 @@
     {
       'target_name': 'v8_libplatform',
       'type': 'static_library',
+      'standalone_static_library': 1,
       'variables': {
         'optimize': 'max',
       },
