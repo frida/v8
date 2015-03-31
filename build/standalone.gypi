@@ -41,6 +41,7 @@
     'v8_deprecation_warnings': 1,
     'msvs_multi_core_compile%': '1',
     'mac_deployment_target%': '10.5',
+    'ios_deployment_target%': '',
     'variables': {
       'variables': {
         'variables': {
@@ -477,6 +478,9 @@
         'SYMROOT': '<(DEPTH)/xcodebuild',
       },
       'target_defaults': {
+        'variables': {
+          'ios_deployment_target%': '<(ios_deployment_target)',
+        },
         'xcode_settings': {
           'ALWAYS_SEARCH_USER_PATHS': 'NO',
           'GCC_C_LANGUAGE_STANDARD': 'c99',         # -std=c99
@@ -491,8 +495,6 @@
           'GCC_SYMBOLS_PRIVATE_EXTERN': 'YES',      # -fvisibility=hidden
           'GCC_THREADSAFE_STATICS': 'NO',           # -fno-threadsafe-statics
           'GCC_WARN_NON_VIRTUAL_DESTRUCTOR': 'YES', # -Wnon-virtual-dtor
-          # MACOSX_DEPLOYMENT_TARGET maps to -mmacosx-version-min
-          'MACOSX_DEPLOYMENT_TARGET': '<(mac_deployment_target)',
           'PREBINDING': 'NO',                       # No -Wl,-prebind
           'SYMROOT': '<(DEPTH)/xcodebuild',
           'USE_HEADERMAP': 'NO',
@@ -521,6 +523,11 @@
           }],
         ],
         'target_conditions': [
+          ['ios_deployment_target!="" and _toolset=="target"', {
+            'xcode_settings': {'IPHONEOS_DEPLOYMENT_TARGET': '<(ios_deployment_target)'},
+          }, {
+            'xcode_settings': {'MACOSX_DEPLOYMENT_TARGET': '<(mac_deployment_target)'},
+          }],
           ['_type!="static_library"', {
             'xcode_settings': {'OTHER_LDFLAGS': ['-Wl,-search_paths_first']},
           }],

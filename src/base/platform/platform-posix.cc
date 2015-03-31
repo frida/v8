@@ -75,7 +75,9 @@ const char* g_gc_fake_mmap = NULL;
 
 
 int OS::ActivationFrameAlignment() {
-#if V8_TARGET_ARCH_ARM
+#if V8_OS_MACOSX && V8_TARGET_ARCH_ARM
+  return 4;
+#elif V8_TARGET_ARCH_ARM
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;

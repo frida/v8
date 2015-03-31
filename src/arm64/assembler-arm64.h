@@ -134,7 +134,7 @@ struct Register : public CPURegister {
 
   // We allow crankshaft to use the following registers:
   //   - x0 to x15
-  //   - x18 to x24
+  //   - x18 to x24 (except on iOS, where x18 is reserved)
   //   - x27 (also context)
   //
   // TODO(all): Register x25 is currently free and could be available for
@@ -148,7 +148,11 @@ struct Register : public CPURegister {
   //   - "context"
   static const unsigned kAllocatableLowRangeBegin = 0;
   static const unsigned kAllocatableLowRangeEnd = 15;
+#if V8_OS_MACOSX
+  static const unsigned kAllocatableHighRangeBegin = 19;
+#else
   static const unsigned kAllocatableHighRangeBegin = 18;
+#endif
   static const unsigned kAllocatableHighRangeEnd = 24;
   static const unsigned kAllocatableContext = 27;
 

@@ -43,6 +43,15 @@ namespace v8 {
 namespace base {
 
 
+#ifdef __arm__
+
+bool OS::ArmUsingHardFloat() {
+  return false;
+}
+
+#endif
+
+
 // Constants used for mmap.
 // kMmapFd is used to pass vm_alloc flags to tag the region with the user
 // defined tag 255 This helps identify V8-allocated regions in memory analysis

@@ -540,6 +540,19 @@ CPU::CPU()
   // We don't support any FPUs other than VFP.
   has_fpu_ = has_vfp_;
 
+#elif V8_OS_MACOSX
+
+  architecture_ = 7;
+
+  has_fpu_ = true;
+
+  has_idiva_ = false;
+  has_neon_ = true;
+  has_thumb2_ = true;
+  has_vfp_ = true;
+  has_vfp3_ = true;
+  has_vfp3_d32_ = true;
+
 #elif V8_OS_QNX
 
   uint32_t cpu_flags = SYSPAGE_ENTRY(cpuinfo)->flags;
@@ -583,6 +596,7 @@ CPU::CPU()
 
 #elif V8_HOST_ARCH_ARM64
 
+#if V8_OS_LINUX
   CPUInfo cpu_info;
 
   // Extract implementor from the "CPU implementer" field.
@@ -616,6 +630,7 @@ CPU::CPU()
     }
     delete[] part;
   }
+#endif
 
 #elif V8_HOST_ARCH_PPC
 

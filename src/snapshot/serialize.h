@@ -469,7 +469,7 @@ class SerializedData {
 
   uint32_t GetHeaderValue(int offset) const {
     uint32_t value;
-    memcpy(&value, reinterpret_cast<int*>(data_ + offset), sizeof(value));
+    memcpy(&value, data_ + offset, sizeof(value));
     return value;
   }
 

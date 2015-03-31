@@ -20,6 +20,10 @@
 #include "src/macro-assembler.h"
 #include "src/simulator.h"  // for cache flushing.
 
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace v8 {
 namespace internal {
 
@@ -36,6 +40,9 @@ void CpuFeatures::FlushICache(void* start, size_t size) {
   // None of this code ends up in the snapshot so there are no issues
   // around whether or not to generate the code when building snapshots.
   Simulator::FlushICache(Isolate::Current()->simulator_i_cache(), start, size);
+
+#elif defined(__APPLE__)
+  sys_icache_invalidate(start, size);
 
 #elif V8_OS_QNX
   msync(start, size, MS_SYNC | MS_INVALIDATE_ICACHE);
