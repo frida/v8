@@ -80,11 +80,16 @@ int64_t SysInfo::AmountOfPhysicalMemory() {
   if (result < 0) result = std::numeric_limits<int64_t>::max();
   return result;
 #elif V8_OS_QNX
-  struct stat stat_buf;
-  if (stat("/proc", &stat_buf) != 0) {
-    return 0;
+  struct asinfo_entry *entries = SYSPAGE_ENTRY(asinfo);
+  size_t count = SYSPAGE_ENTRY_SIZE(asinfo) / sizeof(struct asinfo_entry);
+  char *strings = SYSPAGE_ENTRY(strings)->data;
+  uint64_t size = 0;
+  for (size_t i = 0; i < count; i++) {
+    struct asinfo_entry *entry = &entries[i];
+    if (strcmp(strings + entry->name, "ram") == 0)
+      size += entry->end - entry->start + 1;
   }
-  return static_cast<int64_t>(stat_buf.st_size);
+  return size;
 #elif V8_OS_NACL
   // No support for _SC_PHYS_PAGES, assume 2GB.
   return static_cast<int64_t>(1) << 31;
