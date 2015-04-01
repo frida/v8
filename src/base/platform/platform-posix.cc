@@ -62,6 +62,8 @@
 namespace v8 {
 namespace base {
 
+std::list<OS::OSAllocation> OS::os_allocations;
+
 namespace {
 
 // 0 is never a valid thread id.
@@ -101,6 +103,7 @@ intptr_t OS::CommitPageSize() {
 
 
 void OS::Free(void* address, const size_t size) {
+  os_allocations.remove(OSAllocation(address, size));
   // TODO(1240712): munmap has a return value which is ignored here.
   int result = munmap(address, size);
   USE(result);

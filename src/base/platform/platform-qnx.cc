@@ -112,6 +112,7 @@ void* OS::Allocate(const size_t requested,
   void* addr = OS::GetRandomMmapAddr();
   void* mbase = mmap(addr, msize, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (mbase == MAP_FAILED) return NULL;
+  os_allocations.push_front(OSAllocation(mbase, msize));
   *allocated = msize;
   return mbase;
 }
