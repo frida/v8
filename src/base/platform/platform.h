@@ -22,6 +22,7 @@
 #define V8_BASE_PLATFORM_PLATFORM_H_
 
 #include <cstdarg>
+#include <list>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,34 @@ class TimezoneCache;
 
 class OS {
  public:
+  class OSAllocation {
+   public:
+    OSAllocation(void* address, size_t size)
+      : address_(address), size_(size) {
+    }
+
+    void Free() {
+      OS::Free(address_, size_);
+    }
+
+    bool operator==(const OSAllocation &rhs) const {
+      return rhs.address_ == address_ && rhs.size_ == size_;
+    }
+
+    bool operator!=(const OSAllocation &rhs) const {
+      return !(*this == rhs);
+    }
+
+   private:
+    void* address_;
+    size_t size_;
+  };
+  static std::list<OSAllocation>* os_allocations_;
+
+  static void SetUp() {
+    os_allocations_ = new std::list<OSAllocation>();
+  }
+
   // Initialize the OS class.
   // - random_seed: Used for the GetRandomMmapAddress() if non-zero.
   // - hard_abort: If true, OS::Abort() will crash instead of aborting.
@@ -110,6 +139,14 @@ class OS {
   static void Initialize(int64_t random_seed,
                          bool hard_abort,
                          const char* const gc_fake_mmap);
+
+  static void TearDown() {
+    while (!os_allocations_->empty()) {
+      os_allocations_->front().Free();
+    }
+    delete os_allocations_;
+    os_allocations_ = NULL;
+  }
 
   // Returns the accumulated user time for thread. This routine
   // can be used for profiling. The implementation should

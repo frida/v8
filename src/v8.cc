@@ -52,8 +52,10 @@ void V8::TearDown() {
   ExternalReference::TearDownMathExpData();
   RegisteredExtension::UnregisterAll();
   Isolate::GlobalTearDown();
+  base::OS::TearDown();
   Sampler::TearDown();
   FlagList::ResetAllFlags();  // Frees memory held by string arguments.
+  base::Time::TearDown();
 }
 
 
@@ -82,6 +84,7 @@ void V8::InitializeOncePerProcessImpl() {
     FlagList::SetFlagsFromString(filter_flag, StrLength(filter_flag));
   }
 
+  base::OS::SetUp();
   base::OS::Initialize(FLAG_random_seed, FLAG_hard_abort, FLAG_gc_fake_mmap);
 
   Isolate::InitializeOncePerProcess();
