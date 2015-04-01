@@ -173,6 +173,8 @@ class Time FINAL {
   static const int64_t kNanosecondsPerSecond = kNanosecondsPerMicrosecond *
                                                kMicrosecondsPerSecond;
 
+  static void TearDown();
+
   // Contains the NULL time. Use Time::Now() to get the current time.
   Time() : us_(0) {}
 

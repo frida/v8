@@ -498,6 +498,11 @@ static LazyDynamicInstance<TickClock, CreateHighResTickClockTrait,
                            ThreadSafeInitOnceTrait>::type high_res_tick_clock =
     LAZY_DYNAMIC_INSTANCE_INITIALIZER;
 
+// static
+void Time::TearDown() {
+  delete high_res_tick_clock.Pointer();
+}
+
 
 TimeTicks TimeTicks::Now() {
   // Make sure we never return 0 here.
@@ -529,6 +534,10 @@ TimeTicks TimeTicks::KernelTimestampNow() { return TimeTicks(0); }
 bool TimeTicks::KernelTimestampAvailable() { return false; }
 
 #else  // V8_OS_WIN
+
+// static
+void Time::TearDown() {
+}
 
 TimeTicks TimeTicks::Now() {
   return HighResolutionNow();

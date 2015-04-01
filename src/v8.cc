@@ -52,8 +52,10 @@ void V8::TearDown() {
   ExternalReference::TearDownMathExpData();
   RegisteredExtension::UnregisterAll();
   Isolate::GlobalTearDown();
+  base::OS::TearDown();
   Sampler::TearDown();
   FlagList::ResetAllFlags();  // Frees memory held by string arguments.
+  base::Time::TearDown();
 }
 
 
