@@ -1413,7 +1413,7 @@
             ],
             'link_settings': {
               'target_conditions': [
-                ['_toolset=="host"', {
+                ['_toolset=="host" and host_os!="mac"', {
                   # Only include libdl and librt on host builds because they
                   # are included by default on Android target builds, and we
                   # don't want to re-include them here since this will change

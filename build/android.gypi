@@ -39,9 +39,12 @@
     'conditions': [
       ['android_ndk_root==""', {
         'variables': {
-          'android_sysroot': '<(android_toolchain)/sysroot/',
-          'android_stlport': '<(android_toolchain)/sources/cxx-stl/stlport/',
+          'android_ndk_root_': '<(android_ndk_root)',
+          'android_sysroot': '<(android_toolchain)/sysroot',
+          'android_llvmcxx': '<(android_toolchain)/sources/cxx-stl/llvm-libc++',
         },
+        'android_ndk_root': '<(android_ndk_root_)',
+        'android_sysroot': '<(android_sysroot)',
         'android_include': '<(android_sysroot)/usr/include',
         'conditions': [
           ['target_arch=="x64"', {
@@ -50,12 +53,13 @@
             'android_lib': '<(android_sysroot)/usr/lib',
           }],
         ],
-        'android_stlport_include': '<(android_stlport)/stlport',
-        'android_stlport_libs': '<(android_stlport)/libs',
+        'android_llvmcxx_include': '<(android_llvmcxx)/llvmcxx/include',
+        'android_llvmcxx_libs': '<(android_llvmcxx)/libs',
       }, {
         'variables': {
+          'android_ndk_root_': '<(android_ndk_root)',
           'android_sysroot': '<(android_ndk_root)/platforms/android-<(android_target_platform)/arch-<(android_target_arch)',
-          'android_stlport': '<(android_ndk_root)/sources/cxx-stl/stlport/',
+          'android_llvmcxx': '<(android_ndk_root)/sources/cxx-stl/llvm-libc++',
         },
         'android_include': '<(android_sysroot)/usr/include',
         'conditions': [
@@ -65,14 +69,14 @@
             'android_lib': '<(android_sysroot)/usr/lib',
           }],
         ],
-        'android_stlport_include': '<(android_stlport)/stlport',
-        'android_stlport_libs': '<(android_stlport)/libs',
+        'android_llvmcxx_include': '<(android_llvmcxx)/libcxx/include',
+        'android_llvmcxx_libs': '<(android_llvmcxx)/libs',
       }],
     ],
-    # Enable to use the system stlport, otherwise statically
+    # Enable to use the system llvmcxx, otherwise statically
     # link the NDK one?
-    'use_system_stlport%': '<(android_webview_build)',
-    'android_stlport_library': 'stlport_static',
+    'use_system_llvmcxx%': '<(android_webview_build)',
+    'android_llvmcxx_library': 'c++_static',
   },  # variables
   'target_defaults': {
     'defines': [
@@ -86,27 +90,30 @@
         ],
       },  # Release
     },  # configurations
-    'cflags': [ '-Wno-abi', '-Wall', '-W', '-Wno-unused-parameter'],
+    'cflags': [ '-std=gnu++11', '-Wno-abi', '-Wall', '-W', '-Wno-unused-parameter', '-Wno-extern-c-compat', '-gdwarf-2', '-g3' ],
     'cflags_cc': [ '-Wnon-virtual-dtor', '-fno-rtti', '-fno-exceptions',
                    # Note: Using -std=c++0x will define __STRICT_ANSI__, which
                    # in turn will leave out some template stuff for 'long
                    # long'.  What we want is -std=c++11, but this is not
                    # supported by GCC 4.6 or Xcode 4.2
-                   '-std=gnu++0x' ],
+                   '-std=gnu++11' ],
     'target_conditions': [
       ['_toolset=="target"', {
         'cflags!': [
           '-pthread',  # Not supported by Android toolchain.
+          '-pedantic', # Warning galore
         ],
         'cflags': [
+          '--sysroot=<(android_sysroot)',
+          '-no-canonical-prefixes',
           '-ffunction-sections',
           '-funwind-tables',
           '-fstack-protector',
           '-fno-short-enums',
-          '-finline-limit=64',
           '-Wa,--noexecstack',
-          # Note: This include is in cflags to ensure that it comes after
-          # all of the includes.
+          '-I<(android_llvmcxx_include)',
+          '-I<(android_ndk_root)/sources/cxx-stl/gabi++/include',
+          '-I<(android_ndk_root)/sources/android/support/include',
           '-I<(android_include)',
         ],
         'cflags_cc': [
@@ -115,8 +122,6 @@
         'defines': [
           'ANDROID',
           #'__GNU_SOURCE=1',  # Necessary for clone()
-          'USE_STLPORT=1',
-          '_STLP_USE_PTR_SPECIALIZATIONS=1',
           'HAVE_OFF64_T',
           'HAVE_SYS_UIO_H',
           'ANDROID_BINSIZE_HACK', # Enable temporary hacks to reduce binsize.
@@ -125,6 +130,8 @@
           '-pthread',  # Not supported by Android toolchain.
         ],
         'ldflags': [
+          '--sysroot=<(android_sysroot)',
+          '-no-canonical-prefixes',
           '-nostdlib',
           '-Wl,--no-undefined',
         ],
@@ -137,12 +144,11 @@
             '-lpthread', '-lnss3', '-lnssutil3', '-lsmime3', '-lplds4', '-lplc4', '-lnspr4',
           ],
           'libraries': [
-            '-l<(android_stlport_library)',
+            '-l<(android_llvmcxx_library)',
             # Manually link the libgcc.a that the cross compiler uses.
             '<!($CC -print-libgcc-file-name)',
             '-lc',
             '-ldl',
-            '-lstdc++',
             '-lm',
         ],
         'conditions': [
@@ -160,50 +166,55 @@
           }],
           ['target_arch=="arm" and arm_version==7', {
             'cflags': [
+              '-gcc-toolchain <(android_ndk_root)/toolchains/arm-linux-androideabi-4.8/prebuilt/darwin-x86_64',
+              '-target armv7-none-linux-androideabi',
               '-march=armv7-a',
               '-mtune=cortex-a8',
-              '-mfpu=vfp3',
+              '-mfpu=vfpv3-d16',
+              '-mfloat-abi=softfp',
+              '-mthumb'
+            ],
+            'ldflags': [
+              '-gcc-toolchain <(android_ndk_root)/toolchains/arm-linux-androideabi-4.8/prebuilt/darwin-x86_64',
+              '-target armv7-none-linux-androideabi',
             ],
           }],
-          # NOTE: The stlport header include paths below are specified in
+          # NOTE: The llvmcxx header include paths below are specified in
           # cflags rather than include_dirs because they need to come
           # after include_dirs. Think of them like system headers, but
           # don't use '-isystem' because the arm-linux-androideabi-4.4.3
           # toolchain (circa Gingerbread) will exhibit strange errors.
           # The include ordering here is important; change with caution.
-          ['use_system_stlport==0', {
-            'cflags': [
-              '-I<(android_stlport_include)',
-            ],
+          ['use_system_llvmcxx==0', {
             'conditions': [
               ['target_arch=="arm" and arm_version==7', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/armeabi-v7a',
+                  '-L<(android_llvmcxx_libs)/armeabi-v7a',
                 ],
               }],
               ['target_arch=="arm" and arm_version < 7', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/armeabi',
+                  '-L<(android_llvmcxx_libs)/armeabi',
                 ],
               }],
               ['target_arch=="mipsel"', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/mips',
+                  '-L<(android_llvmcxx_libs)/mips',
                 ],
               }],
               ['target_arch=="ia32" or target_arch=="x87"', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/x86',
+                  '-L<(android_llvmcxx_libs)/x86',
                 ],
               }],
               ['target_arch=="x64"', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/x86_64',
+                  '-L<(android_llvmcxx_libs)/x86_64',
                 ],
               }],
               ['target_arch=="arm64"', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/arm64-v8a',
+                  '-L<(android_llvmcxx_libs)/arm64-v8a',
                 ],
               }],
             ],
@@ -276,7 +287,7 @@
         ],
       }],  # _toolset=="target"
       # Settings for building host targets using the system toolchain.
-      ['_toolset=="host"', {
+      ['_toolset=="host" and host_os!="mac"', {
         'cflags': [ '-pthread' ],
         'ldflags': [ '-pthread' ],
         'ldflags!': [
