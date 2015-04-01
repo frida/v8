@@ -22,6 +22,7 @@
 # the side to keep the the files readable.
 
 import os
+import platform
 import re
 import sys
 import subprocess
@@ -181,7 +182,34 @@ quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
 cmd_solink_module = $(LINK.$(TOOLSET)) -bundle $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(filter-out FORCE_DO_CMD, $^) $(LIBS)
 """
 
-LINK_COMMANDS_ANDROID = """\
+LINK_COMMANDS_ANDROID_FROM_MAC = """\
+quiet_cmd_alink = AR($(TOOLSET)) $@
+cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
+
+quiet_cmd_alink_thin = AR($(TOOLSET)) $@
+cmd_alink_thin = rm -f $@ && $(AR.$(TOOLSET)) crsT $@ $(filter %.o,$^)
+
+# Due to circular dependencies between libraries :(, we wrap the
+# special "figure out circular dependencies" flags around the entire
+# input list during linking.
+quiet_cmd_link = LINK($(TOOLSET)) $@
+quiet_cmd_link_host = LINK($(TOOLSET)) $@
+cmd_link = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ -Wl,--start-group $(LD_INPUTS) -Wl,--end-group $(LIBS)
+cmd_link_host = $(LINK.$(TOOLSET)) $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(LD_INPUTS) $(LIBS)
+
+# Other shared-object link notes:
+# - Set SONAME to the library filename so our binaries don't reference
+# the local, absolute paths used on the link command-line.
+quiet_cmd_solink = SOLINK($(TOOLSET)) $@
+cmd_solink = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--whole-archive $(LD_INPUTS) -Wl,--no-whole-archive $(LIBS)
+
+quiet_cmd_solink_module = SOLINK_MODULE($(TOOLSET)) $@
+cmd_solink_module = $(LINK.$(TOOLSET)) -shared $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -Wl,-soname=$(@F) -o $@ -Wl,--start-group $(filter-out FORCE_DO_CMD, $^) -Wl,--end-group $(LIBS)
+quiet_cmd_solink_module_host = SOLINK_MODULE($(TOOLSET)) $@
+cmd_solink_module_host = $(LINK.$(TOOLSET)) -bundle $(GYP_LDFLAGS) $(LDFLAGS.$(TOOLSET)) -o $@ $(filter-out FORCE_DO_CMD, $^) $(LIBS)
+"""
+
+LINK_COMMANDS_ANDROID_FROM_LINUX = """\
 quiet_cmd_alink = AR($(TOOLSET)) $@
 cmd_alink = rm -f $@ && $(AR.$(TOOLSET)) crs $@ $(filter %.o,$^)
 
@@ -2032,9 +2060,14 @@ def GenerateOutput(target_list, target_dicts, data, params):
         'extra_commands': SHARED_HEADER_MAC_COMMANDS,
     })
   elif flavor == 'android':
-    header_params.update({
-        'link_commands': LINK_COMMANDS_ANDROID,
-    })
+    if platform.system() == 'Darwin':
+      header_params.update({
+          'link_commands': LINK_COMMANDS_ANDROID_FROM_MAC,
+      })
+    else:
+      header_params.update({
+          'link_commands': LINK_COMMANDS_ANDROID_FROM_LINUX,
+      })
   elif flavor == 'solaris':
     header_params.update({
         'flock': './gyp-flock-tool flock',
