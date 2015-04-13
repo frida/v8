@@ -1451,7 +1451,8 @@
               'target_conditions': [
                 ['_toolset=="host" and host_os=="linux"', {
                   'libraries': [
-                    '-lrt'
+                    '-lrt',
+                    '-ldl'
                   ],
                 }],
                 ['_toolset=="target"', {

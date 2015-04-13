@@ -574,6 +574,9 @@ CPU::CPU()
     has_vfp3_d32_ = (cpu_flags & ARM_CPU_FLAG_VFP_D32) != 0;
 #endif
   }
+#ifndef ARM_CPU_FLAG_IDIV
+#define ARM_CPU_FLAG_IDIV 0x0400
+#endif
   has_idiva_ = (cpu_flags & ARM_CPU_FLAG_IDIV) != 0;
 
 #endif  // V8_OS_LINUX

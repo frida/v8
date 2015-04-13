@@ -16,6 +16,10 @@
 #include <sys/sysctl.h>
 #endif
 
+#if V8_OS_QNX
+#include <sys/syspage.h>
+#endif
+
 #include <limits>
 
 #include "src/base/logging.h"
