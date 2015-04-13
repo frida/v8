@@ -22,6 +22,7 @@
 #define V8_BASE_PLATFORM_PLATFORM_H_
 
 #include <cstdarg>
+#include <cstdio>
 #include <list>
 #include <string>
 #include <vector>

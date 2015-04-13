@@ -6,7 +6,7 @@
 #define V8_ARM_CONSTANTS_ARM_H_
 
 // ARM EABI is required.
-#if defined(__arm__) && !defined(__ARM_EABI__) && !defined(__APPLE__)
+#if defined(__arm__) && !defined(__ARM_EABI__) && !defined(__APPLE__) && !defined(__QNX__)
 #error ARM EABI support is required.
 #endif
 
