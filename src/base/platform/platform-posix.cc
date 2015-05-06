@@ -549,9 +549,10 @@ void Thread::Start() {
   // Native client uses default stack size.
 #if !V8_OS_NACL
   size_t stack_size = stack_size_;
-#if V8_OS_AIX
+#if V8_OS_AIX || V8_OS_QNX
   if (stack_size == 0) {
     // Default on AIX is 96KB -- bump up to 2MB
+    // Default on QNX is 128KB -- bump up to 2MB
     stack_size = 2 * 1024 * 1024;
   }
 #endif
