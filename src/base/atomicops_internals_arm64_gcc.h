@@ -75,7 +75,8 @@ inline Atomic32 NoBarrier_AtomicIncrement(volatile Atomic32* ptr,
   __asm__ __volatile__ (  // NOLINT
     "0:                                       \n\t"
     "ldxr %w[result], %[ptr]                  \n\t"  // Load the previous value.
-    "add %w[result], %w[result], %w[increment]\n\t"
+    "mov %w[temp], %[increment]               \n\t"
+    "add %w[result], %w[result], %w[temp]     \n\t"
     "stxr %w[temp], %w[result], %[ptr]        \n\t"  // Try to store the result.
     "cbnz %w[temp], 0b                        \n\t"  // Retry on failure.
     : [result]"=&r" (result),
