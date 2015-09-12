@@ -221,45 +221,49 @@
             # because it is used at different levels in the GYP files.
             'android_ndk_root%': '<(base_dir)/third_party/android_tools/ndk/',
             'android_host_arch%': "<!(uname -m | sed -e 's/i[3456]86/x86/')",
-            'host_os%': "<!(uname -s | sed -e 's/Linux/linux/;s/Darwin/mac/')",
+            'android_host_os%': "<!(uname -s | sed -e 's/Linux/linux/;s/Darwin/darwin/')",
           },
 
           # Copy conditionally-set variables out one scope.
           'android_ndk_root%': '<(android_ndk_root)',
-          'host_os%': '<(host_os)',
+          'android_host_os%': '<(android_host_os)',
 
           'conditions': [
             ['target_arch == "ia32"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/x86-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/x86-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'x86',
               'android_target_platform%': '16',
+              'arm_version%': 'default',
             }],
             ['target_arch == "x64"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/x86_64-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/x86_64-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'x86_64',
               'android_target_platform%': '21',
+              'arm_version%': 'default',
             }],
             ['target_arch=="arm"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/arm-linux-androideabi-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/arm-linux-androideabi-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'arm',
               'android_target_platform%': '16',
               'arm_version%': 7,
             }],
             ['target_arch == "arm64"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/aarch64-linux-android-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/aarch64-linux-android-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'arm64',
               'android_target_platform%': '21',
               'arm_version%': 'default',
             }],
             ['target_arch == "mipsel"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/mipsel-linux-android-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/mipsel-linux-android-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'mips',
               'android_target_platform%': '16',
+              'arm_version%': 'default',
             }],
             ['target_arch == "mips64el"', {
-              'android_toolchain%': '<(android_ndk_root)/toolchains/mips64el-linux-android-4.9/prebuilt/<(host_os)-<(android_host_arch)/bin',
+              'android_toolchain%': '<(android_ndk_root)/toolchains/mips64el-linux-android-4.9/prebuilt/<(android_host_os)-<(android_host_arch)/bin',
               'android_target_arch%': 'mips64',
               'android_target_platform%': '21',
+              'arm_version%': 'default',
             }],
           ],
         },
@@ -275,7 +279,7 @@
           ['android_ndk_root==""', {
             'variables': {
               'android_sysroot': '<(android_toolchain)/sysroot/',
-              'android_stlport': '<(android_toolchain)/sources/cxx-stl/stlport/',
+              'android_llvmcxx': '<(android_toolchain)/sources/cxx-stl/llvm-libc++',
             },
             'android_include': '<(android_sysroot)/usr/include',
             'conditions': [
@@ -285,12 +289,12 @@
                 'android_lib': '<(android_sysroot)/usr/lib',
               }],
             ],
-            'android_stlport_include': '<(android_stlport)/stlport',
-            'android_stlport_libs': '<(android_stlport)/libs',
+            'android_llvmcxx_include': '<(android_llvmcxx)/libcxx/include',
+            'android_llvmcxx_libs': '<(android_llvmcxx)/libs',
           }, {
             'variables': {
               'android_sysroot': '<(android_ndk_root)/platforms/android-<(android_target_platform)/arch-<(android_target_arch)',
-              'android_stlport': '<(android_ndk_root)/sources/cxx-stl/stlport/',
+              'android_llvmcxx': '<(android_ndk_root)/sources/cxx-stl/llvm-libc++',
             },
             'android_include': '<(android_sysroot)/usr/include',
             'conditions': [
@@ -300,11 +304,11 @@
                 'android_lib': '<(android_sysroot)/usr/lib',
               }],
             ],
-            'android_stlport_include': '<(android_stlport)/stlport',
-            'android_stlport_libs': '<(android_stlport)/libs',
+            'android_llvmcxx_include': '<(android_llvmcxx)/libcxx/include',
+            'android_llvmcxx_libs': '<(android_llvmcxx)/libs',
           }],
         ],
-        'android_stlport_library': 'stlport_static',
+        'android_llvmcxx_library': 'c++_static',
       }],  # OS=="android"
       ['host_clang==1', {
         'host_cc': '<(clang_dir)/bin/clang',
@@ -360,19 +364,6 @@
         'cflags+': ['<@(release_extra_cflags)'],
       },
     },
-    'conditions':[
-      ['(clang==1 or host_clang==1) and OS!="win"', {
-        # This is here so that all files get recompiled after a clang roll and
-        # when turning clang on or off.
-        # (defines are passed via the command line, and build systems rebuild
-        # things when their commandline changes). Nothing should ever read this
-        # define.
-        'defines': ['CR_CLANG_REVISION=<!(<(DEPTH)/tools/clang/scripts/update.sh --print-revision)'],
-        'cflags+': [
-          '-Wno-format-pedantic',
-        ],
-      }],
-    ],
     'target_conditions': [
       ['v8_code == 0', {
         'defines!': [
@@ -803,29 +794,35 @@
             ],
           },  # Release
         },  # configurations
-        'cflags': [ '-Wno-abi', '-Wall', '-W', '-Wno-unused-parameter'],
+        'cflags': [ '-std=gnu++11', '-Wno-abi', '-Wall', '-W', '-Wno-unused-parameter', '-Wno-extern-c-compat'],
         'cflags_cc': [ '-Wnon-virtual-dtor', '-fno-rtti', '-fno-exceptions',
                        # Note: Using -std=c++0x will define __STRICT_ANSI__, which
                        # in turn will leave out some template stuff for 'long
                        # long'.  What we want is -std=c++11, but this is not
                        # supported by GCC 4.6 or Xcode 4.2
-                       '-std=gnu++0x' ],
+                       '-std=gnu++11' ],
         'target_conditions': [
           ['_toolset=="target"', {
+            'variables': {
+              'android_host_arch%': "<!(uname -m | sed -e 's/i[3456]86/x86/')",
+              'android_host_os%': "<!(uname -s | sed -e 's/Linux/linux/;s/Darwin/darwin/')",
+            },
             'cflags!': [
               '-pthread',  # Not supported by Android toolchain.
+              '-pedantic', # Warning galore
             ],
             'cflags': [
+              '--sysroot=<(android_sysroot)',
+              '-no-canonical-prefixes',
               '-ffunction-sections',
               '-funwind-tables',
               '-fstack-protector',
               '-fno-short-enums',
-              '-finline-limit=64',
               '-Wa,--noexecstack',
-              # Note: This include is in cflags to ensure that it comes after
-              # all of the includes.
+              '-I<(android_llvmcxx_include)',
+              '-I<(android_ndk_root)/sources/cxx-stl/gabi++/include',
+              '-I<(android_ndk_root)/sources/android/support/include',
               '-I<(android_include)',
-              '-I<(android_stlport_include)',
             ],
             'cflags_cc': [
               '-Wno-error=non-virtual-dtor',  # TODO(michaelbai): Fix warnings.
@@ -833,8 +830,6 @@
             'defines': [
               'ANDROID',
               #'__GNU_SOURCE=1',  # Necessary for clone()
-              'USE_STLPORT=1',
-              '_STLP_USE_PTR_SPECIALIZATIONS=1',
               'HAVE_OFF64_T',
               'HAVE_SYS_UIO_H',
               'ANDROID_BINSIZE_HACK', # Enable temporary hacks to reduce binsize.
@@ -843,6 +838,8 @@
               '-pthread',  # Not supported by Android toolchain.
             ],
             'ldflags': [
+              '--sysroot=<(android_sysroot)',
+              '-no-canonical-prefixes',
               '-nostdlib',
               '-Wl,--no-undefined',
               '-Wl,-rpath-link=<(android_lib)',
@@ -857,15 +854,25 @@
                 '-lpthread', '-lnss3', '-lnssutil3', '-lsmime3', '-lplds4', '-lplc4', '-lnspr4',
               ],
               'libraries': [
-                '-l<(android_stlport_library)',
+                '-l<(android_llvmcxx_library)',
                 # Manually link the libgcc.a that the cross compiler uses.
                 '<!(<(android_toolchain)/*-gcc -print-libgcc-file-name)',
                 '-lc',
                 '-ldl',
-                '-lstdc++',
                 '-lm',
             ],
             'conditions': [
+              ['target_arch=="ia32"', {
+                'cflags': [
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/x86-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=i686-none-linux-android',
+                ],
+                'ldflags': [
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/x86-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=i686-none-linux-android',
+                  '-L<(android_llvmcxx_libs)/x86',
+                ],
+              }],
               ['target_arch == "arm"', {
                 'ldflags': [
                   # Enable identical code folding to reduce size.
@@ -874,27 +881,45 @@
               }],
               ['target_arch=="arm" and arm_version==7', {
                 'cflags': [
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/arm-linux-androideabi-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=armv7-none-linux-androideabi',
                   '-march=armv7-a',
                   '-mtune=cortex-a8',
-                  '-mfpu=vfp3',
+                  '-mfpu=vfpv3-d16',
+                  '-mfloat-abi=softfp',
+                  '-mthumb',
                 ],
                 'ldflags': [
-                  '-L<(android_stlport_libs)/armeabi-v7a',
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/arm-linux-androideabi-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=armv7-none-linux-androideabi',
+                  '-L<(android_llvmcxx_libs)/armeabi-v7a',
                 ],
               }],
               ['target_arch=="arm" and arm_version < 7', {
                 'ldflags': [
-                  '-L<(android_stlport_libs)/armeabi',
+                  '-L<(android_llvmcxx_libs)/armeabi',
                 ],
               }],
               ['target_arch=="x64"', {
+                'cflags': [
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/x86_64-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=x86_64-none-linux-android',
+                ],
                 'ldflags': [
-                  '-L<(android_stlport_libs)/x86_64',
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/x86_64-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=x86_64-none-linux-android',
+                  '-L<(android_llvmcxx_libs)/x86_64',
                 ],
               }],
               ['target_arch=="arm64"', {
+                'cflags': [
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/aarch64-linux-android-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=aarch64-none-linux-android',
+                ],
                 'ldflags': [
-                  '-L<(android_stlport_libs)/arm64-v8a',
+                  '--gcc-toolchain=<(android_ndk_root)/toolchains/aarch64-linux-android-4.9/prebuilt/<(android_host_os)-<(android_host_arch)',
+                  '--target=aarch64-none-linux-android',
+                  '-L<(android_llvmcxx_libs)/arm64-v8a',
                 ],
               }],
               ['target_arch=="ia32" or target_arch=="x87"', {
@@ -906,7 +931,7 @@
                   '-fno-stack-protector',
                 ],
                 'ldflags': [
-                  '-L<(android_stlport_libs)/x86',
+                  '-L<(android_llvmcxx_libs)/x86',
                 ],
               }],
               ['target_arch=="mipsel"', {
@@ -919,7 +944,7 @@
                   '-fno-stack-protector',
                 ],
                 'ldflags': [
-                  '-L<(android_stlport_libs)/mips',
+                  '-L<(android_llvmcxx_libs)/mips',
                 ],
               }],
               ['(target_arch=="arm" or target_arch=="arm64" or target_arch=="x64" or target_arch=="ia32") and component!="shared_library"', {
@@ -971,7 +996,7 @@
             ],
           }],  # _toolset=="target"
           # Settings for building host targets using the system toolchain.
-          ['_toolset=="host"', {
+          ['_toolset=="host" and host_os!="mac"', {
             'cflags': [ '-pthread' ],
             'ldflags': [ '-pthread' ],
             'ldflags!': [
