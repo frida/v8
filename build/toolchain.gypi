@@ -1264,6 +1264,8 @@
               # but Apple gcc does not unless it
               # is specified explicitly.
               'GCC_STRICT_ALIASING': 'YES',
+
+              'GCC_GENERATE_DEBUGGING_SYMBOLS': 'NO',
             },
           }],  # OS=="mac"
           ['OS=="win"', {
