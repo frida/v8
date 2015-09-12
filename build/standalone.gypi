@@ -659,7 +659,7 @@
             'RuntimeTypeInfo': 'false',
             'WarningLevel': '3',
             'WarnAsError': 'true',
-            'DebugInformationFormat': '3',
+            'DebugInformationFormat': '0',
             'Detect64BitPortabilityProblems': 'false',
             'conditions': [
               [ 'msvs_multi_core_compile', {
