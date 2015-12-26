@@ -407,6 +407,7 @@ int OS::GetLastError() {
 FILE* OS::FOpen(const char* path, const char* mode) {
   FILE* file = fopen(path, mode);
   if (file == NULL) return NULL;
+  if (strchr(mode, 'w') != NULL) return file;
   struct stat file_stat;
   if (fstat(fileno(file), &file_stat) != 0) return NULL;
   bool is_regular_file = ((file_stat.st_mode & S_IFREG) != 0);
