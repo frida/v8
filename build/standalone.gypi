@@ -630,7 +630,7 @@
           }],
           [ '_toolset=="target"', {
             'cflags': [ '-Wno-psabi' ],
-            'libraries': [ '-lbacktrace', '-lsocket', '-lm' ],
+            'libraries': [ '-lbacktrace', '-lsocket', '-lm', '-latomic'],
           }],
         ],
       },
