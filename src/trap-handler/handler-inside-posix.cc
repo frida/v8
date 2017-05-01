@@ -50,6 +50,8 @@ namespace trap_handler {
 
 #if V8_TRAP_HANDLER_SUPPORTED
 
+#if V8_TRAP_HANDLER_SUPPORTED
+
 #if V8_OS_LINUX && V8_HOST_ARCH_ARM64
 #define CONTEXT_REG(reg, REG) &uc->uc_mcontext.regs[REG]
 #elif V8_OS_LINUX && (V8_HOST_ARCH_LOONG64 || V8_HOST_ARCH_RISCV64)
@@ -230,6 +232,8 @@ void HandleSignal(int signum, siginfo_t* info, void* context) {
 }
 
 #endif
+
+#endif  // V8_TRAP_HANDLER_SUPPORTED
 
 }  // namespace trap_handler
 }  // namespace internal
