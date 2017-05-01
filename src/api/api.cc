@@ -5776,7 +5776,7 @@ bool v8::V8::Initialize(const int build_config) {
 #if V8_OS_LINUX || V8_OS_MACOSX
 bool TryHandleWebAssemblyTrapPosix(int sig_code, siginfo_t* info,
                                    void* context) {
-#if V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
+#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
   return i::trap_handler::TryHandleSignal(sig_code, info, context);
 #else
   return false;
@@ -5791,10 +5791,11 @@ bool V8::TryHandleSignal(int signum, void* info, void* context) {
 
 #if V8_OS_WIN
 bool TryHandleWebAssemblyTrapWindows(EXCEPTION_POINTERS* exception) {
-#if V8_TARGET_ARCH_X64
+#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64
   return i::trap_handler::TryHandleWasmTrap(exception);
-#endif
+#else
   return false;
+#endif
 }
 #endif
 
