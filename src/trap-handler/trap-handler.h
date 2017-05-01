@@ -17,23 +17,7 @@ namespace v8 {
 namespace internal {
 namespace trap_handler {
 
-// X64 on Linux, Windows, MacOS, FreeBSD.
-#if V8_HOST_ARCH_X64 && V8_TARGET_ARCH_X64 &&                        \
-    ((V8_OS_LINUX && !V8_OS_ANDROID) || V8_OS_WIN || V8_OS_DARWIN || \
-     V8_OS_FREEBSD)
-#define V8_TRAP_HANDLER_SUPPORTED true
-// Arm64 (non-simulator) on Mac.
-#elif V8_TARGET_ARCH_ARM64 && V8_HOST_ARCH_ARM64 && V8_OS_DARWIN
-#define V8_TRAP_HANDLER_SUPPORTED true
-// Arm64 simulator on x64 on Linux, Mac, or Windows.
-#elif V8_TARGET_ARCH_ARM64 && V8_HOST_ARCH_X64 && \
-    (V8_OS_LINUX || V8_OS_DARWIN || V8_OS_WIN)
-#define V8_TRAP_HANDLER_VIA_SIMULATOR
-#define V8_TRAP_HANDLER_SUPPORTED true
-// Everything else is unsupported.
-#else
 #define V8_TRAP_HANDLER_SUPPORTED false
-#endif
 
 // Setup for shared library export.
 #if defined(BUILDING_V8_SHARED) && defined(V8_OS_WIN)
@@ -119,13 +103,7 @@ inline bool IsTrapHandlerEnabled() {
   return g_is_trap_handler_enabled;
 }
 
-#if defined(V8_OS_AIX)
-// `thread_local` does not link on AIX:
-// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100641
-extern __thread int g_thread_in_wasm_code;
-#else
-extern thread_local int g_thread_in_wasm_code;
-#endif
+extern int g_thread_in_wasm_code;
 
 // Return the address of the thread-local {g_thread_in_wasm_code} variable. This
 // pointer can be accessed and modified as long as the thread calling this
