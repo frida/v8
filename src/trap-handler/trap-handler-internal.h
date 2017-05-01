@@ -43,13 +43,7 @@ class TrapHandlerGuard {
   TH_DISABLE_ASAN static bool IsActiveOnCurrentThread() { return is_active_; }
 
  private:
-#if defined(V8_OS_AIX)
-  // `thread_local` does not link on AIX:
-  // https://gcc.gnu.org/bugzilla/show_bug.cgi?id=100641
-  static __thread bool is_active_;
-#else
-  static thread_local bool is_active_;
-#endif
+  static bool is_active_;
 };
 
 // This describes a chunk of code that the trap handler will be able to handle
