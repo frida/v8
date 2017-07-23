@@ -7,6 +7,7 @@
 #include <errno.h>
 #include <time.h>
 
+#include "src/base/platform/threading-backend.h"
 #include "src/base/platform/time.h"
 
 #if V8_OS_WIN
@@ -16,9 +17,40 @@
 namespace v8 {
 namespace base {
 
+ConditionVariable::ConditionVariable()
+  : impl_(GetThreadingBackend()->CreateConditionVariable()) {}
+
+
+ConditionVariable::~ConditionVariable() {}
+
+
+void ConditionVariable::NotifyOne() {
+  impl_->NotifyOne();
+}
+
+
+void ConditionVariable::NotifyAll() {
+  impl_->NotifyAll();
+}
+
+
+void ConditionVariable::Wait(Mutex* mutex) {
+  mutex->AssertHeldAndUnmark();
+  impl_->Wait(mutex->impl_.get());
+  mutex->AssertUnheldAndMark();
+}
+
+
+bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
+  mutex->AssertHeldAndUnmark();
+  auto result = impl_->WaitFor(mutex->impl_.get(), rel_time.InMicroseconds());
+  mutex->AssertUnheldAndMark();
+  return result;
+}
+
 #if V8_OS_POSIX
 
-ConditionVariable::ConditionVariable() {
+NativeConditionVariable::NativeConditionVariable() {
 #if (V8_OS_FREEBSD || V8_OS_NETBSD || V8_OS_OPENBSD || \
      (V8_OS_LINUX && V8_LIBC_GLIBC))
   // On Free/Net/OpenBSD and Linux with glibc we can change the time
@@ -39,7 +71,7 @@ ConditionVariable::ConditionVariable() {
 }
 
 
-ConditionVariable::~ConditionVariable() {
+NativeConditionVariable::~NativeConditionVariable() {
 #if defined(V8_OS_DARWIN)
   // This hack is necessary to avoid a fatal pthreads subsystem bug in the
   // Darwin kernel. http://crbug.com/517681.
@@ -49,7 +81,8 @@ ConditionVariable::~ConditionVariable() {
     struct timespec ts;
     ts.tv_sec = 0;
     ts.tv_nsec = 1;
-    pthread_cond_timedwait_relative_np(&native_handle_, &lock.native_handle(),
+    auto m = reinterpret_cast<NativeMutex*>(lock.impl_.get());
+    pthread_cond_timedwait_relative_np(&native_handle_, &m->native_handle(),
                                        &ts);
   }
 #endif
@@ -59,33 +92,34 @@ ConditionVariable::~ConditionVariable() {
 }
 
 
-void ConditionVariable::NotifyOne() {
+void NativeConditionVariable::NotifyOne() {
   int result = pthread_cond_signal(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
 
-void ConditionVariable::NotifyAll() {
+void NativeConditionVariable::NotifyAll() {
   int result = pthread_cond_broadcast(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
 
-void ConditionVariable::Wait(Mutex* mutex) {
-  mutex->AssertHeldAndUnmark();
-  int result = pthread_cond_wait(&native_handle_, &mutex->native_handle());
+void NativeConditionVariable::Wait(MutexImpl* mutex) {
+  auto m = reinterpret_cast<NativeMutex*>(mutex);
+  int result = pthread_cond_wait(&native_handle_, &m->native_handle());
   DCHECK_EQ(0, result);
   USE(result);
-  mutex->AssertUnheldAndMark();
 }
 
 
-bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
+bool NativeConditionVariable::WaitFor(MutexImpl* mutex,
+    int64_t delta_in_microseconds) {
+  TimeDelta rel_time = TimeDelta::FromMicroseconds(delta_in_microseconds);
   struct timespec ts;
   int result;
-  mutex->AssertHeldAndUnmark();
+  auto m = reinterpret_cast<NativeMutex*>(mutex);
 #if V8_OS_DARWIN
   // Mac OS X provides pthread_cond_timedwait_relative_np(), which does
   // not depend on the real time clock, which is what you really WANT here!
@@ -93,7 +127,7 @@ bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
   DCHECK_GE(ts.tv_sec, 0);
   DCHECK_GE(ts.tv_nsec, 0);
   result = pthread_cond_timedwait_relative_np(
-      &native_handle_, &mutex->native_handle(), &ts);
+      &native_handle_, &m->native_handle(), &ts);
 #else
 #if (V8_OS_FREEBSD || V8_OS_NETBSD || V8_OS_OPENBSD || \
      (V8_OS_LINUX && V8_LIBC_GLIBC))
@@ -110,9 +144,8 @@ bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
   DCHECK_GE(end_time, now);
   ts = end_time.ToTimespec();
   result = pthread_cond_timedwait(
-      &native_handle_, &mutex->native_handle(), &ts);
+      &native_handle_, &m->native_handle(), &ts);
 #endif  // V8_OS_DARWIN
-  mutex->AssertUnheldAndMark();
   if (result == ETIMEDOUT) {
     return false;
   }
@@ -122,7 +155,7 @@ bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
 
 #elif V8_OS_WIN
 
-struct ConditionVariable::Event {
+struct NativeConditionVariable::Event {
   Event() : handle_(::CreateEventA(NULL, true, false, NULL)) {
     DCHECK(handle_ != NULL);
   }
@@ -149,7 +182,7 @@ struct ConditionVariable::Event {
 };
 
 
-ConditionVariable::NativeHandle::~NativeHandle() {
+NativeConditionVariable::NativeHandle::~NativeHandle() {
   DCHECK(waitlist_ == NULL);
 
   while (freelist_ != NULL) {
@@ -160,7 +193,7 @@ ConditionVariable::NativeHandle::~NativeHandle() {
 }
 
 
-ConditionVariable::Event* ConditionVariable::NativeHandle::Pre() {
+NativeConditionVariable::Event* NativeConditionVariable::NativeHandle::Pre() {
   LockGuard<Mutex> lock_guard(&mutex_);
 
   // Grab an event from the free list or create a new one.
@@ -188,7 +221,7 @@ ConditionVariable::Event* ConditionVariable::NativeHandle::Pre() {
 }
 
 
-void ConditionVariable::NativeHandle::Post(Event* event, bool result) {
+void NativeConditionVariable::NativeHandle::Post(Event* event, bool result) {
   LockGuard<Mutex> lock_guard(&mutex_);
 
   // Remove the event from the wait list.
@@ -226,12 +259,12 @@ void ConditionVariable::NativeHandle::Post(Event* event, bool result) {
 }
 
 
-ConditionVariable::ConditionVariable() {}
+NativeConditionVariable::NativeConditionVariable() {}
 
 
-ConditionVariable::~ConditionVariable() {}
+NativeConditionVariable::~NativeConditionVariable() {}
 
-void ConditionVariable::NotifyOne() {
+void NativeConditionVariable::NotifyOne() {
   // Notify the thread with the highest priority in the waitlist
   // that was not already signalled.
   LockGuard<Mutex> lock_guard(native_handle_.mutex());
@@ -257,7 +290,7 @@ void ConditionVariable::NotifyOne() {
   }
 }
 
-void ConditionVariable::NotifyAll() {
+void NativeConditionVariable::NotifyAll() {
   // Notify all threads on the waitlist.
   LockGuard<Mutex> lock_guard(native_handle_.mutex());
   for (Event* event = native_handle().waitlist();
@@ -271,7 +304,7 @@ void ConditionVariable::NotifyAll() {
 }
 
 
-void ConditionVariable::Wait(Mutex* mutex) {
+void NativeConditionVariable::Wait(MutexImpl* mutex) {
   // Create and setup the wait event.
   Event* event = native_handle_.Pre();
 
@@ -291,7 +324,10 @@ void ConditionVariable::Wait(Mutex* mutex) {
 }
 
 
-bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
+bool NativeConditionVariable::WaitFor(MutexImpl* mutex,
+    int64_t delta_in_microseconds) {
+  TimeDelta rel_time = TimeDelta::FromMicroseconds(delta_in_microseconds);
+
   // Create and setup the wait event.
   Event* event = native_handle_.Pre();
 

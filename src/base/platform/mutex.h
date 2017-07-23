@@ -8,6 +8,7 @@
 #include <shared_mutex>
 
 #include "include/v8config.h"
+#include "include/v8-platform.h"
 
 #if V8_OS_POSIX
 #include <pthread.h>
@@ -69,27 +70,11 @@ class V8_BASE_EXPORT Mutex final {
   // successfully locked.
   bool TryLock() V8_WARN_UNUSED_RESULT;
 
-  // The implementation-defined native handle type.
-#if V8_OS_POSIX
-  using NativeHandle = pthread_mutex_t;
-#elif V8_OS_WIN
-  using NativeHandle = V8_CRITICAL_SECTION;
-#elif V8_OS_STARBOARD
-  using NativeHandle = SbMutex;
-#endif
-
-  NativeHandle& native_handle() {
-    return native_handle_;
-  }
-  const NativeHandle& native_handle() const {
-    return native_handle_;
-  }
-
   V8_INLINE void AssertHeld() const { DCHECK_EQ(1, level_); }
   V8_INLINE void AssertUnheld() const { DCHECK_EQ(0, level_); }
 
  private:
-  NativeHandle native_handle_;
+  std::unique_ptr<MutexImpl> impl_;
 #ifdef DEBUG
   int level_;
 #endif
@@ -109,6 +94,7 @@ class V8_BASE_EXPORT Mutex final {
   }
 
   friend class ConditionVariable;
+  friend class NativeConditionVariable;
 };
 
 // POD Mutex initialized lazily (i.e. the first time Pointer() is called).
@@ -174,16 +160,7 @@ class V8_BASE_EXPORT RecursiveMutex final {
   V8_INLINE void AssertHeld() const { DCHECK_LT(0, level_); }
 
  private:
-  // The implementation-defined native handle type.
-#if V8_OS_POSIX
-  using NativeHandle = pthread_mutex_t;
-#elif V8_OS_WIN
-  using NativeHandle = V8_CRITICAL_SECTION;
-#elif V8_OS_STARBOARD
-  using NativeHandle = starboard::RecursiveMutex;
-#endif
-
-  NativeHandle native_handle_;
+  std::unique_ptr<MutexImpl> impl_;
 #ifdef DEBUG
   int level_;
 #endif
@@ -222,9 +199,10 @@ using LazyRecursiveMutex =
 
 class V8_BASE_EXPORT SharedMutex final {
  public:
-  SharedMutex() = default;
+  SharedMutex();
   SharedMutex(const SharedMutex&) = delete;
   SharedMutex& operator=(const SharedMutex&) = delete;
+  ~SharedMutex();
 
   // Acquires shared ownership of the {SharedMutex}. If another thread is
   // holding the mutex in exclusive ownership, a call to {LockShared()} will
@@ -270,10 +248,7 @@ class V8_BASE_EXPORT SharedMutex final {
   bool TryLockExclusive() V8_WARN_UNUSED_RESULT;
 
  private:
-  // {base::SharedMutex} wraps a {std::shared_mutex}, but executes additional
-  // checks in debug mode.
-  // TODO(13256): Use std::shared_mutex directly.
-  std::shared_mutex native_handle_;
+  std::unique_ptr<SharedMutexImpl> impl_;
 };
 
 // -----------------------------------------------------------------------------
@@ -362,6 +337,83 @@ class V8_NODISCARD SharedMutexGuardIf final {
 
  private:
   base::Optional<SharedMutexGuard<kIsShared, Behavior>> mutex_;
+};
+
+
+// -----------------------------------------------------------------------------
+// Default implementations
+
+class V8_BASE_EXPORT NativeMutex final : public MutexImpl {
+ public:
+  NativeMutex();
+  NativeMutex(const NativeMutex&) = delete;
+  NativeMutex& operator=(const NativeMutex&) = delete;
+  ~NativeMutex();
+
+  void Lock() override;
+  void Unlock() override;
+  bool TryLock() override;
+
+#if V8_OS_POSIX
+  using NativeHandle = pthread_mutex_t;
+#elif V8_OS_WIN
+  using NativeHandle = V8_CRITICAL_SECTION;
+#elif V8_OS_STARBOARD
+  using NativeHandle = SbMutex;
+#endif
+
+  NativeHandle& native_handle() {
+    return native_handle_;
+  }
+  const NativeHandle& native_handle() const {
+    return native_handle_;
+  }
+
+ private:
+  NativeHandle native_handle_;
+};
+
+class V8_BASE_EXPORT NativeRecursiveMutex final : public MutexImpl {
+ public:
+  NativeRecursiveMutex();
+  NativeRecursiveMutex(const NativeRecursiveMutex&) = delete;
+  NativeRecursiveMutex& operator=(const NativeRecursiveMutex&) = delete;
+  ~NativeRecursiveMutex();
+
+  void Lock() override;
+  void Unlock() override;
+  bool TryLock() override;
+
+#if V8_OS_POSIX
+  using NativeHandle = pthread_mutex_t;
+#elif V8_OS_WIN
+  using NativeHandle = V8_CRITICAL_SECTION;
+#elif V8_OS_STARBOARD
+  using NativeHandle = starboard::RecursiveMutex;
+#endif
+
+ private:
+  NativeHandle native_handle_;
+};
+
+class V8_BASE_EXPORT NativeSharedMutex final : public SharedMutexImpl {
+ public:
+  NativeSharedMutex() = default;
+  NativeSharedMutex(const NativeSharedMutex&) = delete;
+  NativeSharedMutex& operator=(const NativeSharedMutex&) = delete;
+
+  void LockShared() override;
+  void LockExclusive() override;
+  void UnlockShared() override;
+  void UnlockExclusive() override;
+  bool TryLockShared() override;
+  bool TryLockExclusive() override;
+
+ private:
+  // {base::SharedMutex} wraps a {std::shared_mutex}, but executes additional
+  // checks in debug mode.
+  // TODO(13256): Use std::shared_mutex directly.
+  std::shared_mutex native_handle_;
 };
 
 }  // namespace base
