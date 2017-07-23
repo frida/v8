@@ -5,9 +5,12 @@
 #ifndef V8_BASE_PLATFORM_MUTEX_H_
 #define V8_BASE_PLATFORM_MUTEX_H_
 
+#include <atomic>
+#include <memory>
 #include <optional>
 
 #include "absl/synchronization/mutex.h"
+#include "include/v8-platform.h"
 #include "include/v8config.h"
 
 #include "src/base/base-export.h"
@@ -62,6 +65,7 @@ class V8_BASE_EXPORT Mutex final {
   }
 
  private:
+  std::unique_ptr<MutexImpl> impl_;
 #ifdef DEBUG
   // This is being used for Assert* methods. Accesses are only allowed if you
   // actually hold the mutex, otherwise you would get race conditions.
@@ -87,8 +91,6 @@ class V8_BASE_EXPORT Mutex final {
   }
 
   friend class ConditionVariable;
-
-  absl::Mutex native_handle_;
 };
 
 // POD Mutex initialized lazily (i.e. the first time Pointer() is called).
@@ -125,7 +127,7 @@ using LazyMutex = LazyStaticInstance<Mutex, DefaultConstructTrait<Mutex>,
 
 class V8_BASE_EXPORT RecursiveMutex final {
  public:
-  RecursiveMutex() = default;
+  RecursiveMutex();
   RecursiveMutex(const RecursiveMutex&) = delete;
   RecursiveMutex& operator=(const RecursiveMutex&) = delete;
   ~RecursiveMutex();
@@ -157,9 +159,10 @@ class V8_BASE_EXPORT RecursiveMutex final {
   }
 
  private:
-  std::atomic<int> thread_id_ = 0;
-  int level_ = 0;
-  Mutex mutex_;
+  std::unique_ptr<MutexImpl> impl_;
+#ifdef DEBUG
+  int level_;
+#endif
 };
 
 
@@ -231,6 +234,46 @@ class V8_NODISCARD MutexGuardIf final {
 
  private:
   std::optional<MutexGuard> mutex_;
+};
+
+// -----------------------------------------------------------------------------
+// NativeMutex - the default MutexImpl, wrapping absl::Mutex
+
+class V8_BASE_EXPORT NativeMutex final : public MutexImpl {
+ public:
+  NativeMutex() = default;
+  NativeMutex(const NativeMutex&) = delete;
+  NativeMutex& operator=(const NativeMutex&) = delete;
+  ~NativeMutex() override = default;
+
+  void Lock() override;
+  void Unlock() override;
+  bool TryLock() override;
+
+ private:
+  absl::Mutex native_handle_;
+
+  friend class NativeConditionVariable;
+};
+
+// -----------------------------------------------------------------------------
+// NativeRecursiveMutex - the default recursive MutexImpl, built on NativeMutex
+
+class V8_BASE_EXPORT NativeRecursiveMutex final : public MutexImpl {
+ public:
+  NativeRecursiveMutex() = default;
+  NativeRecursiveMutex(const NativeRecursiveMutex&) = delete;
+  NativeRecursiveMutex& operator=(const NativeRecursiveMutex&) = delete;
+  ~NativeRecursiveMutex() override;
+
+  void Lock() override;
+  void Unlock() override;
+  bool TryLock() override;
+
+ private:
+  std::atomic<int> thread_id_ = 0;
+  int level_ = 0;
+  NativeMutex mutex_;
 };
 
 }  // namespace base

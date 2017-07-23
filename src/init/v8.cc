@@ -13,6 +13,7 @@
 #include "src/base/atomicops.h"
 #include "src/base/once.h"
 #include "src/base/platform/platform.h"
+#include "src/base/platform/threading-backend.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/common/code-memory-access.h"
@@ -111,6 +112,7 @@ void V8::InitializePlatform(v8::Platform* platform) {
   CHECK(!platform_);
   CHECK_NOT_NULL(platform);
   platform_ = platform;
+  v8::base::SetThreadingBackend(platform->GetThreadingBackend());
   v8::base::SetPrintStackTrace(platform_->GetStackTracePrinter());
 #if defined(V8_USE_PERFETTO)
   // TrackEvent must be registered before TracingCategoryObserver::SetUp().

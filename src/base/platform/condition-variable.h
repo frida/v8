@@ -5,6 +5,8 @@
 #ifndef V8_BASE_PLATFORM_CONDITION_VARIABLE_H_
 #define V8_BASE_PLATFORM_CONDITION_VARIABLE_H_
 
+#include <memory>
+
 #include "absl/synchronization/mutex.h"
 #include "src/base/base-export.h"
 #include "src/base/lazy-instance.h"
@@ -67,7 +69,7 @@ class V8_BASE_EXPORT ConditionVariable {
   bool WaitFor(Mutex* mutex, const TimeDelta& rel_time) V8_WARN_UNUSED_RESULT;
 
  private:
-  absl::CondVar native_handle_;
+  std::unique_ptr<ConditionVariableImpl> impl_;
 };
 
 // POD ConditionVariable initialized lazily (i.e. the first time Pointer() is
@@ -86,6 +88,27 @@ using LazyConditionVariable =
                        ThreadSafeInitOnceTrait>::type;
 
 #define LAZY_CONDITION_VARIABLE_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
+
+// -----------------------------------------------------------------------------
+// NativeConditionVariable - the default ConditionVariableImpl, wrapping
+// absl::CondVar
+
+class V8_BASE_EXPORT NativeConditionVariable final
+    : public ConditionVariableImpl {
+ public:
+  NativeConditionVariable() = default;
+  NativeConditionVariable(const NativeConditionVariable&) = delete;
+  NativeConditionVariable& operator=(const NativeConditionVariable&) = delete;
+  ~NativeConditionVariable() override = default;
+
+  void NotifyOne() override;
+  void NotifyAll() override;
+  void Wait(MutexImpl* mutex) override;
+  bool WaitFor(MutexImpl* mutex, int64_t delta_in_microseconds) override;
+
+ private:
+  absl::CondVar native_handle_;
+};
 
 }  // namespace base
 }  // namespace v8

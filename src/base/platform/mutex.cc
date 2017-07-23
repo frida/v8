@@ -5,15 +5,84 @@
 #include "src/base/platform/mutex.h"
 
 #include "src/base/platform/platform.h"
+#include "src/base/platform/threading-backend.h"
 
 namespace v8 {
 namespace base {
 
-RecursiveMutex::~RecursiveMutex() {
-  DCHECK_EQ(0, level_);
+Mutex::Mutex() : impl_(GetThreadingBackend()->CreatePlainMutex()) {
+#ifdef DEBUG
+  level_ = 0;
+#endif
 }
 
+Mutex::~Mutex() { DCHECK_EQ(0, level_); }
+
+void Mutex::Lock() {
+  impl_->Lock();
+  AssertUnheldAndMark();
+}
+
+void Mutex::Unlock() {
+  AssertHeldAndUnmark();
+  impl_->Unlock();
+}
+
+bool Mutex::TryLock() {
+  if (!impl_->TryLock()) return false;
+  AssertUnheldAndMark();
+  return true;
+}
+
+RecursiveMutex::RecursiveMutex()
+    : impl_(GetThreadingBackend()->CreateRecursiveMutex()) {
+#ifdef DEBUG
+  level_ = 0;
+#endif
+}
+
+RecursiveMutex::~RecursiveMutex() { DCHECK_EQ(0, level_); }
+
 void RecursiveMutex::Lock() {
+  impl_->Lock();
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
+}
+
+void RecursiveMutex::Unlock() {
+#ifdef DEBUG
+  DCHECK_LT(0, level_);
+  level_--;
+#endif
+  impl_->Unlock();
+}
+
+bool RecursiveMutex::TryLock() {
+  if (!impl_->TryLock()) return false;
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
+  return true;
+}
+
+void NativeMutex::Lock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
+  native_handle_.lock();
+}
+
+void NativeMutex::Unlock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
+  native_handle_.unlock();
+}
+
+bool NativeMutex::TryLock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
+  return native_handle_.try_lock();
+}
+
+NativeRecursiveMutex::~NativeRecursiveMutex() { DCHECK_EQ(0, level_); }
+
+void NativeRecursiveMutex::Lock() {
   int own_id = v8::base::OS::GetCurrentThreadId();
   if (thread_id_ == own_id) {
     level_++;
@@ -25,7 +94,7 @@ void RecursiveMutex::Lock() {
   level_ = 1;
 }
 
-void RecursiveMutex::Unlock() {
+void NativeRecursiveMutex::Unlock() {
 #ifdef DEBUG
   int own_id = v8::base::OS::GetCurrentThreadId();
   CHECK_EQ(thread_id_, own_id);
@@ -36,7 +105,7 @@ void RecursiveMutex::Unlock() {
   }
 }
 
-bool RecursiveMutex::TryLock() {
+bool NativeRecursiveMutex::TryLock() {
   int own_id = v8::base::OS::GetCurrentThreadId();
   if (thread_id_ == own_id) {
     level_++;
@@ -49,30 +118,6 @@ bool RecursiveMutex::TryLock() {
     return true;
   }
   return false;
-}
-
-Mutex::Mutex() {
-#ifdef DEBUG
-  level_ = 0;
-#endif
-}
-
-Mutex::~Mutex() { DCHECK_EQ(0, level_); }
-
-void Mutex::Lock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
-  native_handle_.lock();
-  AssertUnheldAndMark();
-}
-
-void Mutex::Unlock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
-  AssertHeldAndUnmark();
-  native_handle_.unlock();
-}
-
-bool Mutex::TryLock() ABSL_NO_THREAD_SAFETY_ANALYSIS {
-  if (!native_handle_.try_lock()) return false;
-  AssertUnheldAndMark();
-  return true;
 }
 
 }  // namespace base

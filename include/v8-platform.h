@@ -20,6 +20,9 @@
 namespace v8 {
 
 class Isolate;
+class ThreadingBackend;
+class MutexImpl;
+class ConditionVariableImpl;
 
 // Valid priorities supported by the task scheduling infrastructure.
 enum class TaskPriority : uint8_t {
@@ -1542,6 +1545,12 @@ class Platform {
     return CurrentClockTimeMillis();
   }
 
+  /**
+   * Returns an instance of a v8::ThreadingBackend, or nullptr to use the
+   * default.
+   */
+  virtual ThreadingBackend* GetThreadingBackend() { return nullptr; }
+
   typedef void (*StackTracePrinter)();
 
   /**
@@ -1600,6 +1609,73 @@ class Platform {
   virtual void PostDelayedTaskOnWorkerThreadImpl(
       TaskPriority priority, std::unique_ptr<Task> task,
       double delay_in_seconds, const SourceLocation& location) = 0;
+};
+
+/**
+ * V8 threading backend.
+ *
+ * Can be implemented by an embedder for using a custom threading
+ * implementation.
+ */
+class ThreadingBackend {
+ public:
+  virtual ~ThreadingBackend() = default;
+
+  /**
+   * Creates a plain mutex.
+   */
+  virtual MutexImpl* CreatePlainMutex() = 0;
+
+  /**
+   * Creates a recursive mutex.
+   */
+  virtual MutexImpl* CreateRecursiveMutex() = 0;
+
+  /**
+   * Creates a condition variable.
+   */
+  virtual ConditionVariableImpl* CreateConditionVariable() = 0;
+};
+
+/**
+ * V8 mutex implementation.
+ *
+ * Can be implemented by an embedder for custom locking.
+ */
+class MutexImpl {
+ public:
+  virtual ~MutexImpl() = default;
+
+  /** Locks the given mutex. */
+  virtual void Lock() = 0;
+
+  /** Unlocks the given mutex. */
+  virtual void Unlock() = 0;
+
+  /** Tries to lock the given mutex. Returns true on success. */
+  virtual bool TryLock() = 0;
+};
+
+/**
+ * V8 condition variable implementation.
+ *
+ * Can be implemented by an embedder for custom locking.
+ */
+class ConditionVariableImpl {
+ public:
+  virtual ~ConditionVariableImpl() = default;
+
+  /** Unblocks one of the waiting threads. */
+  virtual void NotifyOne() = 0;
+
+  /** Unblocks all waiting threads. */
+  virtual void NotifyAll() = 0;
+
+  /** Waits until notified. */
+  virtual void Wait(MutexImpl* mutex) = 0;
+
+  /** Waits until notified or timeout reached. */
+  virtual bool WaitFor(MutexImpl* mutex, int64_t delta_in_microseconds) = 0;
 };
 
 }  // namespace v8
