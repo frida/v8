@@ -4099,6 +4099,8 @@ v8_component("v8_libbase") {
     "src/base/overflowing-math.h",
     "src/base/page-allocator.cc",
     "src/base/page-allocator.h",
+    "src/base/platform/threading-backend.cc",
+    "src/base/platform/threading-backend.h",
     "src/base/platform/condition-variable.cc",
     "src/base/platform/condition-variable.h",
     "src/base/platform/elapsed-timer.h",

@@ -65,7 +65,46 @@ class V8_BASE_EXPORT ConditionVariable final {
   // was notified prior to the timeout.
   bool WaitFor(Mutex* mutex, const TimeDelta& rel_time) V8_WARN_UNUSED_RESULT;
 
-  // The implementation-defined native handle type.
+ private:
+  std::unique_ptr<ConditionVariableImpl> impl_;
+
+  DISALLOW_COPY_AND_ASSIGN(ConditionVariable);
+};
+
+
+// POD ConditionVariable initialized lazily (i.e. the first time Pointer() is
+// called).
+// Usage:
+//   static LazyConditionVariable my_condvar =
+//       LAZY_CONDITION_VARIABLE_INITIALIZER;
+//
+//   void my_function() {
+//     MutexGuard lock_guard(&my_mutex);
+//     my_condvar.Pointer()->Wait(&my_mutex);
+//   }
+using LazyConditionVariable =
+    LazyStaticInstance<ConditionVariable,
+                       DefaultConstructTrait<ConditionVariable>,
+                       ThreadSafeInitOnceTrait>::type;
+
+#define LAZY_CONDITION_VARIABLE_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
+
+
+// -----------------------------------------------------------------------------
+// Default implementation
+
+class V8_BASE_EXPORT NativeConditionVariable final
+  : public ConditionVariableImpl {
+ public:
+  NativeConditionVariable();
+  ~NativeConditionVariable();
+
+  void NotifyOne();
+  void NotifyAll();
+  void Wait(MutexImpl* mutex);
+  bool WaitFor(MutexImpl* mutex, int64_t delta_in_microseconds)
+    V8_WARN_UNUSED_RESULT;
+
 #if V8_OS_POSIX
   using NativeHandle = pthread_cond_t;
 #elif V8_OS_WIN
@@ -75,7 +114,7 @@ class V8_BASE_EXPORT ConditionVariable final {
     NativeHandle() : waitlist_(NULL), freelist_(NULL) {}
     ~NativeHandle();
 
-    Event* Pre() WARN_UNUSED_RESULT;
+    Event* Pre() V8_WARN_UNUSED_RESULT;
     void Post(Event* event, bool result);
 
     Mutex* mutex() { return &mutex_; }
@@ -101,24 +140,9 @@ class V8_BASE_EXPORT ConditionVariable final {
 
  private:
   NativeHandle native_handle_;
+
+  DISALLOW_COPY_AND_ASSIGN(NativeConditionVariable);
 };
-
-// POD ConditionVariable initialized lazily (i.e. the first time Pointer() is
-// called).
-// Usage:
-//   static LazyConditionVariable my_condvar =
-//       LAZY_CONDITION_VARIABLE_INITIALIZER;
-//
-//   void my_function() {
-//     MutexGuard lock_guard(&my_mutex);
-//     my_condvar.Pointer()->Wait(&my_mutex);
-//   }
-using LazyConditionVariable =
-    LazyStaticInstance<ConditionVariable,
-                       DefaultConstructTrait<ConditionVariable>,
-                       ThreadSafeInitOnceTrait>::type;
-
-#define LAZY_CONDITION_VARIABLE_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
 
 }  // namespace base
 }  // namespace v8
