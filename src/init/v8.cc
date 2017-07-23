@@ -10,6 +10,7 @@
 #include "src/base/atomicops.h"
 #include "src/base/once.h"
 #include "src/base/platform/platform.h"
+#include "src/base/platform/threading-backend.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/debug/debug.h"
@@ -131,6 +132,7 @@ void V8::InitializePlatform(v8::Platform* platform) {
   CHECK(!platform_);
   CHECK(platform);
   platform_ = platform;
+  v8::base::SetThreadingBackend(platform->GetThreadingBackend());
   v8::base::SetPrintStackTrace(platform_->GetStackTracePrinter());
   v8::tracing::TracingCategoryObserver::SetUp();
 }
