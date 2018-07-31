@@ -18,16 +18,31 @@ namespace {
 template <PerThreadAssertType kType>
 using PerThreadDataBit = base::BitField<bool, kType, 1>;
 
-// Thread-local storage for assert data. Default all asserts to "allow".
-thread_local uint32_t current_per_thread_assert_data(~0);
+base::LazyInstance<base::ThreadLocalInt>::type current_assert_data =
+    LAZY_INSTANCE_INITIALIZER;
+
+uint32_t GetPerThreadAssertData() {
+  auto val = current_assert_data.Pointer();
+  uint32_t data = val->Get();
+  if (data == 0) {
+    // Default all asserts to "allow".
+    data = ~0;
+    val->Set(data);
+  }
+  return data;
+}
+
+void SetPerThreadAssertData(uint32_t data) {
+  current_assert_data.Pointer()->Set(data);
+}
 
 }  // namespace
 
 template <PerThreadAssertType kType, bool kAllow>
-PerThreadAssertScope<kType, kAllow>::PerThreadAssertScope()
-    : old_data_(current_per_thread_assert_data) {
-  current_per_thread_assert_data =
-      PerThreadDataBit<kType>::update(old_data_.value(), kAllow);
+PerThreadAssertScope<kType, kAllow>::PerThreadAssertScope() {
+  old_data_ = GetPerThreadAssertData();
+  SetPerThreadAssertData(
+      PerThreadDataBit<kType>::update(old_data_.value(), kAllow));
 }
 
 template <PerThreadAssertType kType, bool kAllow>
@@ -38,14 +53,14 @@ PerThreadAssertScope<kType, kAllow>::~PerThreadAssertScope() {
 
 template <PerThreadAssertType kType, bool kAllow>
 void PerThreadAssertScope<kType, kAllow>::Release() {
-  current_per_thread_assert_data = old_data_.value();
+  SetPerThreadAssertData(old_data_.value());
   old_data_.reset();
 }
 
 // static
 template <PerThreadAssertType kType, bool kAllow>
 bool PerThreadAssertScope<kType, kAllow>::IsAllowed() {
-  return PerThreadDataBit<kType>::decode(current_per_thread_assert_data);
+  return PerThreadDataBit<kType>::decode(GetPerThreadAssertData());
 }
 
 #define PER_ISOLATE_ASSERT_SCOPE_DEFINITION(ScopeType, field, enable)      \

@@ -18,23 +18,27 @@ namespace v8 {
 namespace internal {
 
 namespace {
-thread_local MarkingBarrier* current_marking_barrier = nullptr;
+base::LazyInstance<base::ThreadLocalPointer<MarkingBarrier>>::type
+    current_marking_barrier = LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
 MarkingBarrier* WriteBarrier::CurrentMarkingBarrier(Heap* heap) {
-  return current_marking_barrier
-             ? current_marking_barrier
+  auto current_ptr = current_marking_barrier.Pointer()->Get();
+  return current_ptr
+             ? current_ptr
              : heap->main_thread_local_heap()->marking_barrier();
 }
 
 void WriteBarrier::SetForThread(MarkingBarrier* marking_barrier) {
-  DCHECK_NULL(current_marking_barrier);
-  current_marking_barrier = marking_barrier;
+  auto current = current_marking_barrier.Pointer();
+  DCHECK_NULL(current->Get());
+  current->Set(marking_barrier);
 }
 
 void WriteBarrier::ClearForThread(MarkingBarrier* marking_barrier) {
-  DCHECK_EQ(current_marking_barrier, marking_barrier);
-  current_marking_barrier = nullptr;
+  auto current = current_marking_barrier.Pointer();
+  DCHECK_EQ(current->Get(), marking_barrier);
+  current->Set(nullptr);
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, HeapObject host, HeapObjectSlot slot,

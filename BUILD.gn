@@ -5430,6 +5430,7 @@ v8_component("v8_libbase") {
     "src/base/ieee754.h",
     "src/base/immediate-crash.h",
     "src/base/iterator.h",
+    "src/base/lazy-instance.cc",
     "src/base/lazy-instance.h",
     "src/base/logging.cc",
     "src/base/logging.h",
