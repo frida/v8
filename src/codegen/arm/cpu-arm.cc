@@ -7,6 +7,8 @@
 #ifdef __QNXNTO__
 #include <sys/mman.h>  // for cache flushing.
 #undef MAP_TYPE        // NOLINT
+#elif defined(__APPLE__)
+#include <libkern/OSCacheControl.h>
 #elif V8_OS_FREEBSD
 #include <machine/sysarch.h>  // for cache flushing
 #include <sys/types.h>
@@ -28,6 +30,8 @@ V8_NOINLINE void CpuFeatures::FlushICache(void* start, size_t size) {
 #if !defined(USE_SIMULATOR)
 #if V8_OS_QNX
   msync(start, size, MS_SYNC | MS_INVALIDATE_ICACHE);
+#elif defined(__APPLE__)
+  sys_icache_invalidate(start, size);
 #elif V8_OS_FREEBSD
   struct arm_sync_icache_args args = {
       .addr = reinterpret_cast<uintptr_t>(start), .len = size};
