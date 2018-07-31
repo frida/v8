@@ -165,9 +165,19 @@ void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
                PageType page_type) {
   int prot = GetProtectionFromMemoryPermission(access);
   int flags = GetFlagsForMemoryPermission(access, page_type);
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
+  // XXX: This logic is simple and leaky as it is only used for mksnapshot.
+  size_t alignment = 16384;
+  void* result = mmap(hint, size + alignment, prot, flags, kMmapFd,
+                      kMmapFdOffset);
+  if (result == MAP_FAILED) return nullptr;
+  return reinterpret_cast<void*>(
+      RoundUp(reinterpret_cast<uintptr_t>(result), alignment));
+#else
   void* result = mmap(hint, size, prot, flags, kMmapFd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
   return result;
+#endif
 }
 
 #endif  // !V8_OS_FUCHSIA
@@ -224,7 +234,9 @@ void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
 }
 
 int OS::ActivationFrameAlignment() {
-#if V8_TARGET_ARCH_ARM
+#if defined(V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM
+  return 4;
+#elif V8_TARGET_ARCH_ARM
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
@@ -244,7 +256,8 @@ int OS::ActivationFrameAlignment() {
 
 // static
 size_t OS::AllocatePageSize() {
-#if defined(V8_TARGET_OS_MACOSX) && V8_HOST_ARCH_ARM64
+#if (defined(V8_TARGET_OS_MACOSX) && V8_HOST_ARCH_ARM64) || \
+    ((V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && defined(__x86_64__))
   return kAppleArmPageSize;
 #else
   static size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));

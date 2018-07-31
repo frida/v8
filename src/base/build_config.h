@@ -50,6 +50,12 @@
 #error "Host architecture was not detected as supported by v8"
 #endif
 
+#ifdef __clang__
+#if __has_feature(ptrauth_calls)
+#define V8_HOST_PTRAUTH 1
+#endif
+#endif
+
 #if defined(__ARM_ARCH_7A__) || \
     defined(__ARM_ARCH_7R__) || \
     defined(__ARM_ARCH_7__)
