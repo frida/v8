@@ -272,7 +272,8 @@ bool RecursiveMutex::TryLock() {
 
 #elif V8_OS_WIN
 
-Mutex::Mutex() : native_handle_(SRWLOCK_INIT) {
+Mutex::Mutex() {
+  InitializeCriticalSection(V8ToWindowsType(&native_handle_));
 #ifdef DEBUG
   level_ = 0;
 #endif
@@ -281,23 +282,24 @@ Mutex::Mutex() : native_handle_(SRWLOCK_INIT) {
 
 Mutex::~Mutex() {
   DCHECK_EQ(0, level_);
+  DeleteCriticalSection(V8ToWindowsType(&native_handle_));
 }
 
 
 void Mutex::Lock() {
-  AcquireSRWLockExclusive(V8ToWindowsType(&native_handle_));
+  EnterCriticalSection(V8ToWindowsType(&native_handle_));
   AssertUnheldAndMark();
 }
 
 
 void Mutex::Unlock() {
   AssertHeldAndUnmark();
-  ReleaseSRWLockExclusive(V8ToWindowsType(&native_handle_));
+  LeaveCriticalSection(V8ToWindowsType(&native_handle_));
 }
 
 
 bool Mutex::TryLock() {
-  if (!TryAcquireSRWLockExclusive(V8ToWindowsType(&native_handle_))) {
+  if (!TryEnterCriticalSection(V8ToWindowsType(&native_handle_))) {
     return false;
   }
   AssertUnheldAndMark();
