@@ -63,7 +63,6 @@ typedef unsigned __int64 ULONG_PTR, *PULONG_PTR;
 typedef __w64 unsigned long ULONG_PTR, *PULONG_PTR;  // NOLINT(runtime/int)
 #endif
 
-typedef struct _RTL_SRWLOCK SRWLOCK;
 typedef struct _RTL_CONDITION_VARIABLE CONDITION_VARIABLE;
 typedef struct _RTL_CRITICAL_SECTION CRITICAL_SECTION;
 typedef struct _RTL_CRITICAL_SECTION_DEBUG* PRTL_CRITICAL_SECTION_DEBUG;
@@ -74,10 +73,6 @@ typedef struct _RTL_CRITICAL_SECTION_DEBUG* PRTL_CRITICAL_SECTION_DEBUG;
 // types in a few places. The sizes must match the Windows types so we verify
 // that with static asserts in platform-win32.cc.
 // ChromeToWindowsType functions are provided for pointer conversions.
-
-struct V8_SRWLOCK {
-  PVOID Ptr;
-};
 
 struct V8_CONDITION_VARIABLE {
   PVOID Ptr;
@@ -91,14 +86,6 @@ struct V8_CRITICAL_SECTION {
   HANDLE LockSemaphore;
   ULONG_PTR SpinCount;
 };
-
-inline SRWLOCK* V8ToWindowsType(V8_SRWLOCK* p) {
-  return reinterpret_cast<SRWLOCK*>(p);
-}
-
-inline const SRWLOCK* V8ToWindowsType(const V8_SRWLOCK* p) {
-  return reinterpret_cast<const SRWLOCK*>(p);
-}
 
 inline CONDITION_VARIABLE* V8ToWindowsType(V8_CONDITION_VARIABLE* p) {
   return reinterpret_cast<CONDITION_VARIABLE*>(p);

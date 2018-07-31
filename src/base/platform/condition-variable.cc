@@ -140,9 +140,8 @@ void ConditionVariable::NotifyAll() {
 
 void ConditionVariable::Wait(Mutex* mutex) {
   mutex->AssertHeldAndUnmark();
-  SleepConditionVariableSRW(V8ToWindowsType(&native_handle_),
-                            V8ToWindowsType(&mutex->native_handle()), INFINITE,
-                            0);
+  SleepConditionVariableCS(V8ToWindowsType(&native_handle_),
+                           V8ToWindowsType(&mutex->native_handle()), INFINITE);
   mutex->AssertUnheldAndMark();
 }
 
@@ -150,9 +149,9 @@ void ConditionVariable::Wait(Mutex* mutex) {
 bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
   int64_t msec = rel_time.InMilliseconds();
   mutex->AssertHeldAndUnmark();
-  BOOL result = SleepConditionVariableSRW(
+  BOOL result = SleepConditionVariableCS(
       V8ToWindowsType(&native_handle_),
-      V8ToWindowsType(&mutex->native_handle()), static_cast<DWORD>(msec), 0);
+      V8ToWindowsType(&mutex->native_handle()), static_cast<DWORD>(msec));
 #ifdef DEBUG
   if (!result) {
     // On failure, we only expect the CV to timeout. Any other error value means
