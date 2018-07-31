@@ -8,7 +8,9 @@ namespace v8 {
 namespace internal {
 
 #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
-thread_local int RwxMemoryWriteScope::code_space_write_nesting_level_ = 0;
+base::LazyInstance<base::ThreadLocalInt>::type
+    RwxMemoryWriteScope::code_space_write_nesting_level_ =
+    LAZY_INSTANCE_INITIALIZER;
 #endif  // V8_HAS_PTHREAD_JIT_WRITE_PROTECT || V8_HAS_PKU_JIT_WRITE_PROTECT
 
 #if V8_HAS_PKU_JIT_WRITE_PROTECT
