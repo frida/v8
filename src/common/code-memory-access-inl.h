@@ -39,16 +39,20 @@ bool RwxMemoryWriteScope::IsSupported() { return true; }
 
 // static
 void RwxMemoryWriteScope::SetWritable() {
-  if (code_space_write_nesting_level_ == 0) {
+  auto level_val = code_space_write_nesting_level_.Pointer();
+  auto level = level_val->Get();
+  if (level == 0) {
     pthread_jit_write_protect_np(0);
   }
-  code_space_write_nesting_level_++;
+  level_val->Set(level + 1);
 }
 
 // static
 void RwxMemoryWriteScope::SetExecutable() {
-  code_space_write_nesting_level_--;
-  if (code_space_write_nesting_level_ == 0) {
+  auto level_val = code_space_write_nesting_level_.Pointer();
+  auto level = level_val->Get() - 1;
+  level_val->Set(level);
+  if (level == 0) {
     pthread_jit_write_protect_np(1);
   }
 }
@@ -66,22 +70,26 @@ bool RwxMemoryWriteScope::IsSupported() {
 void RwxMemoryWriteScope::SetWritable() {
   DCHECK(pkey_initialized);
   if (!IsSupported()) return;
-  if (code_space_write_nesting_level_ == 0) {
+  auto level_val = code_space_write_nesting_level_.Pointer();
+  auto level = level_val->Get();
+  if (level == 0) {
     DCHECK_NE(
         base::MemoryProtectionKey::GetKeyPermission(memory_protection_key_),
         base::MemoryProtectionKey::kNoRestrictions);
     base::MemoryProtectionKey::SetPermissionsForKey(
         memory_protection_key_, base::MemoryProtectionKey::kNoRestrictions);
   }
-  code_space_write_nesting_level_++;
+  level_val->Set(level + 1);
 }
 
 // static
 void RwxMemoryWriteScope::SetExecutable() {
   DCHECK(pkey_initialized);
   if (!IsSupported()) return;
-  code_space_write_nesting_level_--;
-  if (code_space_write_nesting_level_ == 0) {
+  auto level_val = code_space_write_nesting_level_.Pointer();
+  auto level = level_val->Get() - 1;
+  level_val->Set(level);
+  if (level == 0) {
     DCHECK_EQ(
         base::MemoryProtectionKey::GetKeyPermission(memory_protection_key_),
         base::MemoryProtectionKey::kNoRestrictions);
