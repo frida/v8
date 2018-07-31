@@ -43,7 +43,7 @@
 #if V8_LIBC_MSVCRT
 #include <intrin.h>  // _xgetbv()
 #endif
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 #include <sys/sysctl.h>
 #endif
 
@@ -98,7 +98,7 @@ V8_INLINE uint64_t _xgetbv(unsigned int xcr) {
 #endif  // !V8_LIBC_MSVCRT
 
 bool OSHasAVXSupport() {
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
   // Mac OS X up to 10.9 has a bug where AVX transitions were indeed being
   // caused by ISRs, so we detect that here and disable AVX in that case.
   char buffer[128];
@@ -114,7 +114,7 @@ bool OSHasAVXSupport() {
   *period_pos = '\0';
   long kernel_version_major = strtol(buffer, nullptr, 10);  // NOLINT
   if (kernel_version_major <= 13) return false;
-#endif  // V8_OS_MACOSX
+#endif  // V8_OS_MACOSX || V8_OS_IOS
   // Check whether OS claims to support AVX.
   uint64_t feature_mask = _xgetbv(_XCR_XFEATURE_ENABLED_MASK);
   return (feature_mask & 0x6) == 0x6;

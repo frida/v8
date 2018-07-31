@@ -36,7 +36,7 @@ ConditionVariable::ConditionVariable() {
 
 
 ConditionVariable::~ConditionVariable() {
-#if defined(V8_OS_MACOSX)
+#if defined(V8_OS_MACOSX) || defined(V8_OS_IOS)
   // This hack is necessary to avoid a fatal pthreads subsystem bug in the
   // Darwin kernel. http://crbug.com/517681.
   {
@@ -82,8 +82,8 @@ bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
   struct timespec ts;
   int result;
   mutex->AssertHeldAndUnmark();
-#if V8_OS_MACOSX
-  // Mac OS X provides pthread_cond_timedwait_relative_np(), which does
+#if V8_OS_MACOSX || V8_OS_IOS
+  // Apple OSes provide pthread_cond_timedwait_relative_np(), which does
   // not depend on the real time clock, which is what you really WANT here!
   ts = rel_time.ToTimespec();
   DCHECK_GE(ts.tv_sec, 0);
@@ -107,7 +107,7 @@ bool ConditionVariable::WaitFor(Mutex* mutex, const TimeDelta& rel_time) {
   ts = end_time.ToTimespec();
   result = pthread_cond_timedwait(
       &native_handle_, &mutex->native_handle(), &ts);
-#endif  // V8_OS_MACOSX
+#endif  // V8_OS_MACOSX || V8_OS_IOS
   mutex->AssertUnheldAndMark();
   if (result == ETIMEDOUT) {
     return false;

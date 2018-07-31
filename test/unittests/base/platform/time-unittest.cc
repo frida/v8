@@ -4,7 +4,7 @@
 
 #include "src/base/platform/time.h"
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 #include <mach/mach_time.h>
 #endif
 #if V8_OS_POSIX
@@ -200,7 +200,7 @@ TEST(TimeDelta, FromAndIn) {
 }
 
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 TEST(TimeDelta, MachTimespec) {
   TimeDelta null = TimeDelta();
   EXPECT_EQ(null, TimeDelta::FromMachTimespec(null.ToMachTimespec()));

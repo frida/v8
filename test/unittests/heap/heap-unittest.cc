@@ -98,7 +98,7 @@ TEST(Heap, HeapSizeFromPhysicalMemory) {
 
 TEST_F(HeapTest, ASLR) {
 #if V8_TARGET_ARCH_X64
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
   Heap* heap = i_isolate()->heap();
   std::set<void*> hints;
   for (int i = 0; i < 1000; i++) {
@@ -119,7 +119,7 @@ TEST_F(HeapTest, ASLR) {
       EXPECT_LE(diff, kRegionMask);
     }
   }
-#endif  // V8_OS_MACOSX
+#endif  // V8_OS_MACOSX || V8_OS_IOS
 #endif  // V8_TARGET_ARCH_X64
 }
 

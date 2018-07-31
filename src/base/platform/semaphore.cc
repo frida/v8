@@ -4,7 +4,7 @@
 
 #include "src/base/platform/semaphore.h"
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 #include <dispatch/dispatch.h>
 #endif
 
@@ -17,7 +17,7 @@
 namespace v8 {
 namespace base {
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 
 Semaphore::Semaphore(int count) {
   native_handle_ = dispatch_semaphore_create(count);
@@ -172,7 +172,7 @@ bool Semaphore::WaitFor(const TimeDelta& rel_time) {
   return native_handle_.TakeWait(microseconds);
 }
 
-#endif  // V8_OS_MACOSX
+#endif  // V8_OS_MACOSX || V8_OS_IOS
 
 }  // namespace base
 }  // namespace v8

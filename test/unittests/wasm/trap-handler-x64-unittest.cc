@@ -7,7 +7,7 @@
 #if V8_OS_LINUX || V8_OS_FREEBSD
 #include <signal.h>
 #include <ucontext.h>
-#elif V8_OS_MACOSX
+#elif V8_OS_MACOSX || V8_OS_IOS
 #include <signal.h>
 #include <sys/ucontext.h>
 #elif V8_OS_WIN
@@ -41,7 +41,7 @@ namespace wasm {
 namespace {
 constexpr Register scratch = r10;
 bool g_test_handler_executed = false;
-#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_FREEBSD
+#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_IOS || V8_OS_FREEBSD
 struct sigaction g_old_segv_action;
 struct sigaction g_old_fpe_action;
 struct sigaction g_old_bus_action;  // We get SIGBUS on Mac sometimes.
@@ -97,7 +97,7 @@ class TrapHandlerTest : public TestWithIsolate,
   }
 
   void InstallFallbackHandler() {
-#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_FREEBSD
+#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_IOS || V8_OS_FREEBSD
     // Set up a signal handler to recover from the expected crash.
     struct sigaction action;
     action.sa_sigaction = SignalHandler;
@@ -125,7 +125,7 @@ class TrapHandlerTest : public TestWithIsolate,
     // Clean up the trap handler
     trap_handler::RemoveTrapHandler();
     if (!g_test_handler_executed) {
-#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_FREEBSD
+#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_IOS || V8_OS_FREEBSD
       // The test handler cleans up the signal handler setup in the test. If the
       // test handler was not called, we have to do the cleanup ourselves.
       CHECK_EQ(0, sigaction(SIGSEGV, &g_old_segv_action, nullptr));
@@ -156,7 +156,7 @@ class TrapHandlerTest : public TestWithIsolate,
         reinterpret_cast<Address>(desc.buffer + recovery_offset);
   }
 
-#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_FREEBSD
+#if V8_OS_LINUX || V8_OS_MACOSX || V8_OS_IOS || V8_OS_FREEBSD
   static void SignalHandler(int signal, siginfo_t* info, void* context) {
     if (g_use_as_first_chance_handler) {
       if (v8::TryHandleWebAssemblyTrapPosix(signal, info, context)) {
@@ -175,7 +175,7 @@ class TrapHandlerTest : public TestWithIsolate,
     ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
 #if V8_OS_LINUX
     uc->uc_mcontext.gregs[REG_RIP] = g_recovery_address;
-#elif V8_OS_MACOSX
+#elif V8_OS_MACOSX || V8_OS_IOS
     uc->uc_mcontext->__ss.__rip = g_recovery_address;
 #elif V8_OS_FREEBSD
     uc->uc_mcontext.mc_rip = g_recovery_address;

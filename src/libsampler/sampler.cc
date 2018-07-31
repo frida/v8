@@ -16,7 +16,7 @@
 #include <sys/syscall.h>  // NOLINT
 #endif
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 #include <mach/mach.h>
 // OpenBSD doesn't have <ucontext.h>. ucontext_t lives in <signal.h>
 // and is a typedef for struct sigcontext. There is no uc_mcontext.
@@ -447,14 +447,33 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
 
 #if V8_TARGET_ARCH_ARM64
   // Building for the iOS device.
+#ifdef __DARWIN_OPAQUE_ARM_THREAD_STATE64
+  state->pc = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
+  state->sp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
+  state->fp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
+#else
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__pc);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__sp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__fp);
+#endif
+#elif V8_TARGET_ARCH_ARM
+  // Building for the iOS device.
+  state->pc = reinterpret_cast<void *>(mcontext->__ss.__pc);
+  state->sp = reinterpret_cast<void *>(mcontext->__ss.__sp);
+  state->fp = reinterpret_cast<void *>(mcontext->__ss.__r[7]);
 #elif V8_TARGET_ARCH_X64
   // Building for the iOS simulator.
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__rip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__rsp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__rbp);
+#elif V8_TARGET_ARCH_IA32
+  // Building for the iOS simulator.
+  state->pc = reinterpret_cast<void*>(mcontext->__ss.__eip);
+  state->sp = reinterpret_cast<void*>(mcontext->__ss.__esp);
+  state->fp = reinterpret_cast<void*>(mcontext->__ss.__ebp);
 #else
 #error Unexpected iOS target architecture.
 #endif  // V8_TARGET_ARCH_ARM64

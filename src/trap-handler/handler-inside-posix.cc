@@ -29,7 +29,7 @@
 
 #if defined(V8_OS_LINUX) || defined(V8_OS_FREEBSD)
 #include <ucontext.h>
-#elif V8_OS_MACOSX
+#elif V8_OS_MACOSX || V8_OS_IOS
 #include <sys/ucontext.h>
 #endif
 
@@ -110,7 +110,7 @@ bool TryHandleSignal(int signum, siginfo_t* info, void* context) {
     ucontext_t* uc = reinterpret_cast<ucontext_t*>(context);
 #if V8_OS_LINUX
     auto* context_rip = &uc->uc_mcontext.gregs[REG_RIP];
-#elif V8_OS_MACOSX
+#elif V8_OS_MACOSX || V8_OS_IOS
     auto* context_rip = &uc->uc_mcontext->__ss.__rip;
 #elif V8_OS_FREEBSD
     auto* context_rip = &uc->uc_mcontext.mc_rip;

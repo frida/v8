@@ -157,7 +157,8 @@ Atomic64 Acquire_Load(volatile const Atomic64* ptr);
 
 // On some platforms we need additional declarations to make
 // AtomicWord compatible with our other Atomic* types.
-#if defined(V8_OS_MACOSX) || defined(V8_OS_OPENBSD) || defined(V8_OS_AIX)
+#if defined(V8_OS_MACOSX) || defined(V8_OS_IOS) || defined(V8_OS_OPENBSD) || \
+    defined(V8_OS_AIX)
 #include "src/base/atomicops_internals_atomicword_compat.h"
 #endif
 

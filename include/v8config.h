@@ -80,11 +80,13 @@
 # define V8_OS_POSIX 1
 #elif defined(__APPLE__)
 # define V8_OS_BSD 1
-# define V8_OS_MACOSX 1
 # define V8_OS_POSIX 1
-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+# if TARGET_OS_OSX
+#  define V8_OS_MACOSX 1
+# endif  // TARGET_OS_OSX
+# if TARGET_OS_IPHONE
 #  define V8_OS_IOS 1
-# endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+# endif  // TARGET_OS_IPHONE
 #elif defined(__CYGWIN__)
 # define V8_OS_CYGWIN 1
 # define V8_OS_POSIX 1

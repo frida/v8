@@ -716,6 +716,9 @@ config("toolchain") {
   }
   if (v8_current_cpu == "arm64") {
     defines += [ "V8_TARGET_ARCH_ARM64" ]
+    if ((target_os == "mac" || target_os == "ios") && arm_version >= 83) {
+      defines += [ "V8_TARGET_PTRAUTH" ]
+    }
     if (v8_control_flow_integrity) {
       # TODO(v8:10026): Enable this in src/build.
       if (current_cpu == "arm64") {
@@ -4230,6 +4233,10 @@ v8_component("v8_libbase") {
     ]
 
     data_deps += [ "//build/win:runtime_libs" ]
+  }
+
+  if (target_os == "ios") {
+    defines += [ "V8_TARGET_OS_IOS" ]
   }
 
   if (v8_current_cpu == "mips" || v8_current_cpu == "mips64") {

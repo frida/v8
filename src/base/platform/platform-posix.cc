@@ -46,7 +46,7 @@
 #include <atomic>
 #endif
 
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 #include <dlfcn.h>
 #include <mach/mach.h>
 #endif
@@ -65,7 +65,7 @@
 #include <sys/syscall.h>
 #endif
 
-#if V8_OS_FREEBSD || V8_OS_MACOSX || V8_OS_OPENBSD || V8_OS_SOLARIS
+#if V8_OS_FREEBSD || V8_OS_MACOSX || V8_OS_IOS || V8_OS_OPENBSD || V8_OS_SOLARIS
 #define MAP_ANONYMOUS MAP_ANON
 #endif
 
@@ -102,16 +102,17 @@ DEFINE_LAZY_LEAKY_OBJECT_GETTER(RandomNumberGenerator,
 static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
 
 #if !V8_OS_FUCHSIA
-#if V8_OS_MACOSX
+#if V8_OS_MACOSX || V8_OS_IOS
 // kMmapFd is used to pass vm_alloc flags to tag the region with the user
 // defined tag 255 This helps identify V8-allocated regions in memory analysis
 // tools like vmmap(1).
 const int kMmapFd = VM_MAKE_TAG(255);
-#else   // !V8_OS_MACOSX
+#else   // !(V8_OS_MACOSX || V8_OS_IOS)
 const int kMmapFd = -1;
-#endif  // !V8_OS_MACOSX
+#endif  // !(V8_OS_MACOSX || V8_OS_IOS)
 
-#if defined(V8_TARGET_OS_MACOSX) && V8_HOST_ARCH_ARM64
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && \
+    defined(__x86_64__)
 // During snapshot generation in cross builds, sysconf() runs on the Intel
 // host and returns host page size, while the snapshot needs to use the
 // target page size.
@@ -165,9 +166,20 @@ void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
                PageType page_type) {
   int prot = GetProtectionFromMemoryPermission(access);
   int flags = GetFlagsForMemoryPermission(access, page_type);
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && \
+    defined(__x86_64__)
+  // XXX: This logic is simple and leaky as it is only used for mksnapshot.
+  size_t alignment = 16384;
+  void* result = mmap(hint, size + alignment, prot, flags, kMmapFd,
+                      kMmapFdOffset);
+  if (result == MAP_FAILED) return nullptr;
+  return reinterpret_cast<void*>(
+      RoundUp(reinterpret_cast<uintptr_t>(result), alignment));
+#else
   void* result = mmap(hint, size, prot, flags, kMmapFd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
   return result;
+#endif
 }
 
 #endif  // !V8_OS_FUCHSIA
@@ -224,7 +236,9 @@ void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
 }
 
 int OS::ActivationFrameAlignment() {
-#if V8_TARGET_ARCH_ARM
+#if defined(V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM
+  return 4;
+#elif V8_TARGET_ARCH_ARM
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
@@ -244,7 +258,8 @@ int OS::ActivationFrameAlignment() {
 
 // static
 size_t OS::AllocatePageSize() {
-#if defined(V8_TARGET_OS_MACOSX) && V8_HOST_ARCH_ARM64
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && \
+    defined(__x86_64__)
   return kAppleArmPageSize;
 #else
   static size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
@@ -420,13 +435,13 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
     USE(DiscardSystemPages(address, size));
   }
 
-// For accounting purposes, we want to call MADV_FREE_REUSE on macOS after
+// For accounting purposes, we want to call MADV_FREE_REUSE on Apple OSes after
 // changing permissions away from OS::MemoryPermission::kNoAccess. Since this
 // state is not kept at this layer, we always call this if access != kNoAccess.
 // The cost is a syscall that effectively no-ops.
 // TODO(erikchen): Fix this to only call MADV_FREE_REUSE when necessary.
 // https://crbug.com/823915
-#if defined(V8_OS_MACOSX)
+#if defined(V8_OS_MACOSX) || defined(V8_OS_IOS)
   if (access != OS::MemoryPermission::kNoAccess)
     madvise(address, size, MADV_FREE_REUSE);
 #endif
@@ -437,10 +452,10 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
 bool OS::DiscardSystemPages(void* address, size_t size) {
   DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
   DCHECK_EQ(0, size % CommitPageSize());
-#if defined(V8_OS_MACOSX)
-  // On OSX, MADV_FREE_REUSABLE has comparable behavior to MADV_FREE, but also
-  // marks the pages with the reusable bit, which allows both Activity Monitor
-  // and memory-infra to correctly track the pages.
+#if defined(V8_OS_MACOSX) || defined(V8_OS_IOS)
+  // On Apple OSes, MADV_FREE_REUSABLE has comparable behavior to MADV_FREE, but
+  // also marks the pages with the reusable bit, which allows both Activity
+  // Monitor and memory-infra to correctly track the pages.
   int ret = madvise(address, size, MADV_FREE_REUSABLE);
 #elif defined(_AIX) || defined(V8_OS_SOLARIS)
   int ret = madvise(reinterpret_cast<caddr_t>(address), size, MADV_FREE);
@@ -464,7 +479,7 @@ bool OS::DiscardSystemPages(void* address, size_t size) {
 
 // static
 bool OS::HasLazyCommits() {
-#if V8_OS_AIX || V8_OS_LINUX || V8_OS_MACOSX
+#if V8_OS_AIX || V8_OS_LINUX || V8_OS_MACOSX || V8_OS_IOS
   return true;
 #else
   // TODO(bbudge) Return true for all POSIX platforms.
@@ -589,7 +604,7 @@ int OS::GetCurrentProcessId() {
 
 
 int OS::GetCurrentThreadId() {
-#if V8_OS_MACOSX || (V8_OS_ANDROID && defined(__APPLE__))
+#if V8_OS_MACOSX || V8_OS_IOS || (V8_OS_ANDROID && defined(__APPLE__))
   return static_cast<int>(pthread_mach_thread_np(pthread_self()));
 #elif V8_OS_LINUX
   return static_cast<int>(syscall(__NR_gettid));
@@ -803,18 +818,11 @@ static void SetThreadName(const char* name) {
 #elif V8_OS_NETBSD
   STATIC_ASSERT(Thread::kMaxThreadNameLength <= PTHREAD_MAX_NAMELEN_NP);
   pthread_setname_np(pthread_self(), "%s", name);
-#elif V8_OS_MACOSX
-  // pthread_setname_np is only available in 10.6 or later, so test
-  // for it at runtime.
-  int (*dynamic_pthread_setname_np)(const char*);
-  *reinterpret_cast<void**>(&dynamic_pthread_setname_np) =
-    dlsym(RTLD_DEFAULT, "pthread_setname_np");
-  if (dynamic_pthread_setname_np == nullptr) return;
-
-  // Mac OS X does not expose the length limit of the name, so hardcode it.
+#elif V8_OS_MACOSX || V8_OS_IOS
+  // Apple's headers do not expose the length limit of the name, so hardcode it.
   static const int kMaxNameLength = 63;
   STATIC_ASSERT(Thread::kMaxThreadNameLength <= kMaxNameLength);
-  dynamic_pthread_setname_np(name);
+  pthread_setname_np(name);
 #elif defined(PR_SET_NAME)
   prctl(PR_SET_NAME,
         reinterpret_cast<unsigned long>(name),  // NOLINT
@@ -849,8 +857,8 @@ bool Thread::Start() {
   if (result != 0) return false;
   size_t stack_size = stack_size_;
   if (stack_size == 0) {
-#if V8_OS_MACOSX
-    // Default on Mac OS X is 512kB -- bump up to 1MB
+#if V8_OS_MACOSX || V8_OS_IOS
+    // Default on i/macOS is 512kB -- bump up to 1MB
     stack_size = 1 * 1024 * 1024;
 #elif V8_OS_AIX
     // Default on AIX is 96kB -- bump up to 2MB
@@ -998,9 +1006,9 @@ void Thread::SetThreadLocal(LocalStorageKey key, void* value) {
 
 // pthread_getattr_np used below is non portable (hence the _np suffix). We
 // keep this version in POSIX as most Linux-compatible derivatives will
-// support it. MacOS and FreeBSD are different here.
-#if !defined(V8_OS_FREEBSD) && !defined(V8_OS_MACOSX) && !defined(_AIX) && \
-    !defined(V8_OS_SOLARIS)
+// support it. Apple OSes and FreeBSD are different here.
+#if !defined(V8_OS_FREEBSD) && !defined(V8_OS_MACOSX) && \
+    !defined(V8_OS_IOS) && !defined(_AIX) && !defined(V8_OS_SOLARIS)
 
 // static
 Stack::StackSlot Stack::GetStackStart() {
@@ -1025,8 +1033,8 @@ Stack::StackSlot Stack::GetStackStart() {
   return nullptr;
 }
 
-#endif  // !defined(V8_OS_FREEBSD) && !defined(V8_OS_MACOSX) &&
-        // !defined(_AIX) && !defined(V8_OS_SOLARIS)
+#endif  // !defined(V8_OS_FREEBSD) && !defined(V8_OS_MACOSX) && \
+        // !defined(V8_OS_IOS) && !defined(_AIX) && !defined(V8_OS_SOLARIS)
 
 // static
 Stack::StackSlot Stack::GetCurrentStackPosition() {
