@@ -14,9 +14,8 @@ namespace internal {
 
 namespace {
 
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(base::Thread::LocalStorageKey,
-                                GetPerThreadAssertKey,
-                                base::Thread::CreateThreadLocalKey())
+base::LazyInstance<base::ThreadLocalPointer<PerThreadAssertData>>::type
+    current_assert_data = LAZY_INSTANCE_INITIALIZER;
 
 }  // namespace
 
@@ -41,11 +40,10 @@ class PerThreadAssertData final {
   bool DecrementLevel() { return --nesting_level_ == 0; }
 
   static PerThreadAssertData* GetCurrent() {
-    return reinterpret_cast<PerThreadAssertData*>(
-        base::Thread::GetThreadLocal(*GetPerThreadAssertKey()));
+    return current_assert_data.Pointer()->Get();
   }
   static void SetCurrent(PerThreadAssertData* data) {
-    base::Thread::SetThreadLocal(*GetPerThreadAssertKey(), data);
+    current_assert_data.Pointer()->Set(data);
   }
 
  private:
