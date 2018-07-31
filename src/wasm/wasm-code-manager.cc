@@ -2076,17 +2076,21 @@ NativeModuleModificationScope::~NativeModuleModificationScope() {
 }
 
 namespace {
-thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
+
+base::LazyInstance<base::ThreadLocalPointer<WasmCodeRefScope>>::type
+    current_code_refs_scope = LAZY_INSTANCE_INITIALIZER;
+
 }  // namespace
 
 WasmCodeRefScope::WasmCodeRefScope()
-    : previous_scope_(current_code_refs_scope) {
-  current_code_refs_scope = this;
+    : previous_scope_(current_code_refs_scope.Pointer()->Get()) {
+  current_code_refs_scope.Pointer()->Set(this);
 }
 
 WasmCodeRefScope::~WasmCodeRefScope() {
-  DCHECK_EQ(this, current_code_refs_scope);
-  current_code_refs_scope = previous_scope_;
+  auto current = current_code_refs_scope.Pointer();
+  DCHECK_EQ(this, current->Get());
+  current->Set(previous_scope_);
   std::vector<WasmCode*> code_ptrs;
   code_ptrs.reserve(code_ptrs_.size());
   code_ptrs.assign(code_ptrs_.begin(), code_ptrs_.end());
@@ -2096,7 +2100,7 @@ WasmCodeRefScope::~WasmCodeRefScope() {
 // static
 void WasmCodeRefScope::AddRef(WasmCode* code) {
   DCHECK_NOT_NULL(code);
-  WasmCodeRefScope* current_scope = current_code_refs_scope;
+  WasmCodeRefScope* current_scope = current_code_refs_scope.Pointer()->Get();
   DCHECK_NOT_NULL(current_scope);
   auto entry = current_scope->code_ptrs_.insert(code);
   // If we added a new entry, increment the ref counter.
