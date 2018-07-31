@@ -45,6 +45,7 @@ bool V8::Initialize() {
 }
 
 void V8::TearDown() {
+  Isolate::TearDown();
   wasm::WasmEngine::GlobalTearDown();
 #if defined(USE_SIMULATOR)
   Simulator::GlobalTearDown();
@@ -53,9 +54,12 @@ void V8::TearDown() {
   ElementsAccessor::TearDown();
   RegisteredExtension::UnregisterAll();
   FlagList::ResetAllFlags();  // Frees memory held by string arguments.
+  base::LazyRuntime::TearDown();
 }
 
 void V8::InitializeOncePerProcessImpl() {
+  base::LazyRuntime::SetUp();
+
   FlagList::EnforceFlagImplications();
 
   if (FLAG_predictable && FLAG_random_seed == 0) {
