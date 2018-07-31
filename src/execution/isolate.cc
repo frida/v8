@@ -482,6 +482,11 @@ void Isolate::InitializeOncePerProcess() {
   per_isolate_thread_data_key_ = base::Thread::CreateThreadLocalKey();
 }
 
+void Isolate::TearDown() {
+  base::Thread::DeleteThreadLocalKey(per_isolate_thread_data_key_);
+  base::Thread::DeleteThreadLocalKey(isolate_key_);
+}
+
 Address Isolate::get_address_from_id(IsolateAddressId id) {
   return isolate_addresses_[id];
 }
