@@ -14,7 +14,7 @@
 #include "src/utils/utils.h"
 
 // ARM EABI is required.
-#if defined(__arm__) && !defined(__ARM_EABI__)
+#if defined(__arm__) && !defined(__ARM_EABI__) && !defined(__APPLE__)
 #error ARM EABI support is required.
 #endif
 
