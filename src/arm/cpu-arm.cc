@@ -16,6 +16,10 @@
 
 #include "src/cpu-features.h"
 
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace v8 {
 namespace internal {
 
@@ -26,6 +30,8 @@ __attribute__((noinline)) void CpuFeatures::FlushICache(void* start,
 #if !defined(USE_SIMULATOR)
 #if V8_OS_QNX
   msync(start, size, MS_SYNC | MS_INVALIDATE_ICACHE);
+#elif defined(__APPLE__)
+  sys_icache_invalidate(start, size);
 #else
   register uint32_t beg asm("r0") = reinterpret_cast<uint32_t>(start);
   register uint32_t end asm("r1") = beg + size;

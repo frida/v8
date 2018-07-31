@@ -9,8 +9,14 @@
 #include "src/arm64/utils-arm64.h"
 #include "src/cpu-features.h"
 
+#ifdef __APPLE__
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace v8 {
 namespace internal {
+
+#if defined(V8_HOST_ARCH_ARM64) && !defined(V8_OS_WIN) && !defined(__APPLE__)
 
 class CacheLineSizes {
  public:
@@ -37,10 +43,14 @@ class CacheLineSizes {
   uint32_t cache_type_register_;
 };
 
+#endif
+
 void CpuFeatures::FlushICache(void* address, size_t length) {
 #if defined(V8_HOST_ARCH_ARM64)
 #if defined(V8_OS_WIN)
   ::FlushInstructionCache(GetCurrentProcess(), address, length);
+#elif defined(__APPLE__)
+  sys_icache_invalidate(address, length);
 #else
   // The code below assumes user space cache operations are allowed. The goal
   // of this routine is to make sure the code generated is visible to the I
@@ -110,7 +120,7 @@ void CpuFeatures::FlushICache(void* address, size_t length) {
     // move this code before the code is generated.
     : "cc", "memory"
   );  // NOLINT
-#endif  // V8_OS_WIN
+#endif  // __APPLE__
 #endif  // V8_HOST_ARCH_ARM64
 }
 

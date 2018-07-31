@@ -3547,6 +3547,10 @@ v8_component("v8_libbase") {
     data_deps += [ "//build/win:runtime_libs" ]
   }
 
+  if (target_os == "ios") {
+    defines += [ "V8_TARGET_OS_IOS" ]
+  }
+
   if (v8_current_cpu == "mips" || v8_current_cpu == "mips64") {
     # Add runtime libs for mips.
     data += [
