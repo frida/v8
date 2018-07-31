@@ -23,51 +23,61 @@ namespace {
 // thread. If this thread has only one held shared mutex (common case), we use
 // {single_held_shared_mutex}. If it has more than one we allocate a set for it.
 // Said set has to manually be constructed and destroyed.
-thread_local base::SharedMutex* single_held_shared_mutex = nullptr;
+LazyInstance<ThreadLocalPointer<SharedMutex>>::type
+    single_held_shared_mutex = LAZY_INSTANCE_INITIALIZER;
 using TSet = std::unordered_set<base::SharedMutex*>;
-thread_local TSet* held_shared_mutexes = nullptr;
+LazyInstance<ThreadLocalPointer<TSet>>::type
+    held_shared_mutexes = LAZY_INSTANCE_INITIALIZER;
 
 // Returns true iff {shared_mutex} is not a held mutex.
 bool SharedMutexNotHeld(SharedMutex* shared_mutex) {
   DCHECK_NOT_NULL(shared_mutex);
-  return single_held_shared_mutex != shared_mutex &&
-         (!held_shared_mutexes ||
-          held_shared_mutexes->count(shared_mutex) == 0);
+  if (single_held_shared_mutex.Pointer()->Get() == shared_mutex) {
+    return false;
+  }
+  auto shared = held_shared_mutexes.Pointer()->Get();
+  return (!shared ||
+          shared->count(shared_mutex) == 0);
 }
 
 // Tries to hold {shared_mutex}. Returns true iff it hadn't been held prior to
 // this function call.
 bool TryHoldSharedMutex(SharedMutex* shared_mutex) {
   DCHECK_NOT_NULL(shared_mutex);
-  if (single_held_shared_mutex) {
-    if (shared_mutex == single_held_shared_mutex) {
+  auto single_val = single_held_shared_mutex.Pointer();
+  auto shared_val = held_shared_mutexes.Pointer();
+  auto single_mutex = single_val->Get();
+  if (single_mutex) {
+    if (shared_mutex == single_mutex) {
       return false;
     }
-    DCHECK_NULL(held_shared_mutexes);
-    held_shared_mutexes = new TSet({single_held_shared_mutex, shared_mutex});
-    single_held_shared_mutex = nullptr;
-    return true;
-  } else if (held_shared_mutexes) {
-    return held_shared_mutexes->insert(shared_mutex).second;
-  } else {
-    DCHECK_NULL(single_held_shared_mutex);
-    single_held_shared_mutex = shared_mutex;
+    DCHECK_NULL(shared_val->Get());
+    shared_val->Set(new TSet({single_mutex, shared_mutex}));
+    single_val->Set(nullptr);
     return true;
   }
+  auto m = shared_val->Get();
+  if (m) {
+    return m->insert(shared_mutex).second;
+  }
+  single_val->Set(shared_mutex);
+  return true;
 }
 
 // Tries to release {shared_mutex}. Returns true iff it had been held prior to
 // this function call.
 bool TryReleaseSharedMutex(SharedMutex* shared_mutex) {
   DCHECK_NOT_NULL(shared_mutex);
-  if (single_held_shared_mutex == shared_mutex) {
-    single_held_shared_mutex = nullptr;
+  auto single_val = single_held_shared_mutex.Pointer();
+  if (single_val->Get() == shared_mutex) {
+    single_val->Set(nullptr);
     return true;
   }
-  if (held_shared_mutexes && held_shared_mutexes->erase(shared_mutex)) {
-    if (held_shared_mutexes->empty()) {
-      delete held_shared_mutexes;
-      held_shared_mutexes = nullptr;
+  auto shared_vals = held_shared_mutexes.Pointer()->Get();
+  if (shared_vals && shared_vals->erase(shared_mutex)) {
+    if (shared_vals->empty()) {
+      delete shared_vals;
+      held_shared_mutexes.Pointer()->Set(nullptr);
     }
     return true;
   }
