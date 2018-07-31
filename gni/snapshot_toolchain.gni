@@ -70,8 +70,9 @@ if (v8_snapshot_toolchain == "") {
     # therefore snapshots will need to be built using native mksnapshot
     # in combination with qemu
     v8_snapshot_toolchain = current_toolchain
-  } else if (host_cpu == "arm64" && current_cpu == "x64") {
-    # Cross-build from arm64 to intel (likely on an Apple Silicon mac).
+  } else if (host_cpu == "arm64" &&
+             (current_cpu == "arm64" || current_cpu == "x64")) {
+    # Cross-build from arm64 to arm64/intel (likely on an Apple Silicon mac).
     v8_snapshot_toolchain =
         "//build/toolchain/${host_os}:clang_arm64_v8_$v8_current_cpu"
   } else if (host_cpu == "x64") {
