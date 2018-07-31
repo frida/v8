@@ -26,7 +26,12 @@ namespace internal {
 
 namespace {
 
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(CodeRangeAddressHint, GetCodeRangeAddressHint)
+base::LazyInstance<CodeRangeAddressHint>::type process_wide_address_hinter_ =
+    LAZY_INSTANCE_INITIALIZER;
+
+CodeRangeAddressHint* GetCodeRangeAddressHint() {
+  return process_wide_address_hinter_.Pointer();
+}
 
 void FunctionInStaticBinaryForAddressHint() {}
 

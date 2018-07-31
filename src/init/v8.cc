@@ -173,6 +173,8 @@ base::AbortMode ChooseAbortMode() {
 }  // namespace
 
 void V8::Initialize() {
+  base::LazyRuntime::SetUp();
+
   AdvanceStartupState(V8StartupState::kV8Initializing);
   CHECK(platform_);
 
@@ -289,6 +291,7 @@ void V8::Dispose() {
   ExternalStringsCage::TearDown();
 #endif  // V8_ENABLE_SANDBOX && V8_ENABLE_MEMORY_CORRUPTION_API
   AdvanceStartupState(V8StartupState::kV8Disposed);
+  base::LazyRuntime::TearDown();
 }
 
 void V8::DisposePlatform() {

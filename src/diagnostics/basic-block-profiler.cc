@@ -16,8 +16,20 @@
 namespace v8 {
 namespace internal {
 
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(BasicBlockProfiler, BasicBlockProfiler::Get)
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(BuiltinsCallGraph, BuiltinsCallGraph::Get)
+namespace {
+base::LazyInstance<BasicBlockProfiler>::type profiler_instance =
+    LAZY_INSTANCE_INITIALIZER;
+base::LazyInstance<BuiltinsCallGraph>::type call_graph_instance =
+    LAZY_INSTANCE_INITIALIZER;
+}
+
+BasicBlockProfiler* BasicBlockProfiler::Get() {
+  return profiler_instance.Pointer();
+}
+
+BuiltinsCallGraph* BuiltinsCallGraph::Get() {
+  return call_graph_instance.Pointer();
+}
 
 BasicBlockProfilerData::BasicBlockProfilerData(size_t n_blocks)
     : block_ids_(n_blocks), counts_(n_blocks, 0) {}
