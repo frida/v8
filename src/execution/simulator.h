@@ -30,6 +30,10 @@
 #error Unsupported target architecture.
 #endif
 
+#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
+#include <ptrauth.h>
+#endif
+
 namespace v8 {
 namespace internal {
 
@@ -101,11 +105,11 @@ class GeneratedCode {
   using Signature = Return(Args...);
 
   static GeneratedCode FromAddress(Isolate* isolate, Address addr) {
-    return GeneratedCode(isolate, reinterpret_cast<Signature*>(addr));
+    return GeneratedCode(isolate, ToCodePtr<Signature*>(addr));
   }
 
   static GeneratedCode FromBuffer(Isolate* isolate, byte* buffer) {
-    return GeneratedCode(isolate, reinterpret_cast<Signature*>(buffer));
+    return GeneratedCode(isolate, ToCodePtr<Signature*>(buffer));
   }
 
   static GeneratedCode FromCode(Code code) {
@@ -148,8 +152,18 @@ class GeneratedCode {
   friend class GeneratedCode<Return(Args...)>;
   Isolate* isolate_;
   Signature* fn_ptr_;
+
   GeneratedCode(Isolate* isolate, Signature* fn_ptr)
       : isolate_(isolate), fn_ptr_(fn_ptr) {}
+
+  template <typename P, typename V>
+  static P ToCodePtr(V value) {
+    P ptr = reinterpret_cast<P>(value);
+#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
+    ptr = ptrauth_sign_unauthenticated(ptr, ptrauth_key_asia, 0);
+#endif
+    return ptr;
+  }
 };
 
 // Allow to use {GeneratedCode<ret(arg1, arg2)>} instead of
