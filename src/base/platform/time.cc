@@ -330,12 +330,14 @@ class Clock final {
 };
 
 namespace {
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(Clock, GetClock)
+base::LazyInstance<Clock>::type clock_instance = LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
-Time Time::Now() { return GetClock()->Now(); }
+Time Time::Now() { return clock_instance.Pointer()->Now(); }
 
-Time Time::NowFromSystemTime() { return GetClock()->NowFromSystemTime(); }
+Time Time::NowFromSystemTime() {
+  return clock_instance.Pointer()->NowFromSystemTime();
+}
 
 // Time between windows epoch and standard epoch.
 static const int64_t kTimeToEpochInMicroseconds = int64_t{11644473600000000};

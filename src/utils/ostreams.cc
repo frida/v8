@@ -115,8 +115,14 @@ std::streamsize AndroidLogStream::xsputn(const char* s, std::streamsize n) {
 }
 #endif
 
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(base::RecursiveMutex,
-                                StdoutStream::GetStdoutMutex)
+namespace {
+base::LazyInstance<base::RecursiveMutex>::type stdout_mutex_instance =
+    LAZY_INSTANCE_INITIALIZER;
+}
+
+base::RecursiveMutex* StdoutStream::GetStdoutMutex() {
+  return stdout_mutex_instance.Pointer();
+}
 
 namespace {
 

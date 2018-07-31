@@ -476,6 +476,45 @@ class V8_BASE_EXPORT Stack {
   }
 };
 
+class ThreadLocalValue {
+ protected:
+  ThreadLocalValue() : key_(Thread::CreateThreadLocalKey()) {}
+  ThreadLocalValue(const ThreadLocalValue&) = delete;
+  ThreadLocalValue& operator=(const ThreadLocalValue&) = delete;
+  ~ThreadLocalValue() {
+    Thread::DeleteThreadLocalKey(key_);
+  }
+
+  Thread::LocalStorageKey key_;
+};
+
+template <typename T>
+class ThreadLocalPointer final : public ThreadLocalValue {
+ public:
+  ThreadLocalPointer() : ThreadLocalValue() {}
+
+  T* Get() const {
+    return static_cast<T*>(Thread::GetThreadLocal(key_));
+  }
+
+  void Set(T* value) const {
+    Thread::SetThreadLocal(key_, value);
+  }
+};
+
+class ThreadLocalInt final : public ThreadLocalValue {
+ public:
+  ThreadLocalInt() : ThreadLocalValue() {}
+
+  int Get() const {
+    return Thread::GetThreadLocalInt(key_);
+  }
+
+  void Set(int id) const {
+    Thread::SetThreadLocalInt(key_, id);
+  }
+};
+
 }  // namespace base
 }  // namespace v8
 

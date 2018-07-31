@@ -19,10 +19,11 @@ namespace v8 {
 namespace internal {
 
 namespace {
-thread_local LocalHeap* current_local_heap = nullptr;
+base::LazyInstance<base::ThreadLocalPointer<LocalHeap>>::type
+    current_local_heap = LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
-LocalHeap* LocalHeap::Current() { return current_local_heap; }
+LocalHeap* LocalHeap::Current() { return current_local_heap.Pointer()->Get(); }
 
 LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
                      std::unique_ptr<PersistentHandles> persistent_handles)
@@ -50,8 +51,9 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
   if (persistent_handles_) {
     persistent_handles_->Attach(this);
   }
-  DCHECK_NULL(current_local_heap);
-  current_local_heap = this;
+  auto current = current_local_heap.Pointer();
+  DCHECK_NULL(current->Get());
+  current->Set(this);
 }
 
 LocalHeap::~LocalHeap() {
@@ -67,8 +69,9 @@ LocalHeap::~LocalHeap() {
     }
   });
 
-  DCHECK_EQ(current_local_heap, this);
-  current_local_heap = nullptr;
+  auto current = current_local_heap.Pointer();
+  DCHECK_EQ(current->Get(), this);
+  current->Set(nullptr);
 }
 
 void LocalHeap::EnsurePersistentHandles() {

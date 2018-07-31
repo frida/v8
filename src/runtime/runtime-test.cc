@@ -53,9 +53,14 @@ using WasmCompileControlsMap = std::map<v8::Isolate*, WasmCompileControls>;
 // We need per-isolate controls, because we sometimes run tests in multiple
 // isolates concurrently. Methods need to hold the accompanying mutex on access.
 // To avoid upsetting the static initializer count, we lazy initialize this.
-DEFINE_LAZY_LEAKY_OBJECT_GETTER(WasmCompileControlsMap,
-                                GetPerIsolateWasmControls)
+base::LazyInstance<WasmCompileControlsMap>::type controls_map_instance =
+    LAZY_INSTANCE_INITIALIZER;
+
 base::LazyMutex g_PerIsolateWasmControlsMutex = LAZY_MUTEX_INITIALIZER;
+
+WasmCompileControlsMap* GetPerIsolateWasmControls() {
+  return controls_map_instance.Pointer();
+}
 
 bool IsWasmCompileAllowed(v8::Isolate* isolate, v8::Local<v8::Value> value,
                           bool is_async) {

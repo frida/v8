@@ -15,47 +15,54 @@ namespace v8 {
 namespace internal {
 
 namespace {
-thread_local MarkingBarrier* current_marking_barrier = nullptr;
+base::LazyInstance<base::ThreadLocalPointer<MarkingBarrier>>::type
+    current_marking_barrier = LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
 void WriteBarrier::SetForThread(MarkingBarrier* marking_barrier) {
-  DCHECK_NULL(current_marking_barrier);
-  current_marking_barrier = marking_barrier;
+  auto current = current_marking_barrier.Pointer();
+  DCHECK_NULL(current->Get());
+  current->Set(marking_barrier);
 }
 
 void WriteBarrier::ClearForThread(MarkingBarrier* marking_barrier) {
-  DCHECK_EQ(current_marking_barrier, marking_barrier);
-  current_marking_barrier = nullptr;
+  auto current = current_marking_barrier.Pointer();
+  DCHECK_EQ(current->Get(), marking_barrier);
+  current->Set(nullptr);
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, HeapObject host, HeapObjectSlot slot,
                                HeapObject value) {
-  MarkingBarrier* marking_barrier = current_marking_barrier
-                                        ? current_marking_barrier
+  MarkingBarrier* current_value = current_marking_barrier.Pointer()->Get();
+  MarkingBarrier* marking_barrier = current_value
+                                        ? current_value
                                         : heap->marking_barrier();
   marking_barrier->Write(host, slot, value);
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, Code host, RelocInfo* reloc_info,
                                HeapObject value) {
-  MarkingBarrier* marking_barrier = current_marking_barrier
-                                        ? current_marking_barrier
+  MarkingBarrier* current_value = current_marking_barrier.Pointer()->Get();
+  MarkingBarrier* marking_barrier = current_value
+                                        ? current_value
                                         : heap->marking_barrier();
   marking_barrier->Write(host, reloc_info, value);
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, JSArrayBuffer host,
                                ArrayBufferExtension* extension) {
-  MarkingBarrier* marking_barrier = current_marking_barrier
-                                        ? current_marking_barrier
+  MarkingBarrier* current_value = current_marking_barrier.Pointer()->Get();
+  MarkingBarrier* marking_barrier = current_value
+                                        ? current_value
                                         : heap->marking_barrier();
   marking_barrier->Write(host, extension);
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, DescriptorArray descriptor_array,
                                int number_of_own_descriptors) {
-  MarkingBarrier* marking_barrier = current_marking_barrier
-                                        ? current_marking_barrier
+  MarkingBarrier* current_value = current_marking_barrier.Pointer()->Get();
+  MarkingBarrier* marking_barrier = current_value
+                                        ? current_value
                                         : heap->marking_barrier();
   marking_barrier->Write(descriptor_array, number_of_own_descriptors);
 }

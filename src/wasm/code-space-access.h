@@ -33,20 +33,25 @@ class CodeSpaceWriteScope {
   // TODO(jkummerow): Background threads could permanently stay in
   // writable mode; only the main thread has to switch back and forth.
   CodeSpaceWriteScope() {
-    if (code_space_write_nesting_level_ == 0) {
+    auto level_storage = code_space_write_nesting_level_.Pointer();
+    int level = level_storage->Get();
+    if (level == 0) {
       SwitchMemoryPermissionsToWritable();
     }
-    code_space_write_nesting_level_++;
+    level_storage->Set(level + 1);
   }
   ~CodeSpaceWriteScope() {
-    code_space_write_nesting_level_--;
-    if (code_space_write_nesting_level_ == 0) {
+    auto level_storage = code_space_write_nesting_level_.Pointer();
+    int level = level_storage->Get() - 1;
+    if (level == 0) {
       SwitchMemoryPermissionsToExecutable();
     }
+    level_storage->Set(level);
   }
 
  private:
-  static thread_local int code_space_write_nesting_level_;
+  static base::LazyInstance<base::ThreadLocalInt>::type
+      code_space_write_nesting_level_;
 };
 
 #define CODE_SPACE_WRITE_SCOPE CodeSpaceWriteScope _write_access_;
