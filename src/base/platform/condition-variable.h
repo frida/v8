@@ -69,7 +69,25 @@ class V8_BASE_EXPORT ConditionVariable final {
 #if V8_OS_POSIX
   using NativeHandle = pthread_cond_t;
 #elif V8_OS_WIN
-  using NativeHandle = CONDITION_VARIABLE;
+  struct Event;
+  class NativeHandle final {
+   public:
+    NativeHandle() : waitlist_(NULL), freelist_(NULL) {}
+    ~NativeHandle();
+
+    Event* Pre() WARN_UNUSED_RESULT;
+    void Post(Event* event, bool result);
+
+    Mutex* mutex() { return &mutex_; }
+    Event* waitlist() { return waitlist_; }
+
+   private:
+    Event* waitlist_;
+    Event* freelist_;
+    Mutex mutex_;
+
+    DISALLOW_COPY_AND_ASSIGN(NativeHandle);
+  };
 #elif V8_OS_STARBOARD
   using NativeHandle = SbConditionVariable;
 #endif
