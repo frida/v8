@@ -122,6 +122,8 @@ void V8::InitializePlatform(v8::Platform* platform) {
   }
 
 void V8::Initialize() {
+  base::LazyRuntime::SetUp();
+
   AdvanceStartupState(V8StartupState::kV8Initializing);
   CHECK(platform_);
 
@@ -284,6 +286,7 @@ void V8::Dispose() {
   Isolate::DisposeOncePerProcess();
   FlagList::ReleaseDynamicAllocations();
   AdvanceStartupState(V8StartupState::kV8Disposed);
+  base::LazyRuntime::TearDown();
 }
 
 void V8::DisposePlatform() {
