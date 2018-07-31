@@ -83,12 +83,6 @@ namespace base {
 #define LAZY_INSTANCE_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
 
 
-template <typename T>
-struct LeakyInstanceTrait {
-  static void Destroy(T* /* instance */) {}
-};
-
-
 // Traits that define how an instance is allocated and accessed.
 
 
@@ -105,6 +99,10 @@ struct StaticallyAllocatedInstanceTrait {
   static void InitStorageUsingTrait(StorageType* storage) {
     ConstructTrait::Construct(storage);
   }
+
+  static void Destroy(T* instance) {
+    instance->~T();
+  }
 };
 
 
@@ -119,6 +117,10 @@ struct DynamicallyAllocatedInstanceTrait {
   template <typename CreateTrait>
   static void InitStorageUsingTrait(StorageType* storage) {
     *storage = CreateTrait::Create();
+  }
+
+  static void Destroy(T* instance) {
+    delete instance;
   }
 };
 
@@ -158,9 +160,18 @@ struct SingleThreadInitOnceTrait {
 };
 
 
-// TODO(pliard): Handle instances destruction (using global destructors).
+class LazyRuntime {
+ public:
+  using DestructorFn = std::function<void()>;
+
+  static void SetUp();
+  static void TearDown();
+  static void RegisterDestructor(DestructorFn destructor);
+};
+
+
 template <typename T, typename AllocationTrait, typename CreateTrait,
-          typename InitOnceTrait, typename DestroyTrait  /* not used yet. */>
+          typename InitOnceTrait, typename DestroyTrait>
 struct LazyInstanceImpl {
  public:
   using StorageType = typename AllocationTrait::StorageType;
@@ -169,6 +180,9 @@ struct LazyInstanceImpl {
   static void InitInstance(void* storage) {
     AllocationTrait::template InitStorageUsingTrait<CreateTrait>(
         static_cast<StorageType*>(storage));
+
+    LazyRuntime::RegisterDestructor(
+        [=] { DestroyTrait::Destroy(static_cast<T*>(storage)); });
   }
 
   void Init() const {
@@ -197,7 +211,7 @@ struct LazyInstanceImpl {
 template <typename T,
           typename CreateTrait = DefaultConstructTrait<T>,
           typename InitOnceTrait = ThreadSafeInitOnceTrait,
-          typename DestroyTrait = LeakyInstanceTrait<T> >
+          typename DestroyTrait = StaticallyAllocatedInstanceTrait<T> >
 struct LazyStaticInstance {
   using type = LazyInstanceImpl<T, StaticallyAllocatedInstanceTrait<T>,
                                 CreateTrait, InitOnceTrait, DestroyTrait>;
@@ -207,7 +221,7 @@ struct LazyStaticInstance {
 template <typename T,
           typename CreateTrait = DefaultConstructTrait<T>,
           typename InitOnceTrait = ThreadSafeInitOnceTrait,
-          typename DestroyTrait = LeakyInstanceTrait<T> >
+          typename DestroyTrait = StaticallyAllocatedInstanceTrait<T> >
 struct LazyInstance {
   // A LazyInstance is a LazyStaticInstance.
   using type = typename LazyStaticInstance<T, CreateTrait, InitOnceTrait,
@@ -218,7 +232,7 @@ struct LazyInstance {
 template <typename T,
           typename CreateTrait = DefaultCreateTrait<T>,
           typename InitOnceTrait = ThreadSafeInitOnceTrait,
-          typename DestroyTrait = LeakyInstanceTrait<T> >
+          typename DestroyTrait = DynamicallyAllocatedInstanceTrait<T> >
 struct LazyDynamicInstance {
   using type = LazyInstanceImpl<T, DynamicallyAllocatedInstanceTrait<T>,
                                 CreateTrait, InitOnceTrait, DestroyTrait>;
