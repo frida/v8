@@ -58,7 +58,12 @@ namespace internal {
 // The ARM ABI does not specify the usage of register r9, which may be reserved
 // as the static base or thread register on some platforms, in which case we
 // leave it alone. Adjust the value of kR9Available accordingly:
-const int kR9Available = 1;  // 1 if available to us, 0 if reserved
+const int kR9Available = // 1 if available to us, 0 if reserved
+#if V8_OS_DARWIN
+  0;
+#else
+  1;
+#endif
 
 enum RegisterCode {
 #define REGISTER_CODE(R) kRegCode_##R,

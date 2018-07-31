@@ -1109,6 +1109,9 @@ config("toolchain") {
   }
   if (v8_current_cpu == "arm64") {
     defines += [ "V8_TARGET_ARCH_ARM64" ]
+    if ((target_os == "mac" || target_os == "ios") && arm_version >= 83) {
+      defines += [ "V8_TARGET_PTRAUTH" ]
+    }
     if (current_cpu == "arm64") {
       # This will enable PAC+BTI in code generation and static code.
       if (v8_control_flow_integrity &&
