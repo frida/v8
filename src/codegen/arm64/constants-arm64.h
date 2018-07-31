@@ -799,6 +799,15 @@ enum SystemPAuthOp : uint32_t {
   AUTIBSP = SystemPAuthFixed | 0x000003E0
 };
 
+enum PointerAuthenticationOp : uint32_t {
+  PointerAuthenticationFixed = 0xDAC143E0,
+  PointerAuthenticationFMask = 0xFFFFFBE0,
+  PointerAuthenticationMask  = 0xFFFFFFE0,
+  XPACI                      = PointerAuthenticationFixed | 0x00000000,
+  XPACD                      = PointerAuthenticationFixed | 0x00000400,
+  XPACLRI                    = PointerAuthenticationFixed | 0x0000041f
+};
+
 // Any load or store (including pair).
 enum LoadStoreAnyOp : uint32_t {
   LoadStoreAnyFMask = 0x0a000000,
