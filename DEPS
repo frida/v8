@@ -26,6 +26,7 @@ vars = {
   'checkout_ittapi': False,
   'chromium_url': 'https://chromium.googlesource.com',
   'android_url': 'https://android.googlesource.com',
+  'frida_url': 'https://github.com/frida',
   'download_gcmole': False,
   'download_jsfunfuzz': False,
   'check_v8_header_includes': False,
@@ -72,7 +73,7 @@ vars = {
 
 deps = {
   'v8/build':
-    Var('chromium_url') + '/chromium/src/build.git' + '@' + 'de373bbc5b9121aff3bcd708c100d96d3b64bae9',
+    Var('frida_url') + '/v8-build.git' + '@' + 'master',
   'v8/third_party/depot_tools':
     Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + 'e3a49aa40576da2427447f7fedb670d5d59216e5',
   'v8/third_party/icu':
