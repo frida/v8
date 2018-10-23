@@ -59,6 +59,13 @@ bool Locker::IsLocked(v8::Isolate* isolate) {
 }
 
 
+bool Locker::IsLockedByAnyThread(v8::Isolate* isolate) {
+  DCHECK_NOT_NULL(isolate);
+  i::Isolate* internal_isolate = reinterpret_cast<i::Isolate*>(isolate);
+  return internal_isolate->thread_manager()->IsLockedByAnyThread();
+}
+
+
 bool Locker::IsActive() {
   return !!base::Relaxed_Load(&g_locker_was_ever_used_);
 }
