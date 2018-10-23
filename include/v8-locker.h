@@ -121,6 +121,12 @@ class V8_EXPORT Locker {
    */
   static bool IsLocked(Isolate* isolate);
 
+  /**
+   * Returns whether or not the locker for a given isolate, is locked by any
+   * thread.
+   */
+  static bool IsLockedByAnyThread(Isolate* isolate);
+
   // Disallow copying and assigning.
   Locker(const Locker&) = delete;
   void operator=(const Locker&) = delete;
