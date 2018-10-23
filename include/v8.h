@@ -10600,6 +10600,12 @@ class V8_EXPORT Locker {
   static bool IsLocked(Isolate* isolate);
 
   /**
+   * Returns whether or not the locker for a given isolate, is locked by any
+   * thread.
+   */
+  static bool IsLockedByAnyThread(Isolate* isolate);
+
+  /**
    * Returns whether v8::Locker is being used by this V8 instance.
    */
   static bool IsActive();
