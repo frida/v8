@@ -233,7 +233,7 @@ class UnsignedOperandHelper {
       case OperandTypeInfo::kFixedUnsignedShort:
         return value <= kMaxUInt16;
       case OperandTypeInfo::kScalableUnsignedByte:
-        return value <= kMaxUInt32;
+        return static_cast<uint64_t>(value) <= kMaxUInt32;
       default:
         UNREACHABLE();
     }
