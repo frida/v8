@@ -4,8 +4,12 @@
 
 #include "src/base/utils/random-number-generator.h"
 
-#include <stdio.h>
 #include <stdlib.h>
+#if !V8_OS_CYGWIN && !V8_OS_WIN
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <new>
@@ -60,12 +64,33 @@ RandomNumberGenerator::RandomNumberGenerator() {
   SetSeed(seed);
 #else
   // Gather entropy from /dev/urandom if available.
-  FILE* fp = fopen("/dev/urandom", "rb");
-  if (fp != nullptr) {
-    int64_t seed;
-    size_t n = fread(&seed, sizeof(seed), 1, fp);
-    fclose(fp);
-    if (n == 1) {
+  int fd;
+  do {
+    fd = open("/dev/urandom", O_RDONLY);
+  } while (fd == -1 && errno == EINTR);
+  if (fd != -1) {
+    int64_t seed = 0;
+    bool got_seed = true;
+
+    size_t offset = 0;
+    do {
+      ssize_t n;
+      do {
+        n = read(fd, reinterpret_cast<char*>(&seed) + offset,
+                 sizeof(seed) - offset);
+      } while (n == -1 && errno == EINTR);
+
+      if (n == -1) {
+        got_seed = false;
+        break;
+      }
+
+      offset += n;
+    } while (offset != sizeof(seed));
+
+    close(fd);
+
+    if (got_seed) {
       SetSeed(seed);
       return;
     }
