@@ -160,7 +160,6 @@ deps = {
   },
   'v8/third_party/catapult': {
     'url': Var('chromium_url') + '/catapult.git' + '@' + 'ed5998919f4b97464cb0f6cd640ad78f101a498d',
-    'condition': 'checkout_android',
   },
   'v8/third_party/colorama/src': {
     'url': Var('chromium_url') + '/external/colorama.git' + '@' + '799604a1041e9b3bc5d2789ecbd7e8db2e18e6b8',
