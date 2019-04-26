@@ -170,7 +170,6 @@ deps = {
   },
   'third_party/android_ndk': {
     'url': Var('chromium_url') + '/android_ndk.git' + '@' + '8388a2be5421311dc75c5f937aae13d821a27f3d',
-    'condition': 'checkout_android',
   },
   'third_party/android_platform': {
     'url': Var('chromium_url') + '/chromium/src/third_party/android_platform.git' + '@' + 'de32b1862372e928445327947d66845ccafb695c',
@@ -216,7 +215,6 @@ deps = {
   },
   'third_party/catapult': {
     'url': Var('chromium_url') + '/catapult.git' + '@' + '84a7988038ae00e1e861381fedf76e233337843f',
-    'condition': 'checkout_android',
   },
   'third_party/colorama/src': {
     'url': Var('chromium_url') + '/external/colorama.git' + '@' + '799604a1041e9b3bc5d2789ecbd7e8db2e18e6b8',
