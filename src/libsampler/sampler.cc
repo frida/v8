@@ -442,9 +442,12 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
 
 #if V8_TARGET_ARCH_ARM64
   // Building for the iOS device.
-  state->pc = reinterpret_cast<void*>(mcontext->__ss.__pc);
-  state->sp = reinterpret_cast<void*>(mcontext->__ss.__sp);
-  state->fp = reinterpret_cast<void*>(mcontext->__ss.__fp);
+  state->pc = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
+  state->sp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
+  state->fp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
 #elif V8_TARGET_ARCH_ARM
   // Building for the iOS device.
   state->pc = reinterpret_cast<void *>(mcontext->__ss.__pc);
