@@ -444,7 +444,10 @@ void Decoder<V>::DecodeDataProcessing(Instruction* instr) {
                 V::VisitDataProcessing2Source(instr);
               }
             } else {
-              if ((instr->Bit(13) == 1) ||
+              if ((instr->InstructionBits() & PointerAuthenticationFMask) ==
+                  PointerAuthenticationFixed) {
+                V::VisitPointerAuthentication(instr);
+              } else if ((instr->Bit(13) == 1) ||
                   (instr->Bits(20, 16) != 0) ||
                   (instr->Bits(15, 14) != 0) ||
                   (instr->Mask(0xA01FFC00) == 0x00000C00) ||

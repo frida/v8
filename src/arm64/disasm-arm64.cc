@@ -1275,6 +1275,32 @@ void DisassemblingDecoder::VisitSystem(Instruction* instr) {
 }
 
 
+void DisassemblingDecoder::VisitPointerAuthentication(Instruction* instr) {
+  const char *mnemonic = "unimplemented";
+  const char *form = "(PointerAuthentication)";
+
+  switch (instr->Mask(PointerAuthenticationMask)) {
+    case XPACI: {
+      if (instr->InstructionBits() == XPACLRI) {
+        mnemonic = "xpaclri";
+        form = nullptr;
+      } else {
+        mnemonic = "xpaci";
+        form = "'Xd";
+      }
+      break;
+    }
+    case XPACD: {
+      mnemonic = "xpacd";
+      form = "'Xd";
+      break;
+    }
+  }
+
+  Format(instr, mnemonic, form);
+}
+
+
 void DisassemblingDecoder::VisitException(Instruction* instr) {
   const char *mnemonic = "unimplemented";
   const char *form = "'IDebug";

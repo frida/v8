@@ -319,6 +319,13 @@ void Instrument::VisitSystem(Instruction* instr) {
 }
 
 
+void Instrument::VisitPointerAuthentication(Instruction* instr) {
+  Update();
+  static Counter* counter = GetCounter("Other");
+  counter->Increment();
+}
+
+
 void Instrument::VisitException(Instruction* instr) {
   Update();
   static Counter* counter = GetCounter("Other");
