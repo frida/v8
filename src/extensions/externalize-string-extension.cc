@@ -4,10 +4,10 @@
 
 #include "src/extensions/externalize-string-extension.h"
 
-#include "src/api-inl.h"
-#include "src/handles.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
+#include "src/api/api-inl.h"
+#include "src/execution/isolate.h"
+#include "src/handles/handles.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -31,11 +31,10 @@ class SimpleStringResource : public Base {
   const size_t length_;
 };
 
-
-typedef SimpleStringResource<char, v8::String::ExternalOneByteStringResource>
-    SimpleOneByteStringResource;
-typedef SimpleStringResource<uc16, v8::String::ExternalStringResource>
-    SimpleTwoByteStringResource;
+using SimpleOneByteStringResource =
+    SimpleStringResource<char, v8::String::ExternalOneByteStringResource>;
+using SimpleTwoByteStringResource =
+    SimpleStringResource<uc16, v8::String::ExternalStringResource>;
 
 const char* const ExternalizeStringExtension::kSource =
     "native function externalizeString();"
@@ -60,11 +59,9 @@ ExternalizeStringExtension::GetNativeFunctionTemplate(
 void ExternalizeStringExtension::Externalize(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   if (args.Length() < 1 || !args[0]->IsString()) {
-    args.GetIsolate()->ThrowException(
-        v8::String::NewFromUtf8(
-            args.GetIsolate(),
-            "First parameter to externalizeString() must be a string.",
-            NewStringType::kNormal).ToLocalChecked());
+    args.GetIsolate()->ThrowException(v8::String::NewFromUtf8Literal(
+        args.GetIsolate(),
+        "First parameter to externalizeString() must be a string."));
     return;
   }
   bool force_two_byte = false;
@@ -72,22 +69,17 @@ void ExternalizeStringExtension::Externalize(
     if (args[1]->IsBoolean()) {
       force_two_byte = args[1]->BooleanValue(args.GetIsolate());
     } else {
-      args.GetIsolate()->ThrowException(
-          v8::String::NewFromUtf8(
-              args.GetIsolate(),
-              "Second parameter to externalizeString() must be a boolean.",
-              NewStringType::kNormal).ToLocalChecked());
+      args.GetIsolate()->ThrowException(v8::String::NewFromUtf8Literal(
+          args.GetIsolate(),
+          "Second parameter to externalizeString() must be a boolean."));
       return;
     }
   }
   bool result = false;
   Handle<String> string = Utils::OpenHandle(*args[0].As<v8::String>());
   if (!string->SupportsExternalization()) {
-    args.GetIsolate()->ThrowException(
-        v8::String::NewFromUtf8(args.GetIsolate(),
-                                "string does not support externalization.",
-                                NewStringType::kNormal)
-            .ToLocalChecked());
+    args.GetIsolate()->ThrowException(v8::String::NewFromUtf8Literal(
+        args.GetIsolate(), "string does not support externalization."));
     return;
   }
   if (string->IsOneByteRepresentation() && !force_two_byte) {
@@ -106,10 +98,8 @@ void ExternalizeStringExtension::Externalize(
     if (!result) delete resource;
   }
   if (!result) {
-    args.GetIsolate()->ThrowException(
-        v8::String::NewFromUtf8(args.GetIsolate(),
-                                "externalizeString() failed.",
-                                NewStringType::kNormal).ToLocalChecked());
+    args.GetIsolate()->ThrowException(v8::String::NewFromUtf8Literal(
+        args.GetIsolate(), "externalizeString() failed."));
     return;
   }
 }
@@ -118,11 +108,9 @@ void ExternalizeStringExtension::Externalize(
 void ExternalizeStringExtension::IsOneByte(
     const v8::FunctionCallbackInfo<v8::Value>& args) {
   if (args.Length() != 1 || !args[0]->IsString()) {
-    args.GetIsolate()->ThrowException(
-        v8::String::NewFromUtf8(
-            args.GetIsolate(),
-            "isOneByteString() requires a single string argument.",
-            NewStringType::kNormal).ToLocalChecked());
+    args.GetIsolate()->ThrowException(v8::String::NewFromUtf8Literal(
+        args.GetIsolate(),
+        "isOneByteString() requires a single string argument."));
     return;
   }
   bool is_one_byte =

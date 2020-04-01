@@ -7,14 +7,27 @@
 #include "src/snapshot/snapshot.h"
 
 #include "src/base/platform/platform.h"
-#include "src/counters.h"
+#include "src/logging/counters.h"
 #include "src/snapshot/partial-deserializer.h"
 #include "src/snapshot/read-only-deserializer.h"
 #include "src/snapshot/startup-deserializer.h"
-#include "src/version.h"
+#include "src/utils/memcopy.h"
+#include "src/utils/version.h"
+
+#ifdef V8_SNAPSHOT_COMPRESSION
+#include "src/snapshot/snapshot-compression.h"
+#endif
 
 namespace v8 {
 namespace internal {
+
+SnapshotData MaybeDecompress(const Vector<const byte>& snapshot_data) {
+#ifdef V8_SNAPSHOT_COMPRESSION
+  return SnapshotCompression::Decompress(snapshot_data);
+#else
+  return SnapshotData(snapshot_data);
+#endif
+}
 
 #ifdef DEBUG
 bool Snapshot::SnapshotIsValid(const v8::StartupData* snapshot_blob) {
@@ -42,9 +55,11 @@ bool Snapshot::Initialize(Isolate* isolate) {
   CheckVersion(blob);
   CHECK(VerifyChecksum(blob));
   Vector<const byte> startup_data = ExtractStartupData(blob);
-  SnapshotData startup_snapshot_data(startup_data);
   Vector<const byte> read_only_data = ExtractReadOnlyData(blob);
-  SnapshotData read_only_snapshot_data(read_only_data);
+
+  SnapshotData startup_snapshot_data(MaybeDecompress(startup_data));
+  SnapshotData read_only_snapshot_data(MaybeDecompress(read_only_data));
+
   StartupDeserializer startup_deserializer(&startup_snapshot_data);
   ReadOnlyDeserializer read_only_deserializer(&read_only_snapshot_data);
   startup_deserializer.SetRehashability(ExtractRehashability(blob));
@@ -72,7 +87,7 @@ MaybeHandle<Context> Snapshot::NewContextFromSnapshot(
   bool can_rehash = ExtractRehashability(blob);
   Vector<const byte> context_data =
       ExtractContextData(blob, static_cast<uint32_t>(context_index));
-  SnapshotData snapshot_data(context_data);
+  SnapshotData snapshot_data(MaybeDecompress(context_data));
 
   MaybeHandle<Context> maybe_result = PartialDeserializer::DeserializeContext(
       isolate, &snapshot_data, can_rehash, global_proxy,
@@ -115,24 +130,49 @@ void ProfileDeserialization(
 }
 
 v8::StartupData Snapshot::CreateSnapshotBlob(
-    const SnapshotData* startup_snapshot,
-    const SnapshotData* read_only_snapshot,
-    const std::vector<SnapshotData*>& context_snapshots, bool can_be_rehashed) {
-  uint32_t num_contexts = static_cast<uint32_t>(context_snapshots.size());
+    const SnapshotData* startup_snapshot_in,
+    const SnapshotData* read_only_snapshot_in,
+    const std::vector<SnapshotData*>& context_snapshots_in,
+    bool can_be_rehashed) {
+  // Have these separate from snapshot_in for compression, since we need to
+  // access the compressed data as well as the uncompressed reservations.
+  const SnapshotData* startup_snapshot;
+  const SnapshotData* read_only_snapshot;
+  const std::vector<SnapshotData*>* context_snapshots;
+#ifdef V8_SNAPSHOT_COMPRESSION
+  SnapshotData startup_compressed(
+      SnapshotCompression::Compress(startup_snapshot_in));
+  SnapshotData read_only_compressed(
+      SnapshotCompression::Compress(read_only_snapshot_in));
+  startup_snapshot = &startup_compressed;
+  read_only_snapshot = &read_only_compressed;
+  std::vector<SnapshotData> context_snapshots_compressed;
+  context_snapshots_compressed.reserve(context_snapshots_in.size());
+  std::vector<SnapshotData*> context_snapshots_compressed_ptrs;
+  for (unsigned int i = 0; i < context_snapshots_in.size(); ++i) {
+    context_snapshots_compressed.push_back(
+        SnapshotCompression::Compress(context_snapshots_in[i]));
+    context_snapshots_compressed_ptrs.push_back(
+        &context_snapshots_compressed[i]);
+  }
+  context_snapshots = &context_snapshots_compressed_ptrs;
+#else
+  startup_snapshot = startup_snapshot_in;
+  read_only_snapshot = read_only_snapshot_in;
+  context_snapshots = &context_snapshots_in;
+#endif
+
+  uint32_t num_contexts = static_cast<uint32_t>(context_snapshots->size());
   uint32_t startup_snapshot_offset = StartupSnapshotOffset(num_contexts);
   uint32_t total_length = startup_snapshot_offset;
-  DCHECK(IsAligned(total_length, kPointerAlignment));
   total_length += static_cast<uint32_t>(startup_snapshot->RawData().length());
-  DCHECK(IsAligned(total_length, kPointerAlignment));
   total_length += static_cast<uint32_t>(read_only_snapshot->RawData().length());
-  DCHECK(IsAligned(total_length, kPointerAlignment));
-  for (const auto context_snapshot : context_snapshots) {
+  for (const auto context_snapshot : *context_snapshots) {
     total_length += static_cast<uint32_t>(context_snapshot->RawData().length());
-    DCHECK(IsAligned(total_length, kPointerAlignment));
   }
 
-  ProfileDeserialization(read_only_snapshot, startup_snapshot,
-                         context_snapshots);
+  ProfileDeserialization(read_only_snapshot_in, startup_snapshot_in,
+                         context_snapshots_in);
 
   char* data = new char[total_length];
   // Zero out pre-payload data. Part of that is only used for padding.
@@ -151,12 +191,12 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   uint32_t payload_length =
       static_cast<uint32_t>(startup_snapshot->RawData().length());
   CopyBytes(data + payload_offset,
-            reinterpret_cast<const char*>(startup_snapshot->RawData().start()),
+            reinterpret_cast<const char*>(startup_snapshot->RawData().begin()),
             payload_length);
   if (FLAG_profile_deserialization) {
     PrintF("Snapshot blob consists of:\n%10d bytes in %d chunks for startup\n",
            payload_length,
-           static_cast<uint32_t>(startup_snapshot->Reservations().size()));
+           static_cast<uint32_t>(startup_snapshot_in->Reservations().size()));
   }
   payload_offset += payload_length;
 
@@ -165,7 +205,7 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   payload_length = read_only_snapshot->RawData().length();
   CopyBytes(
       data + payload_offset,
-      reinterpret_cast<const char*>(read_only_snapshot->RawData().start()),
+      reinterpret_cast<const char*>(read_only_snapshot->RawData().begin()),
       payload_length);
   if (FLAG_profile_deserialization) {
     PrintF("%10d bytes for read-only\n", payload_length);
@@ -175,15 +215,17 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   // Partial snapshots (context-specific data).
   for (uint32_t i = 0; i < num_contexts; i++) {
     SetHeaderValue(data, ContextSnapshotOffsetOffset(i), payload_offset);
-    SnapshotData* context_snapshot = context_snapshots[i];
+    SnapshotData* context_snapshot = (*context_snapshots)[i];
     payload_length = context_snapshot->RawData().length();
     CopyBytes(
         data + payload_offset,
-        reinterpret_cast<const char*>(context_snapshot->RawData().start()),
+        reinterpret_cast<const char*>(context_snapshot->RawData().begin()),
         payload_length);
     if (FLAG_profile_deserialization) {
-      PrintF("%10d bytes in %d chunks for context #%d\n", payload_length,
-             static_cast<uint32_t>(context_snapshot->Reservations().size()), i);
+      PrintF(
+          "%10d bytes in %d chunks for context #%d\n", payload_length,
+          static_cast<uint32_t>(context_snapshots_in[i]->Reservations().size()),
+          i);
     }
     payload_offset += payload_length;
   }
@@ -191,9 +233,7 @@ v8::StartupData Snapshot::CreateSnapshotBlob(
   DCHECK_EQ(total_length, payload_offset);
   v8::StartupData result = {data, static_cast<int>(total_length)};
 
-  Checksum checksum(ChecksummedContent(&result));
-  SetHeaderValue(data, kChecksumPartAOffset, checksum.a());
-  SetHeaderValue(data, kChecksumPartBOffset, checksum.b());
+  SetHeaderValue(data, kChecksumOffset, Checksum(ChecksummedContent(&result)));
 
   return result;
 }
@@ -207,14 +247,13 @@ uint32_t Snapshot::ExtractNumContexts(const v8::StartupData* data) {
 bool Snapshot::VerifyChecksum(const v8::StartupData* data) {
   base::ElapsedTimer timer;
   if (FLAG_profile_deserialization) timer.Start();
-  uint32_t expected_a = GetHeaderValue(data, kChecksumPartAOffset);
-  uint32_t expected_b = GetHeaderValue(data, kChecksumPartBOffset);
-  Checksum checksum(ChecksummedContent(data));
+  uint32_t expected = GetHeaderValue(data, kChecksumOffset);
+  uint32_t result = Checksum(ChecksummedContent(data));
   if (FLAG_profile_deserialization) {
     double ms = timer.Elapsed().InMillisecondsF();
     PrintF("[Verifying snapshot checksum took %0.3f ms]\n", ms);
   }
-  return checksum.Check(expected_a, expected_b);
+  return result == expected;
 }
 
 uint32_t Snapshot::ExtractContextOffset(const v8::StartupData* data,
@@ -229,7 +268,9 @@ uint32_t Snapshot::ExtractContextOffset(const v8::StartupData* data,
 
 bool Snapshot::ExtractRehashability(const v8::StartupData* data) {
   CHECK_LT(kRehashabilityOffset, static_cast<uint32_t>(data->raw_size));
-  return GetHeaderValue(data, kRehashabilityOffset) != 0;
+  uint32_t rehashability = GetHeaderValue(data, kRehashabilityOffset);
+  CHECK_IMPLIES(rehashability != 0, rehashability == 1);
+  return rehashability != 0;
 }
 
 namespace {
@@ -310,7 +351,6 @@ SnapshotData::SnapshotData(const Serializer* serializer) {
   uint32_t padded_payload_offset = POINTER_SIZE_ALIGN(payload_offset);
   uint32_t size =
       padded_payload_offset + static_cast<uint32_t>(payload->size());
-  DCHECK(IsAligned(size, kPointerAlignment));
 
   // Allocate backing store and create result data.
   AllocateData(size);
@@ -349,6 +389,81 @@ Vector<const byte> SnapshotData::Payload() const {
   uint32_t length = GetHeaderValue(kPayloadLengthOffset);
   DCHECK_EQ(data_ + size_, payload + length);
   return Vector<const byte>(payload, length);
+}
+
+namespace {
+
+bool RunExtraCode(v8::Isolate* isolate, v8::Local<v8::Context> context,
+                  const char* utf8_source, const char* name) {
+  v8::Context::Scope context_scope(context);
+  v8::TryCatch try_catch(isolate);
+  v8::Local<v8::String> source_string;
+  if (!v8::String::NewFromUtf8(isolate, utf8_source).ToLocal(&source_string)) {
+    return false;
+  }
+  v8::Local<v8::String> resource_name =
+      v8::String::NewFromUtf8(isolate, name).ToLocalChecked();
+  v8::ScriptOrigin origin(resource_name);
+  v8::ScriptCompiler::Source source(source_string, origin);
+  v8::Local<v8::Script> script;
+  if (!v8::ScriptCompiler::Compile(context, &source).ToLocal(&script))
+    return false;
+  if (script->Run(context).IsEmpty()) return false;
+  CHECK(!try_catch.HasCaught());
+  return true;
+}
+
+}  // namespace
+
+v8::StartupData CreateSnapshotDataBlobInternal(
+    v8::SnapshotCreator::FunctionCodeHandling function_code_handling,
+    const char* embedded_source, v8::Isolate* isolate) {
+  // If no isolate is passed in, create it (and a new context) from scratch.
+  if (isolate == nullptr) isolate = v8::Isolate::Allocate();
+
+  // Optionally run a script to embed, and serialize to create a snapshot blob.
+  v8::SnapshotCreator snapshot_creator(isolate);
+  {
+    v8::HandleScope scope(isolate);
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    if (embedded_source != nullptr &&
+        !RunExtraCode(isolate, context, embedded_source, "<embedded>")) {
+      return {};
+    }
+    snapshot_creator.SetDefaultContext(context);
+  }
+  return snapshot_creator.CreateBlob(function_code_handling);
+}
+
+v8::StartupData WarmUpSnapshotDataBlobInternal(
+    v8::StartupData cold_snapshot_blob, const char* warmup_source) {
+  CHECK(cold_snapshot_blob.raw_size > 0 && cold_snapshot_blob.data != nullptr);
+  CHECK_NOT_NULL(warmup_source);
+
+  // Use following steps to create a warmed up snapshot blob from a cold one:
+  //  - Create a new isolate from the cold snapshot.
+  //  - Create a new context to run the warmup script. This will trigger
+  //    compilation of executed functions.
+  //  - Create a new context. This context will be unpolluted.
+  //  - Serialize the isolate and the second context into a new snapshot blob.
+  v8::SnapshotCreator snapshot_creator(nullptr, &cold_snapshot_blob);
+  v8::Isolate* isolate = snapshot_creator.GetIsolate();
+  {
+    v8::HandleScope scope(isolate);
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    if (!RunExtraCode(isolate, context, warmup_source, "<warm-up>")) {
+      return {};
+    }
+  }
+  {
+    v8::HandleScope handle_scope(isolate);
+    isolate->ContextDisposedNotification(false);
+    v8::Local<v8::Context> context = v8::Context::New(isolate);
+    snapshot_creator.SetDefaultContext(context);
+  }
+
+  return snapshot_creator.CreateBlob(
+      v8::SnapshotCreator::FunctionCodeHandling::kKeep);
 }
 
 }  // namespace internal

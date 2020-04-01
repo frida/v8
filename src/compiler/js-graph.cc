@@ -4,10 +4,10 @@
 
 #include "src/compiler/js-graph.h"
 
-#include "src/code-factory.h"
+#include "src/codegen/code-factory.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/typer.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -44,26 +44,6 @@ Node* JSGraph::CEntryStubConstant(int result_size, SaveFPRegsMode save_doubles,
   }
   return HeapConstant(CodeFactory::CEntry(isolate(), result_size, save_doubles,
                                           argv_mode, builtin_exit_frame));
-}
-
-Node* JSGraph::Constant(Handle<Object> value) {
-  // Dereference the handle to determine if a number constant or other
-  // canonicalized node can be used.
-  if (value->IsNumber()) {
-    return Constant(value->Number());
-  } else if (value->IsUndefined(isolate())) {
-    return UndefinedConstant();
-  } else if (value->IsTrue(isolate())) {
-    return TrueConstant();
-  } else if (value->IsFalse(isolate())) {
-    return FalseConstant();
-  } else if (value->IsNull(isolate())) {
-    return NullConstant();
-  } else if (value->IsTheHole(isolate())) {
-    return TheHoleConstant();
-  } else {
-    return HeapConstant(Handle<HeapObject>::cast(value));
-  }
 }
 
 Node* JSGraph::Constant(const ObjectRef& ref) {
@@ -128,8 +108,16 @@ void JSGraph::GetCachedNodes(NodeVector* nodes) {
 DEFINE_GETTER(AllocateInYoungGenerationStubConstant,
               HeapConstant(BUILTIN_CODE(isolate(), AllocateInYoungGeneration)))
 
+DEFINE_GETTER(AllocateRegularInYoungGenerationStubConstant,
+              HeapConstant(BUILTIN_CODE(isolate(),
+                                        AllocateRegularInYoungGeneration)))
+
 DEFINE_GETTER(AllocateInOldGenerationStubConstant,
               HeapConstant(BUILTIN_CODE(isolate(), AllocateInOldGeneration)))
+
+DEFINE_GETTER(AllocateRegularInOldGenerationStubConstant,
+              HeapConstant(BUILTIN_CODE(isolate(),
+                                        AllocateRegularInOldGeneration)))
 
 DEFINE_GETTER(ArrayConstructorStubConstant,
               HeapConstant(BUILTIN_CODE(isolate(), ArrayConstructorImpl)))
@@ -171,6 +159,8 @@ DEFINE_GETTER(FalseConstant, HeapConstant(factory()->false_value()))
 DEFINE_GETTER(NullConstant, HeapConstant(factory()->null_value()))
 
 DEFINE_GETTER(ZeroConstant, NumberConstant(0.0))
+
+DEFINE_GETTER(MinusZeroConstant, NumberConstant(-0.0))
 
 DEFINE_GETTER(OneConstant, NumberConstant(1.0))
 

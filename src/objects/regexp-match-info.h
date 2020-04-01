@@ -6,8 +6,8 @@
 #define V8_OBJECTS_REGEXP_MATCH_INFO_H_
 
 #include "src/base/compiler-specific.h"
-#include "src/objects.h"
 #include "src/objects/fixed-array.h"
+#include "src/objects/objects.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -44,6 +44,9 @@ class V8_EXPORT_PRIVATE RegExpMatchInfo : NON_EXPORTED_BASE(public FixedArray) {
   // Capture(1) determine the start- and endpoint of the match itself.
   inline int Capture(int i);
   inline void SetCapture(int i, int value);
+
+  // Creates a new RegExpMatchInfo with space for capture_count captures.
+  static Handle<RegExpMatchInfo> New(Isolate* isolate, int capture_count);
 
   // Reserves space for captures.
   static Handle<RegExpMatchInfo> ReserveCaptures(

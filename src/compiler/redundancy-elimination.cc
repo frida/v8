@@ -19,7 +19,9 @@ RedundancyElimination::~RedundancyElimination() = default;
 Reduction RedundancyElimination::Reduce(Node* node) {
   if (node_checks_.Get(node)) return NoChange();
   switch (node->opcode()) {
+    case IrOpcode::kCheckBigInt:
     case IrOpcode::kCheckBounds:
+    case IrOpcode::kCheckClosure:
     case IrOpcode::kCheckEqualsInternalizedString:
     case IrOpcode::kCheckEqualsSymbol:
     case IrOpcode::kCheckFloat64Hole:
@@ -136,6 +138,13 @@ bool CheckSubsumes(Node const* a, Node const* b) {
     } else if (a->opcode() == IrOpcode::kCheckedTaggedSignedToInt32 &&
                b->opcode() == IrOpcode::kCheckedTaggedToInt32) {
       // CheckedTaggedSignedToInt32(node) implies CheckedTaggedToInt32(node)
+    } else if (a->opcode() == IrOpcode::kCheckedTaggedSignedToInt32 &&
+               b->opcode() == IrOpcode::kCheckedTaggedToArrayIndex) {
+      // CheckedTaggedSignedToInt32(node) implies
+      // CheckedTaggedToArrayIndex(node)
+    } else if (a->opcode() == IrOpcode::kCheckedTaggedToInt32 &&
+               b->opcode() == IrOpcode::kCheckedTaggedToArrayIndex) {
+      // CheckedTaggedToInt32(node) implies CheckedTaggedToArrayIndex(node)
     } else if (a->opcode() == IrOpcode::kCheckReceiver &&
                b->opcode() == IrOpcode::kCheckReceiverOrNullOrUndefined) {
       // CheckReceiver(node) implies CheckReceiverOrNullOrUndefined(node)
@@ -147,6 +156,7 @@ bool CheckSubsumes(Node const* a, Node const* b) {
         case IrOpcode::kCheckSmi:
         case IrOpcode::kCheckString:
         case IrOpcode::kCheckNumber:
+        case IrOpcode::kCheckBigInt:
           break;
         case IrOpcode::kCheckedInt32ToTaggedSigned:
         case IrOpcode::kCheckedInt64ToInt32:
@@ -154,10 +164,7 @@ bool CheckSubsumes(Node const* a, Node const* b) {
         case IrOpcode::kCheckedTaggedSignedToInt32:
         case IrOpcode::kCheckedTaggedToTaggedPointer:
         case IrOpcode::kCheckedTaggedToTaggedSigned:
-        case IrOpcode::kCheckedCompressedToTaggedPointer:
-        case IrOpcode::kCheckedCompressedToTaggedSigned:
-        case IrOpcode::kCheckedTaggedToCompressedPointer:
-        case IrOpcode::kCheckedTaggedToCompressedSigned:
+        case IrOpcode::kCheckedTaggedToArrayIndex:
         case IrOpcode::kCheckedUint32Bounds:
         case IrOpcode::kCheckedUint32ToInt32:
         case IrOpcode::kCheckedUint32ToTaggedSigned:
@@ -231,7 +238,7 @@ Node* RedundancyElimination::EffectPathChecks::LookupBoundsCheckFor(
     Node* node) const {
   for (Check const* check = head_; check != nullptr; check = check->next) {
     if (check->node->opcode() == IrOpcode::kCheckBounds &&
-        check->node->InputAt(0) == node) {
+        check->node->InputAt(0) == node && TypeSubsumes(node, check->node)) {
       return check->node;
     }
   }

@@ -5,12 +5,12 @@
 #include "src/compiler/frame-states.h"
 
 #include "src/base/functional.h"
-#include "src/callable.h"
+#include "src/codegen/callable.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/node.h"
-#include "src/handles-inl.h"
-#include "src/objects-inl.h"
+#include "src/handles/handles-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -106,28 +106,22 @@ Node* CreateBuiltinContinuationFrameStateCommon(
     Node* closure, Node* context, Node** parameters, int parameter_count,
     Node* outer_frame_state,
     Handle<SharedFunctionInfo> shared = Handle<SharedFunctionInfo>()) {
-  Isolate* const isolate = jsgraph->isolate();
   Graph* const graph = jsgraph->graph();
   CommonOperatorBuilder* const common = jsgraph->common();
-
-  BailoutId bailout_id = Builtins::GetContinuationBailoutId(name);
-  Callable callable = Builtins::CallableFor(isolate, name);
 
   const Operator* op_param =
       common->StateValues(parameter_count, SparseInputMask::Dense());
   Node* params_node = graph->NewNode(op_param, parameter_count, parameters);
 
+  BailoutId bailout_id = Builtins::GetContinuationBailoutId(name);
   const FrameStateFunctionInfo* state_info =
       common->CreateFrameStateFunctionInfo(frame_type, parameter_count, 0,
                                            shared);
   const Operator* op = common->FrameState(
       bailout_id, OutputFrameStateCombine::Ignore(), state_info);
-
-  Node* frame_state = graph->NewNode(
-      op, params_node, jsgraph->EmptyStateValues(), jsgraph->EmptyStateValues(),
-      context, closure, outer_frame_state);
-
-  return frame_state;
+  return graph->NewNode(op, params_node, jsgraph->EmptyStateValues(),
+                        jsgraph->EmptyStateValues(), context, closure,
+                        outer_frame_state);
 }
 
 }  // namespace
@@ -136,21 +130,24 @@ Node* CreateStubBuiltinContinuationFrameState(
     JSGraph* jsgraph, Builtins::Name name, Node* context,
     Node* const* parameters, int parameter_count, Node* outer_frame_state,
     ContinuationFrameStateMode mode) {
-  Isolate* isolate = jsgraph->isolate();
-  Callable callable = Builtins::CallableFor(isolate, name);
+  Callable callable = Builtins::CallableFor(jsgraph->isolate(), name);
   CallInterfaceDescriptor descriptor = callable.descriptor();
 
   std::vector<Node*> actual_parameters;
   // Stack parameters first. Depending on {mode}, final parameters are added
   // by the deoptimizer and aren't explicitly passed in the frame state.
   int stack_parameter_count =
-      descriptor.GetParameterCount() - DeoptimizerParameterCountFor(mode);
-  // Reserving space in the vector, except for the case where
-  // stack_parameter_count is -1.
-  actual_parameters.reserve(stack_parameter_count >= 0
-                                ? stack_parameter_count +
-                                      descriptor.GetRegisterParameterCount()
-                                : 0);
+      descriptor.GetStackParameterCount() - DeoptimizerParameterCountFor(mode);
+
+  // Ensure the parameters added by the deoptimizer are passed on the stack.
+  // This check prevents using TFS builtins as continuations while doing the
+  // lazy deopt. Use TFC or TFJ builtin as a lazy deopt continuation which
+  // would pass the result parameter on the stack.
+  DCHECK_GE(stack_parameter_count, 0);
+
+  // Reserving space in the vector.
+  actual_parameters.reserve(stack_parameter_count +
+                            descriptor.GetRegisterParameterCount());
   for (int i = 0; i < stack_parameter_count; ++i) {
     actual_parameters.push_back(
         parameters[descriptor.GetRegisterParameterCount() + i]);
@@ -172,9 +169,6 @@ Node* CreateJavaScriptBuiltinContinuationFrameState(
     Node* target, Node* context, Node* const* stack_parameters,
     int stack_parameter_count, Node* outer_frame_state,
     ContinuationFrameStateMode mode) {
-  Isolate* const isolate = jsgraph->isolate();
-  Callable const callable = Builtins::CallableFor(isolate, name);
-
   // Depending on {mode}, final parameters are added by the deoptimizer
   // and aren't explicitly passed in the frame state.
   DCHECK_EQ(Builtins::GetStackParameterCount(name) + 1,  // add receiver
@@ -190,11 +184,13 @@ Node* CreateJavaScriptBuiltinContinuationFrameState(
     actual_parameters.push_back(stack_parameters[i]);
   }
 
-  // Register parameters follow stack paraemters. The context will be added by
+  Node* new_target = jsgraph->UndefinedConstant();
+
+  // Register parameters follow stack parameters. The context will be added by
   // instruction selector during FrameState translation.
-  actual_parameters.push_back(target);
-  actual_parameters.push_back(jsgraph->UndefinedConstant());
-  actual_parameters.push_back(argc);
+  actual_parameters.push_back(target);      // kJavaScriptCallTargetRegister
+  actual_parameters.push_back(new_target);  // kJavaScriptCallNewTargetRegister
+  actual_parameters.push_back(argc);        // kJavaScriptCallArgCountRegister
 
   return CreateBuiltinContinuationFrameStateCommon(
       jsgraph,
@@ -204,6 +200,17 @@ Node* CreateJavaScriptBuiltinContinuationFrameState(
       name, target, context, &actual_parameters[0],
       static_cast<int>(actual_parameters.size()), outer_frame_state,
       shared.object());
+}
+
+Node* CreateGenericLazyDeoptContinuationFrameState(
+    JSGraph* graph, const SharedFunctionInfoRef& shared, Node* target,
+    Node* context, Node* receiver, Node* outer_frame_state) {
+  Node* stack_parameters[]{receiver};
+  const int stack_parameter_count = arraysize(stack_parameters);
+  return CreateJavaScriptBuiltinContinuationFrameState(
+      graph, shared, Builtins::kGenericLazyDeoptContinuation, target, context,
+      stack_parameters, stack_parameter_count, outer_frame_state,
+      ContinuationFrameStateMode::LAZY);
 }
 
 }  // namespace compiler

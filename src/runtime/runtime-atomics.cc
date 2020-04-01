@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/arguments-inl.h"
 #include "src/base/macros.h"
 #include "src/base/platform/mutex.h"
-#include "src/conversions-inl.h"
-#include "src/counters.h"
+#include "src/execution/arguments-inl.h"
 #include "src/heap/factory.h"
+#include "src/logging/counters.h"
+#include "src/numbers/conversions-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/runtime/runtime-utils.h"
 
@@ -345,7 +345,7 @@ struct Xor {
 // but also includes the ToInteger/ToBigInt conversion that's part of
 // https://tc39.github.io/ecma262/#sec-atomicreadmodifywrite
 template <template <typename> class Op>
-Object GetModifySetValueInBuffer(Arguments args, Isolate* isolate) {
+Object GetModifySetValueInBuffer(RuntimeArguments args, Isolate* isolate) {
   HandleScope scope(isolate);
   DCHECK_EQ(3, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSTypedArray, sta, 0);

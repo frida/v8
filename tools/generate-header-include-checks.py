@@ -22,7 +22,7 @@ import os.path
 import re
 import sys
 
-# TODO(clemensh): Extend to tests.
+# TODO(clemensb): Extend to tests.
 DEFAULT_INPUT = ['base', 'src']
 DEFAULT_GN_FILE = 'BUILD.gn'
 MY_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -30,10 +30,12 @@ V8_DIR = os.path.dirname(MY_DIR)
 OUT_DIR = os.path.join(V8_DIR, 'check-header-includes')
 AUTO_EXCLUDE = [
   # flag-definitions.h needs a mode set for being included.
-  'src/flag-definitions.h',
+  'src/flags/flag-definitions.h',
 ]
 AUTO_EXCLUDE_PATTERNS = [
   'src/base/atomicops_internals_.*',
+  # TODO(petermarshall): Enable once Perfetto is built by default.
+  'src/libplatform/tracing/perfetto*',
 ] + [
   # platform-specific headers
   '\\b{}\\b'.format(p) for p in

@@ -5,12 +5,11 @@
 #include "test/unittests/test-helpers.h"
 
 #include "include/v8.h"
-#include "src/api.h"
-#include "src/base/template-utils.h"
-#include "src/handles.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
+#include "src/api/api.h"
+#include "src/execution/isolate.h"
+#include "src/handles/handles.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/parsing/scanner-character-streams.h"
 #include "src/parsing/scanner.h"
 
@@ -42,28 +41,27 @@ Handle<SharedFunctionInfo> CreateSharedFunctionInfo(
           isolate->factory()->NewStringFromAsciiChecked("f"),
           Builtins::kCompileLazy);
   int function_literal_id = 1;
+  shared->set_function_literal_id(function_literal_id);
   // Ensure that the function can be compiled lazily.
   shared->set_uncompiled_data(
       *isolate->factory()->NewUncompiledDataWithoutPreparseData(
-          ReadOnlyRoots(isolate).empty_string_handle(), 0, source->length(),
-          function_literal_id));
+          ReadOnlyRoots(isolate).empty_string_handle(), 0, source->length()));
   // Make sure we have an outer scope info, even though it's empty
   shared->set_raw_outer_scope_info_or_feedback_metadata(
       ScopeInfo::Empty(isolate));
-  SharedFunctionInfo::SetScript(shared, script, function_literal_id);
+  shared->SetScript(ReadOnlyRoots(isolate), *script, function_literal_id);
   return scope.CloseAndEscape(shared);
 }
 
 std::unique_ptr<ParseInfo> OuterParseInfoForShared(
     Isolate* isolate, Handle<SharedFunctionInfo> shared) {
-  Handle<Script> script =
-      Handle<Script>::cast(handle(shared->script(), isolate));
+  Script script = Script::cast(shared->script());
   std::unique_ptr<ParseInfo> result =
-      base::make_unique<ParseInfo>(isolate, script);
+      std::make_unique<ParseInfo>(isolate, script);
 
   // Create a character stream to simulate the parser having done so for the
   // to-level ParseProgram.
-  Handle<String> source(String::cast(script->source()), isolate);
+  Handle<String> source(String::cast(script.source()), isolate);
   std::unique_ptr<Utf16CharacterStream> stream(
       ScannerStream::For(isolate, source));
   result->set_character_stream(std::move(stream));

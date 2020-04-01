@@ -4,12 +4,12 @@
 
 #include "src/debug/debug-property-iterator.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/base/flags.h"
-#include "src/keys.h"
 #include "src/objects/js-array-buffer-inl.h"
-#include "src/property-descriptor.h"
-#include "src/property-details.h"
+#include "src/objects/keys.h"
+#include "src/objects/property-descriptor.h"
+#include "src/objects/property-details.h"
 
 namespace v8 {
 
@@ -86,10 +86,10 @@ bool DebugPropertyIterator::has_native_setter() {
 Handle<Name> DebugPropertyIterator::raw_name() const {
   DCHECK(!Done());
   if (stage_ == kExoticIndices) {
-    return isolate_->factory()->Uint32ToString(current_key_index_);
+    return isolate_->factory()->SizeToString(current_key_index_);
   } else {
-    return Handle<Name>::cast(
-        FixedArray::get(*keys_, current_key_index_, isolate_));
+    return Handle<Name>::cast(FixedArray::get(
+        *keys_, static_cast<int>(current_key_index_), isolate_));
   }
 }
 
@@ -148,9 +148,8 @@ void DebugPropertyIterator::FillKeysForCurrentPrototypeAndStage() {
   bool has_exotic_indices = receiver->IsJSTypedArray();
   if (stage_ == kExoticIndices) {
     if (!has_exotic_indices) return;
-    // TODO(bmeurer, v8:4153): Change this to size_t later.
-    exotic_length_ =
-        static_cast<uint32_t>(Handle<JSTypedArray>::cast(receiver)->length());
+    Handle<JSTypedArray> typed_array = Handle<JSTypedArray>::cast(receiver);
+    exotic_length_ = typed_array->WasDetached() ? 0 : typed_array->length();
     return;
   }
   bool skip_indices = has_exotic_indices;
@@ -168,29 +167,28 @@ bool DebugPropertyIterator::should_move_to_next_stage() const {
   if (prototype_iterator_.IsAtEnd()) return false;
   if (stage_ == kExoticIndices) return current_key_index_ >= exotic_length_;
   return keys_.is_null() ||
-         current_key_index_ >= static_cast<uint32_t>(keys_->length());
+         current_key_index_ >= static_cast<size_t>(keys_->length());
 }
 
 namespace {
 base::Flags<debug::NativeAccessorType, int> GetNativeAccessorDescriptorInternal(
     Handle<JSReceiver> object, Handle<Name> name) {
-  uint32_t index;
-  if (name->AsArrayIndex(&index)) return debug::NativeAccessorType::None;
-  LookupIterator it =
-      LookupIterator(object->GetIsolate(), object, name, LookupIterator::OWN);
+  Isolate* isolate = object->GetIsolate();
+  LookupIterator::Key key(isolate, name);
+  if (key.is_element()) return debug::NativeAccessorType::None;
+  LookupIterator it(isolate, object, key, LookupIterator::OWN);
   if (!it.IsFound()) return debug::NativeAccessorType::None;
   if (it.state() != LookupIterator::ACCESSOR) {
     return debug::NativeAccessorType::None;
   }
   Handle<Object> structure = it.GetAccessors();
   if (!structure->IsAccessorInfo()) return debug::NativeAccessorType::None;
-  auto isolate = object->GetIsolate();
   base::Flags<debug::NativeAccessorType, int> result;
-#define IS_BUILTIN_ACESSOR(_, name, ...)                    \
+#define IS_BUILTIN_ACCESSOR(_, name, ...)                   \
   if (*structure == *isolate->factory()->name##_accessor()) \
     return debug::NativeAccessorType::None;
-  ACCESSOR_INFO_LIST_GENERATOR(IS_BUILTIN_ACESSOR, /* not used */)
-#undef IS_BUILTIN_ACESSOR
+  ACCESSOR_INFO_LIST_GENERATOR(IS_BUILTIN_ACCESSOR, /* not used */)
+#undef IS_BUILTIN_ACCESSOR
   Handle<AccessorInfo> accessor_info = Handle<AccessorInfo>::cast(structure);
   if (accessor_info->getter() != Object()) {
     result |= debug::NativeAccessorType::HasGetter;

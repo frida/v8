@@ -11,7 +11,7 @@
 #include <cmath>
 
 #include "src/ast/ast-value-factory.h"
-#include "src/conversions-inl.h"
+#include "src/numbers/conversions-inl.h"
 #include "src/objects/bigint.h"
 #include "src/parsing/scanner-inl.h"
 #include "src/zone/zone.h"
@@ -55,74 +55,6 @@ class Scanner::ErrorState {
 };
 
 // ----------------------------------------------------------------------------
-// Scanner::LiteralBuffer
-
-Handle<String> Scanner::LiteralBuffer::Internalize(Isolate* isolate) const {
-  if (is_one_byte()) {
-    return isolate->factory()->InternalizeOneByteString(one_byte_literal());
-  }
-  return isolate->factory()->InternalizeTwoByteString(two_byte_literal());
-}
-
-int Scanner::LiteralBuffer::NewCapacity(int min_capacity) {
-  return min_capacity < (kMaxGrowth / (kGrowthFactor - 1))
-             ? min_capacity * kGrowthFactor
-             : min_capacity + kMaxGrowth;
-}
-
-void Scanner::LiteralBuffer::ExpandBuffer() {
-  int min_capacity = Max(kInitialCapacity, backing_store_.length());
-  Vector<byte> new_store = Vector<byte>::New(NewCapacity(min_capacity));
-  if (position_ > 0) {
-    MemCopy(new_store.start(), backing_store_.start(), position_);
-  }
-  backing_store_.Dispose();
-  backing_store_ = new_store;
-}
-
-void Scanner::LiteralBuffer::ConvertToTwoByte() {
-  DCHECK(is_one_byte());
-  Vector<byte> new_store;
-  int new_content_size = position_ * kUC16Size;
-  if (new_content_size >= backing_store_.length()) {
-    // Ensure room for all currently read code units as UC16 as well
-    // as the code unit about to be stored.
-    new_store = Vector<byte>::New(NewCapacity(new_content_size));
-  } else {
-    new_store = backing_store_;
-  }
-  uint8_t* src = backing_store_.start();
-  uint16_t* dst = reinterpret_cast<uint16_t*>(new_store.start());
-  for (int i = position_ - 1; i >= 0; i--) {
-    dst[i] = src[i];
-  }
-  if (new_store.start() != backing_store_.start()) {
-    backing_store_.Dispose();
-    backing_store_ = new_store;
-  }
-  position_ = new_content_size;
-  is_one_byte_ = false;
-}
-
-void Scanner::LiteralBuffer::AddTwoByteChar(uc32 code_unit) {
-  DCHECK(!is_one_byte());
-  if (position_ >= backing_store_.length()) ExpandBuffer();
-  if (code_unit <=
-      static_cast<uc32>(unibrow::Utf16::kMaxNonSurrogateCharCode)) {
-    *reinterpret_cast<uint16_t*>(&backing_store_[position_]) = code_unit;
-    position_ += kUC16Size;
-  } else {
-    *reinterpret_cast<uint16_t*>(&backing_store_[position_]) =
-        unibrow::Utf16::LeadSurrogate(code_unit);
-    position_ += kUC16Size;
-    if (position_ >= backing_store_.length()) ExpandBuffer();
-    *reinterpret_cast<uint16_t*>(&backing_store_[position_]) =
-        unibrow::Utf16::TrailSurrogate(code_unit);
-    position_ += kUC16Size;
-  }
-}
-
-// ----------------------------------------------------------------------------
 // Scanner::BookmarkScope
 
 const size_t Scanner::BookmarkScope::kNoBookmark =
@@ -160,7 +92,8 @@ bool Scanner::BookmarkScope::HasBeenApplied() const {
 Scanner::Scanner(Utf16CharacterStream* source, bool is_module)
     : source_(source),
       found_html_comment_(false),
-      allow_harmony_numeric_separator_(false),
+      allow_harmony_optional_chaining_(false),
+      allow_harmony_nullish_(false),
       is_module_(is_module),
       octal_pos_(Location::invalid()),
       octal_message_(MessageTemplate::kNone) {
@@ -381,13 +314,6 @@ Token::Value Scanner::SkipMultiLineComment() {
   return Token::ILLEGAL;
 }
 
-void Scanner::SkipHashBang() {
-  if (c0_ == '#' && Peek() == '!' && source_pos() == 0) {
-    SkipSingleLineComment();
-    Scan();
-  }
-}
-
 Token::Value Scanner::ScanHtmlComment() {
   // Check for <!-- comments.
   DCHECK_EQ(c0_, '!');
@@ -556,12 +482,6 @@ Token::Value Scanner::ScanString() {
 }
 
 Token::Value Scanner::ScanPrivateName() {
-  if (!allow_harmony_private_fields()) {
-    ReportScannerError(source_pos(),
-                       MessageTemplate::kInvalidOrUnexpectedToken);
-    return Token::ILLEGAL;
-  }
-
   next().literal_chars.Start();
   DCHECK_EQ(c0_, '#');
   DCHECK(!IsIdentifierStart(kEndOfInput));
@@ -656,7 +576,8 @@ Token::Value Scanner::ScanTemplateSpan() {
   return result;
 }
 
-Handle<String> Scanner::SourceUrl(Isolate* isolate) const {
+template <typename LocalIsolate>
+Handle<String> Scanner::SourceUrl(LocalIsolate* isolate) const {
   Handle<String> tmp;
   if (source_url_.length() > 0) {
     tmp = source_url_.Internalize(isolate);
@@ -664,13 +585,21 @@ Handle<String> Scanner::SourceUrl(Isolate* isolate) const {
   return tmp;
 }
 
-Handle<String> Scanner::SourceMappingUrl(Isolate* isolate) const {
+template Handle<String> Scanner::SourceUrl(Isolate* isolate) const;
+template Handle<String> Scanner::SourceUrl(OffThreadIsolate* isolate) const;
+
+template <typename LocalIsolate>
+Handle<String> Scanner::SourceMappingUrl(LocalIsolate* isolate) const {
   Handle<String> tmp;
   if (source_mapping_url_.length() > 0) {
     tmp = source_mapping_url_.Internalize(isolate);
   }
   return tmp;
 }
+
+template Handle<String> Scanner::SourceMappingUrl(Isolate* isolate) const;
+template Handle<String> Scanner::SourceMappingUrl(
+    OffThreadIsolate* isolate) const;
 
 bool Scanner::ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
                                               bool is_check_first_digit) {
@@ -702,12 +631,17 @@ bool Scanner::ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
   return true;
 }
 
-bool Scanner::ScanDecimalDigits() {
-  if (allow_harmony_numeric_separator()) {
+bool Scanner::ScanDecimalDigits(bool allow_numeric_separator) {
+  if (allow_numeric_separator) {
     return ScanDigitsWithNumericSeparators(&IsDecimalDigit, false);
   }
   while (IsDecimalDigit(c0_)) {
     AddLiteralCharAdvance();
+  }
+  if (c0_ == '_') {
+    ReportScannerError(Location(source_pos(), source_pos() + 1),
+                       MessageTemplate::kInvalidOrUnexpectedToken);
+    return false;
   }
   return true;
 }
@@ -741,8 +675,8 @@ bool Scanner::ScanDecimalAsSmiWithNumericSeparators(uint64_t* value) {
   return true;
 }
 
-bool Scanner::ScanDecimalAsSmi(uint64_t* value) {
-  if (allow_harmony_numeric_separator()) {
+bool Scanner::ScanDecimalAsSmi(uint64_t* value, bool allow_numeric_separator) {
+  if (allow_numeric_separator) {
     return ScanDecimalAsSmiWithNumericSeparators(value);
   }
 
@@ -756,35 +690,11 @@ bool Scanner::ScanDecimalAsSmi(uint64_t* value) {
 }
 
 bool Scanner::ScanBinaryDigits() {
-  if (allow_harmony_numeric_separator()) {
-    return ScanDigitsWithNumericSeparators(&IsBinaryDigit, true);
-  }
-
-  // we must have at least one binary digit after 'b'/'B'
-  if (!IsBinaryDigit(c0_)) {
-    return false;
-  }
-
-  while (IsBinaryDigit(c0_)) {
-    AddLiteralCharAdvance();
-  }
-  return true;
+  return ScanDigitsWithNumericSeparators(&IsBinaryDigit, true);
 }
 
 bool Scanner::ScanOctalDigits() {
-  if (allow_harmony_numeric_separator()) {
-    return ScanDigitsWithNumericSeparators(&IsOctalDigit, true);
-  }
-
-  // we must have at least one octal digit after 'o'/'O'
-  if (!IsOctalDigit(c0_)) {
-    return false;
-  }
-
-  while (IsOctalDigit(c0_)) {
-    AddLiteralCharAdvance();
-  }
-  return true;
+  return ScanDigitsWithNumericSeparators(&IsOctalDigit, true);
 }
 
 bool Scanner::ScanImplicitOctalDigits(int start_pos,
@@ -808,26 +718,14 @@ bool Scanner::ScanImplicitOctalDigits(int start_pos,
 }
 
 bool Scanner::ScanHexDigits() {
-  if (allow_harmony_numeric_separator()) {
-    return ScanDigitsWithNumericSeparators(&IsHexDigit, true);
-  }
-
-  // we must have at least one hex digit after 'x'/'X'
-  if (!IsHexDigit(c0_)) {
-    return false;
-  }
-
-  while (IsHexDigit(c0_)) {
-    AddLiteralCharAdvance();
-  }
-  return true;
+  return ScanDigitsWithNumericSeparators(&IsHexDigit, true);
 }
 
 bool Scanner::ScanSignedInteger() {
   if (c0_ == '+' || c0_ == '-') AddLiteralCharAdvance();
   // we must have at least one decimal digit after 'e'/'E'
   if (!IsDecimalDigit(c0_)) return false;
-  return ScanDecimalDigits();
+  return ScanDecimalDigits(true);
 }
 
 Token::Value Scanner::ScanNumber(bool seen_period) {
@@ -841,11 +739,11 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
   if (seen_period) {
     // we have already seen a decimal point of the float
     AddLiteralChar('.');
-    if (allow_harmony_numeric_separator() && c0_ == '_') {
+    if (c0_ == '_') {
       return Token::ILLEGAL;
     }
     // we know we have at least one digit
-    if (!ScanDecimalDigits()) return Token::ILLEGAL;
+    if (!ScanDecimalDigits(true)) return Token::ILLEGAL;
   } else {
     // if the first character is '0' we must check for octals and hex
     if (c0_ == '0') {
@@ -875,7 +773,7 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
         }
       } else if (IsNonOctalDecimalDigit(c0_)) {
         kind = DECIMAL_WITH_LEADING_ZERO;
-      } else if (allow_harmony_numeric_separator() && c0_ == '_') {
+      } else if (c0_ == '_') {
         ReportScannerError(Location(source_pos(), source_pos() + 1),
                            MessageTemplate::kZeroDigitNumericSeparator);
         return Token::ILLEGAL;
@@ -884,11 +782,14 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
 
     // Parse decimal digits and allow trailing fractional part.
     if (IsDecimalNumberKind(kind)) {
+      bool allow_numeric_separator = kind != DECIMAL_WITH_LEADING_ZERO;
       // This is an optimization for parsing Decimal numbers as Smi's.
       if (at_start) {
         uint64_t value = 0;
         // scan subsequent decimal digits
-        if (!ScanDecimalAsSmi(&value)) return Token::ILLEGAL;
+        if (!ScanDecimalAsSmi(&value, allow_numeric_separator)) {
+          return Token::ILLEGAL;
+        }
 
         if (next().literal_chars.one_byte_literal().length() <= 10 &&
             value <= Smi::kMaxValue && c0_ != '.' && !IsIdentifierStart(c0_)) {
@@ -902,14 +803,16 @@ Token::Value Scanner::ScanNumber(bool seen_period) {
         }
       }
 
-      if (!ScanDecimalDigits()) return Token::ILLEGAL;
+      if (!ScanDecimalDigits(allow_numeric_separator)) {
+        return Token::ILLEGAL;
+      }
       if (c0_ == '.') {
         seen_period = true;
         AddLiteralCharAdvance();
-        if (allow_harmony_numeric_separator() && c0_ == '_') {
+        if (c0_ == '_') {
           return Token::ILLEGAL;
         }
-        if (!ScanDecimalDigits()) return Token::ILLEGAL;
+        if (!ScanDecimalDigits(true)) return Token::ILLEGAL;
       }
     }
   }
@@ -1011,8 +914,8 @@ Token::Value Scanner::ScanIdentifierOrKeywordInnerSlow(bool escaped,
   if (can_be_keyword && next().literal_chars.is_one_byte()) {
     Vector<const uint8_t> chars = next().literal_chars.one_byte_literal();
     Token::Value token =
-        KeywordOrIdentifierToken(chars.start(), chars.length());
-    if (IsInRange(token, Token::IDENTIFIER, Token::YIELD)) return token;
+        KeywordOrIdentifierToken(chars.begin(), chars.length());
+    if (base::IsInRange(token, Token::IDENTIFIER, Token::YIELD)) return token;
 
     if (token == Token::FUTURE_STRICT_RESERVED_WORD) {
       if (escaped) return Token::ESCAPED_STRICT_RESERVED_WORD;
@@ -1022,7 +925,7 @@ Token::Value Scanner::ScanIdentifierOrKeywordInnerSlow(bool escaped,
     if (!escaped) return token;
 
     STATIC_ASSERT(Token::LET + 1 == Token::STATIC);
-    if (IsInRange(token, Token::LET, Token::STATIC)) {
+    if (base::IsInRange(token, Token::LET, Token::STATIC)) {
       return Token::ESCAPED_STRICT_RESERVED_WORD;
     }
     return Token::ESCAPED_KEYWORD;
@@ -1078,45 +981,21 @@ bool Scanner::ScanRegExpPattern() {
   return true;
 }
 
-
-Maybe<RegExp::Flags> Scanner::ScanRegExpFlags() {
+Maybe<int> Scanner::ScanRegExpFlags() {
   DCHECK_EQ(Token::REGEXP_LITERAL, next().token);
 
   // Scan regular expression flags.
-  int flags = 0;
+  JSRegExp::Flags flags;
   while (IsIdentifierPart(c0_)) {
-    RegExp::Flags flag = RegExp::kNone;
-    switch (c0_) {
-      case 'g':
-        flag = RegExp::kGlobal;
-        break;
-      case 'i':
-        flag = RegExp::kIgnoreCase;
-        break;
-      case 'm':
-        flag = RegExp::kMultiline;
-        break;
-      case 's':
-        flag = RegExp::kDotAll;
-        break;
-      case 'u':
-        flag = RegExp::kUnicode;
-        break;
-      case 'y':
-        flag = RegExp::kSticky;
-        break;
-      default:
-        return Nothing<RegExp::Flags>();
-    }
-    if (flags & flag) {
-      return Nothing<RegExp::Flags>();
-    }
+    JSRegExp::Flags flag = JSRegExp::FlagFromChar(c0_);
+    if (flag == JSRegExp::kInvalid) return Nothing<int>();
+    if (flags & flag) return Nothing<int>();
     Advance();
     flags |= flag;
   }
 
   next().location.end_pos = source_pos();
-  return Just(RegExp::Flags(flags));
+  return Just<int>(flags);
 }
 
 const AstRawString* Scanner::CurrentSymbol(
@@ -1156,7 +1035,7 @@ const char* Scanner::CurrentLiteralAsCString(Zone* zone) const {
   Vector<const uint8_t> vector = literal_one_byte_string();
   int length = vector.length();
   char* buffer = zone->NewArray<char>(length + 1);
-  memcpy(buffer, vector.start(), length);
+  memcpy(buffer, vector.begin(), length);
   buffer[length] = '\0';
   return buffer;
 }

@@ -7,7 +7,8 @@
 
 #include "src/base/flags.h"
 #include "src/compiler/graph-reducer.h"
-#include "src/deoptimize-reason.h"
+#include "src/compiler/js-heap-broker.h"
+#include "src/deoptimizer/deoptimize-reason.h"
 #include "src/objects/map.h"
 
 namespace v8 {
@@ -45,14 +46,12 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   // Flags that control the mode of operation.
   enum Flag {
     kNoFlags = 0u,
-    kAccessorInliningEnabled = 1u << 0,
-    kBailoutOnUninitialized = 1u << 1
+    kBailoutOnUninitialized = 1u << 0,
   };
   using Flags = base::Flags<Flag>;
 
   JSNativeContextSpecialization(Editor* editor, JSGraph* jsgraph,
                                 JSHeapBroker* broker, Flags flags,
-                                Handle<Context> native_context,
                                 CompilationDependencies* dependencies,
                                 Zone* zone, Zone* shared_zone);
 
@@ -79,10 +78,10 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   Reduction ReduceJSOrdinaryHasInstance(Node* node);
   Reduction ReduceJSPromiseResolve(Node* node);
   Reduction ReduceJSResolvePromise(Node* node);
-  Reduction ReduceJSLoadContext(Node* node);
   Reduction ReduceJSLoadGlobal(Node* node);
   Reduction ReduceJSStoreGlobal(Node* node);
   Reduction ReduceJSLoadNamed(Node* node);
+  Reduction ReduceJSGetIterator(Node* node);
   Reduction ReduceJSStoreNamed(Node* node);
   Reduction ReduceJSHasProperty(Node* node);
   Reduction ReduceJSLoadProperty(Node* node);
@@ -93,37 +92,27 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   Reduction ReduceJSToObject(Node* node);
 
   Reduction ReduceElementAccess(Node* node, Node* index, Node* value,
-                                FeedbackNexus const& nexus,
-                                MapHandles const& receiver_maps,
-                                AccessMode access_mode,
-                                KeyedAccessLoadMode load_mode,
-                                KeyedAccessStoreMode store_mode);
-  Reduction ReduceKeyedAccess(Node* node, Node* key, Node* value,
-                              FeedbackNexus const& nexus,
-                              AccessMode access_mode,
-                              KeyedAccessLoadMode load_mode,
-                              KeyedAccessStoreMode store_mode);
-  Reduction ReduceNamedAccessFromNexus(Node* node, Node* value,
-                                       FeedbackNexus const& nexus,
-                                       NameRef const& name,
-                                       AccessMode access_mode);
+                                ElementAccessFeedback const& processed);
+  // In the case of non-keyed (named) accesses, pass the name as {static_name}
+  // and use {nullptr} for {key} (load/store modes are irrelevant).
+  Reduction ReducePropertyAccess(Node* node, Node* key,
+                                 base::Optional<NameRef> static_name,
+                                 Node* value, FeedbackSource const& source,
+                                 AccessMode access_mode);
   Reduction ReduceNamedAccess(Node* node, Node* value,
-                              MapHandles const& receiver_maps,
-                              NameRef const& name, AccessMode access_mode,
-                              Node* key = nullptr);
+                              NamedAccessFeedback const& processed,
+                              AccessMode access_mode, Node* key = nullptr);
   Reduction ReduceGlobalAccess(Node* node, Node* receiver, Node* value,
                                NameRef const& name, AccessMode access_mode,
                                Node* key = nullptr);
   Reduction ReduceGlobalAccess(Node* node, Node* receiver, Node* value,
                                NameRef const& name, AccessMode access_mode,
                                Node* key, PropertyCellRef const& property_cell);
-  Reduction ReduceKeyedLoadFromHeapConstant(Node* node, Node* key,
-                                            FeedbackNexus const& nexus,
-                                            AccessMode access_mode,
-                                            KeyedAccessLoadMode load_mode);
+  Reduction ReduceElementLoadFromHeapConstant(Node* node, Node* key,
+                                              AccessMode access_mode,
+                                              KeyedAccessLoadMode load_mode);
   Reduction ReduceElementAccessOnString(Node* node, Node* index, Node* value,
-                                        AccessMode access_mode,
-                                        KeyedAccessLoadMode load_mode);
+                                        KeyedAccessMode const& keyed_mode);
 
   Reduction ReduceSoftDeoptimize(Node* node, DeoptimizeReason reason);
   Reduction ReduceJSToString(Node* node);
@@ -192,10 +181,11 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
                       FunctionTemplateInfoRef const& function_template_info);
 
   // Construct the appropriate subgraph for element access.
-  ValueEffectControl BuildElementAccess(
-      Node* receiver, Node* index, Node* value, Node* effect, Node* control,
-      ElementAccessInfo const& access_info, AccessMode access_mode,
-      KeyedAccessLoadMode load_mode, KeyedAccessStoreMode store_mode);
+  ValueEffectControl BuildElementAccess(Node* receiver, Node* index,
+                                        Node* value, Node* effect,
+                                        Node* control,
+                                        ElementAccessInfo const& access_info,
+                                        KeyedAccessMode const& keyed_mode);
 
   // Construct appropriate subgraph to load from a String.
   Node* BuildIndexedStringLoad(Node* receiver, Node* index, Node* length,
@@ -214,20 +204,22 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   // Checks if we can turn the hole into undefined when loading an element
   // from an object with one of the {receiver_maps}; sets up appropriate
   // code dependencies and might use the array protector cell.
-  bool CanTreatHoleAsUndefined(MapHandles const& receiver_maps);
+  bool CanTreatHoleAsUndefined(ZoneVector<Handle<Map>> const& receiver_maps);
 
-  // Extract receiver maps from {nexus} and filter based on {receiver} if
-  // possible.
-  bool ExtractReceiverMaps(Node* receiver, Node* effect,
-                           FeedbackNexus const& nexus,
-                           MapHandles* receiver_maps);
+  void RemoveImpossibleReceiverMaps(
+      Node* receiver, ZoneVector<Handle<Map>>* receiver_maps) const;
+
+  ElementAccessFeedback const& TryRefineElementAccessFeedback(
+      ElementAccessFeedback const& feedback, Node* receiver,
+      Node* effect) const;
 
   // Try to infer maps for the given {receiver} at the current {effect}.
   bool InferReceiverMaps(Node* receiver, Node* effect,
-                         MapHandles* receiver_maps);
+                         ZoneVector<Handle<Map>>* receiver_maps) const;
+
   // Try to infer a root map for the {receiver} independent of the current
   // program location.
-  MaybeHandle<Map> InferReceiverRootMap(Node* receiver);
+  base::Optional<MapRef> InferReceiverRootMap(Node* receiver) const;
 
   // Checks if we know at compile time that the {receiver} either definitely
   // has the {prototype} in it's prototype chain, or the {receiver} definitely
@@ -238,7 +230,7 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
     kMayBeInPrototypeChain
   };
   InferHasInPrototypeChainResult InferHasInPrototypeChain(
-      Node* receiver, Node* effect, Handle<HeapObject> prototype);
+      Node* receiver, Node* effect, HeapObjectRef const& prototype);
 
   Graph* graph() const;
   JSGraph* jsgraph() const { return jsgraph_; }
@@ -252,10 +244,13 @@ class V8_EXPORT_PRIVATE JSNativeContextSpecialization final
   Flags flags() const { return flags_; }
   Handle<JSGlobalObject> global_object() const { return global_object_; }
   Handle<JSGlobalProxy> global_proxy() const { return global_proxy_; }
-  NativeContextRef native_context() const { return broker()->native_context(); }
+  NativeContextRef native_context() const {
+    return broker()->target_native_context();
+  }
   CompilationDependencies* dependencies() const { return dependencies_; }
   Zone* zone() const { return zone_; }
   Zone* shared_zone() const { return shared_zone_; }
+  bool should_disallow_heap_access() const;
 
   JSGraph* const jsgraph_;
   JSHeapBroker* const broker_;

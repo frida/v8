@@ -5,85 +5,22 @@
 #include "src/compiler/node-properties.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
+#include "src/compiler/js-heap-broker.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/linkage.h"
+#include "src/compiler/map-inference.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/verifier.h"
-#include "src/handles-inl.h"
-#include "src/objects-inl.h"
+#include "src/handles/handles-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
 // static
-int NodeProperties::PastValueIndex(Node* node) {
-  return FirstValueIndex(node) + node->op()->ValueInputCount();
-}
-
-
-// static
-int NodeProperties::PastContextIndex(Node* node) {
-  return FirstContextIndex(node) +
-         OperatorProperties::GetContextInputCount(node->op());
-}
-
-
-// static
-int NodeProperties::PastFrameStateIndex(Node* node) {
-  return FirstFrameStateIndex(node) +
-         OperatorProperties::GetFrameStateInputCount(node->op());
-}
-
-
-// static
-int NodeProperties::PastEffectIndex(Node* node) {
-  return FirstEffectIndex(node) + node->op()->EffectInputCount();
-}
-
-
-// static
-int NodeProperties::PastControlIndex(Node* node) {
-  return FirstControlIndex(node) + node->op()->ControlInputCount();
-}
-
-
-// static
-Node* NodeProperties::GetValueInput(Node* node, int index) {
-  DCHECK(0 <= index && index < node->op()->ValueInputCount());
-  return node->InputAt(FirstValueIndex(node) + index);
-}
-
-
-// static
-Node* NodeProperties::GetContextInput(Node* node) {
-  DCHECK(OperatorProperties::HasContextInput(node->op()));
-  return node->InputAt(FirstContextIndex(node));
-}
-
-
-// static
-Node* NodeProperties::GetFrameStateInput(Node* node) {
-  DCHECK_EQ(1, OperatorProperties::GetFrameStateInputCount(node->op()));
-  return node->InputAt(FirstFrameStateIndex(node));
-}
-
-
-// static
-Node* NodeProperties::GetEffectInput(Node* node, int index) {
-  DCHECK(0 <= index && index < node->op()->EffectInputCount());
-  return node->InputAt(FirstEffectIndex(node) + index);
-}
-
-
-// static
-Node* NodeProperties::GetControlInput(Node* node, int index) {
-  DCHECK(0 <= index && index < node->op()->ControlInputCount());
-  return node->InputAt(FirstControlIndex(node) + index);
-}
-
 
 // static
 bool NodeProperties::IsValueEdge(Edge edge) {
@@ -140,7 +77,7 @@ bool NodeProperties::IsExceptionalCall(Node* node, Node** out_exception) {
 
 // static
 Node* NodeProperties::FindSuccessfulControlProjection(Node* node) {
-  DCHECK_GT(node->op()->ControlOutputCount(), 0);
+  CHECK_GT(node->op()->ControlOutputCount(), 0);
   if (node->op()->HasProperty(Operator::kNoThrow)) return node;
   for (Edge const edge : node->use_edges()) {
     if (!NodeProperties::IsControlEdge(edge)) continue;
@@ -153,7 +90,8 @@ Node* NodeProperties::FindSuccessfulControlProjection(Node* node) {
 
 // static
 void NodeProperties::ReplaceValueInput(Node* node, Node* value, int index) {
-  DCHECK(index < node->op()->ValueInputCount());
+  CHECK_LE(0, index);
+  CHECK_LT(index, node->op()->ValueInputCount());
   node->ReplaceInput(FirstValueIndex(node) + index, value);
 }
 
@@ -161,7 +99,7 @@ void NodeProperties::ReplaceValueInput(Node* node, Node* value, int index) {
 // static
 void NodeProperties::ReplaceValueInputs(Node* node, Node* value) {
   int value_input_count = node->op()->ValueInputCount();
-  DCHECK_LE(1, value_input_count);
+  CHECK_GT(value_input_count, 0);
   node->ReplaceInput(0, value);
   while (--value_input_count > 0) {
     node->RemoveInput(value_input_count);
@@ -171,30 +109,32 @@ void NodeProperties::ReplaceValueInputs(Node* node, Node* value) {
 
 // static
 void NodeProperties::ReplaceContextInput(Node* node, Node* context) {
+  CHECK(OperatorProperties::HasContextInput(node->op()));
   node->ReplaceInput(FirstContextIndex(node), context);
 }
 
 
 // static
 void NodeProperties::ReplaceControlInput(Node* node, Node* control, int index) {
-  DCHECK(index < node->op()->ControlInputCount());
+  CHECK_LE(0, index);
+  CHECK_LT(index, node->op()->ControlInputCount());
   node->ReplaceInput(FirstControlIndex(node) + index, control);
 }
 
 
 // static
 void NodeProperties::ReplaceEffectInput(Node* node, Node* effect, int index) {
-  DCHECK(index < node->op()->EffectInputCount());
+  CHECK_LE(0, index);
+  CHECK_LT(index, node->op()->EffectInputCount());
   return node->ReplaceInput(FirstEffectIndex(node) + index, effect);
 }
 
 
 // static
 void NodeProperties::ReplaceFrameStateInput(Node* node, Node* frame_state) {
-  DCHECK_EQ(1, OperatorProperties::GetFrameStateInputCount(node->op()));
+  CHECK(OperatorProperties::HasFrameStateInput(node->op()));
   node->ReplaceInput(FirstFrameStateIndex(node), frame_state);
 }
-
 
 // static
 void NodeProperties::RemoveNonValueInputs(Node* node) {
@@ -254,10 +194,15 @@ void NodeProperties::ChangeOp(Node* node, const Operator* new_op) {
 
 
 // static
-Node* NodeProperties::FindFrameStateBefore(Node* node) {
+Node* NodeProperties::FindFrameStateBefore(Node* node,
+                                           Node* unreachable_sentinel) {
   Node* effect = NodeProperties::GetEffectInput(node);
   while (effect->opcode() != IrOpcode::kCheckpoint) {
-    if (effect->opcode() == IrOpcode::kDead) return effect;
+    if (effect->opcode() == IrOpcode::kDead ||
+        effect->opcode() == IrOpcode::kUnreachable) {
+      return unreachable_sentinel;
+    }
+    DCHECK(effect->op()->HasProperty(Operator::kNoWrite));
     DCHECK_EQ(1, effect->op()->EffectInputCount());
     effect = NodeProperties::GetEffectInput(effect);
   }
@@ -373,7 +318,10 @@ base::Optional<MapRef> NodeProperties::GetJSCreateMap(JSHeapBroker* broker,
     ObjectRef target = mtarget.Ref(broker);
     JSFunctionRef newtarget = mnewtarget.Ref(broker).AsJSFunction();
     if (newtarget.map().has_prototype_slot() && newtarget.has_initial_map()) {
-      if (broker->mode() == JSHeapBroker::kSerializing) newtarget.Serialize();
+      if (!newtarget.serialized()) {
+        TRACE_BROKER_MISSING(broker, "initial map on " << newtarget);
+        return base::nullopt;
+      }
       MapRef initial_map = newtarget.initial_map();
       if (initial_map.GetConstructor().equals(target)) {
         DCHECK(target.AsJSFunction().map().is_constructor());
@@ -386,7 +334,7 @@ base::Optional<MapRef> NodeProperties::GetJSCreateMap(JSHeapBroker* broker,
 }
 
 // static
-NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
+NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
     JSHeapBroker* broker, Node* receiver, Node* effect,
     ZoneHandleSet<Map>* maps_return) {
   HeapObjectMatcher m(receiver);
@@ -438,11 +386,12 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
           // We reached the allocation of the {receiver}.
           return kNoReceiverMaps;
         }
+        result = kUnreliableReceiverMaps;  // JSCreate can have side-effect.
         break;
       }
       case IrOpcode::kJSCreatePromise: {
         if (IsSame(receiver, effect)) {
-          *maps_return = ZoneHandleSet<Map>(broker->native_context()
+          *maps_return = ZoneHandleSet<Map>(broker->target_native_context()
                                                 .promise_function()
                                                 .initial_map()
                                                 .object());
@@ -524,30 +473,6 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMaps(
 }
 
 // static
-bool NodeProperties::HasInstanceTypeWitness(JSHeapBroker* broker,
-                                            Node* receiver, Node* effect,
-                                            InstanceType instance_type) {
-  ZoneHandleSet<Map> receiver_maps;
-  NodeProperties::InferReceiverMapsResult result =
-      NodeProperties::InferReceiverMaps(broker, receiver, effect,
-                                        &receiver_maps);
-  switch (result) {
-    case NodeProperties::kUnreliableReceiverMaps:
-    case NodeProperties::kReliableReceiverMaps:
-      DCHECK_NE(0, receiver_maps.size());
-      for (size_t i = 0; i < receiver_maps.size(); ++i) {
-        MapRef map(broker, receiver_maps[i]);
-        if (map.instance_type() != instance_type) return false;
-      }
-      return true;
-
-    case NodeProperties::kNoReceiverMaps:
-      return false;
-  }
-  UNREACHABLE();
-}
-
-// static
 bool NodeProperties::NoObservableSideEffectBetween(Node* effect,
                                                    Node* dominator) {
   while (effect != dominator) {
@@ -579,20 +504,9 @@ bool NodeProperties::CanBePrimitive(JSHeapBroker* broker, Node* receiver,
       return value.map().IsPrimitiveMap();
     }
     default: {
-      // We don't really care about the exact maps here,
-      // just the instance types, which don't change
-      // across potential side-effecting operations.
-      ZoneHandleSet<Map> maps;
-      if (InferReceiverMaps(broker, receiver, effect, &maps) !=
-          kNoReceiverMaps) {
-        // Check if one of the {maps} is not a JSReceiver map.
-        for (size_t i = 0; i < maps.size(); ++i) {
-          MapRef map(broker, maps[i]);
-          if (!map.IsJSReceiverMap()) return true;
-        }
-        return false;
-      }
-      return true;
+      MapInference inference(broker, receiver, effect);
+      return !inference.HaveMaps() ||
+             !inference.AllOfInstanceTypesAreJSReceiver();
     }
   }
 }

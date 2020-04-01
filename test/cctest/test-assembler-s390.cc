@@ -25,13 +25,13 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/disassembler.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/codegen/s390/assembler-s390-inl.h"
+#include "src/diagnostics/disassembler.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/macro-assembler.h"
-#include "src/s390/assembler-s390-inl.h"
-#include "src/simulator.h"
 #include "test/cctest/cctest.h"
 #include "test/common/assembler-tester.h"
 
@@ -63,8 +63,7 @@ TEST(0) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -102,8 +101,7 @@ TEST(1) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -153,8 +151,7 @@ TEST(2) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -208,8 +205,7 @@ TEST(3) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -486,8 +482,7 @@ TEST(10) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -540,8 +535,7 @@ TEST(11) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code = isolate->factory()->NewCode(
-      desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -594,8 +588,7 @@ TEST(12) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code = isolate->factory()->NewCode(
-      desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -607,6 +600,11 @@ TEST(12) {
 
 // vector basics
 TEST(13) {
+  // check if the VECTOR_FACILITY is supported
+  if (!CpuFeatures::IsSupported(VECTOR_FACILITY)) {
+    return;
+  }
+
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
@@ -653,8 +651,7 @@ TEST(13) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -667,6 +664,11 @@ TEST(13) {
 
 // vector sum, packs, unpacks
 TEST(14) {
+  // check if the VECTOR_FACILITY is supported
+  if (!CpuFeatures::IsSupported(VECTOR_FACILITY)) {
+    return;
+  }
+
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
@@ -739,8 +741,7 @@ TEST(14) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -752,6 +753,11 @@ TEST(14) {
 
 // vector comparisons
 TEST(15) {
+  // check if the VECTOR_FACILITY is supported
+  if (!CpuFeatures::IsSupported(VECTOR_FACILITY)) {
+    return;
+  }
+
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
@@ -824,8 +830,7 @@ TEST(15) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -837,6 +842,11 @@ TEST(15) {
 
 // vector select and test mask
 TEST(16) {
+  // check if the VECTOR_FACILITY is supported
+  if (!CpuFeatures::IsSupported(VECTOR_FACILITY)) {
+    return;
+  }
+
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
@@ -866,8 +876,7 @@ TEST(16) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
@@ -879,6 +888,11 @@ TEST(16) {
 
 // vector fp instructions
 TEST(17) {
+  // check if the VECTOR_FACILITY is supported
+  if (!CpuFeatures::IsSupported(VECTOR_FACILITY)) {
+    return;
+  }
+
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   HandleScope scope(isolate);
@@ -935,13 +949,104 @@ TEST(17) {
 
   CodeDesc desc;
   assm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, Handle<Code>());
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
 #ifdef DEBUG
   code->Print();
 #endif
   auto f = GeneratedCode<F1>::FromCode(*code);
   intptr_t res = reinterpret_cast<intptr_t>(f.Call(0x2, 0x30, 0, 0, 0));
+  ::printf("f() = %" V8PRIxPTR "\n", res);
+  CHECK_EQ(0, static_cast<int>(res));
+}
+
+//TMHH, TMHL
+TEST(18) {
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  HandleScope scope(isolate);
+  Assembler assm(AssemblerOptions{});
+
+  Label done, error;
+  Label continue1, continue2, continue3, continue4;
+  Label continue5, continue6, continue7, continue8, continue9;
+
+  // selected bits all 0
+  __ lgfi(r1, Operand(0));
+  __ tmhh(r1, Operand(1));
+  __ beq(&continue1); //8
+  __ b(&error);
+
+  __ bind(&continue1);
+  __ tmhl(r1, Operand(1));
+  __ beq(&continue2); //8
+  __ b(&error);
+
+  // mask = 0
+  __ bind(&continue2);
+  __ lgfi(r1, Operand(-1));
+  __ tmhh(r1, Operand(0));
+  __ beq(&continue3);  //8
+  __ b(&error);
+
+  __ bind(&continue3);
+  __ tmhh(r1, Operand(0));
+  __ beq(&continue4);  //8
+  __ b(&error);
+
+  // selected bits all 1
+  __ bind(&continue4);
+  __ tmhh(r1, Operand(1));
+  __ b(Condition(1), &continue5); //1
+  __ b(&error);
+
+  __ bind(&continue5);
+  __ tmhl(r1, Operand(1));
+  __ b(Condition(1), &continue6); //1
+  __ b(&error);
+
+  // leftmost = 1
+  __ bind(&continue6);
+  __ lgfi(r1, Operand(0xF000F000));
+  __ slag(r2, r1, Operand(32));
+  __ tmhh(r2, Operand(0xFFFF));
+  __ b(Condition(2), &done); //2
+  __ b(&error);
+
+  __ bind(&continue7);
+  __ tmhl(r1, Operand(0xFFFF));
+  __ b(Condition(2), &continue8); //2
+  __ b(&error);
+
+  // leftmost = 0
+  __ bind(&continue8);
+  __ lgfi(r1, Operand(0x0FF00FF0));
+  __ slag(r2, r1, Operand(32));
+  __ tmhh(r2, Operand(0xFFFF));
+  __ b(Condition(4), &done); //4
+  __ b(&error);
+
+  __ bind(&continue9);
+  __ tmhl(r1, Operand(0xFFFF));
+  __ b(Condition(4), &done); //4
+  __ b(&error);
+
+  __ bind(&error);
+  __ lgfi(r2, Operand(1));
+  __ b(r14);
+
+  __ bind(&done);
+  __ lgfi(r2, Operand::Zero());
+  __ b(r14);
+
+  CodeDesc desc;
+  assm.GetCode(isolate, &desc);
+  Handle<Code> code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build();
+#ifdef DEBUG
+  code->Print();
+#endif
+  auto f = GeneratedCode<F1>::FromCode(*code);
+  // f.Call(reg2, reg3, reg4, reg5, reg6) -> set the register value
+  intptr_t res = reinterpret_cast<intptr_t>(f.Call(0, 0, 0, 0, 0));
   ::printf("f() = %" V8PRIxPTR "\n", res);
   CHECK_EQ(0, static_cast<int>(res));
 }

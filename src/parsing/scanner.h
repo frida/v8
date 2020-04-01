@@ -8,16 +8,18 @@
 #define V8_PARSING_SCANNER_H_
 
 #include <algorithm>
+#include <memory>
 
-#include "src/allocation.h"
+#include "include/v8.h"
 #include "src/base/logging.h"
-#include "src/char-predicates.h"
-#include "src/globals.h"
-#include "src/message-template.h"
+#include "src/common/globals.h"
+#include "src/common/message-template.h"
+#include "src/parsing/literal-buffer.h"
 #include "src/parsing/token.h"
-#include "src/pointer-with-payload.h"
-#include "src/unicode-decoder.h"
-#include "src/unicode.h"
+#include "src/strings/char-predicates.h"
+#include "src/strings/unicode.h"
+#include "src/utils/allocation.h"
+#include "src/utils/pointer-with-payload.h"
 
 namespace v8 {
 namespace internal {
@@ -255,7 +257,7 @@ class V8_EXPORT_PRIVATE Scanner {
     Location() : beg_pos(0), end_pos(0) { }
 
     int length() const { return end_pos - beg_pos; }
-    bool IsValid() const { return IsInRange(beg_pos, 0, end_pos); }
+    bool IsValid() const { return base::IsInRange(beg_pos, 0, end_pos); }
 
     static Location invalid() { return Location(-1, 0); }
 
@@ -345,7 +347,7 @@ class V8_EXPORT_PRIVATE Scanner {
     if (peek_location().length() != N + 1) return false;
 
     Vector<const uint8_t> next = next_literal_one_byte_string();
-    const char* chars = reinterpret_cast<const char*>(next.start());
+    const char* chars = reinterpret_cast<const char*>(next.begin());
     return next.length() == N - 1 && strncmp(s, chars, N - 1) == 0;
   }
 
@@ -355,7 +357,7 @@ class V8_EXPORT_PRIVATE Scanner {
     if (!is_literal_one_byte()) return false;
 
     Vector<const uint8_t> current = literal_one_byte_string();
-    const char* chars = reinterpret_cast<const char*>(current.start());
+    const char* chars = reinterpret_cast<const char*>(current.begin());
     return current.length() == N - 1 && strncmp(s, chars, N - 1) == 0;
   }
 
@@ -392,7 +394,7 @@ class V8_EXPORT_PRIVATE Scanner {
   // Returns true if a pattern is scanned.
   bool ScanRegExpPattern();
   // Scans the input as regular expression flags. Returns the flags on success.
-  Maybe<RegExp::Flags> ScanRegExpFlags();
+  Maybe<int> ScanRegExpFlags();
 
   // Scans the input as a template literal
   Token::Value ScanTemplateContinuation() {
@@ -401,120 +403,32 @@ class V8_EXPORT_PRIVATE Scanner {
     return ScanTemplateSpan();
   }
 
-  Handle<String> SourceUrl(Isolate* isolate) const;
-  Handle<String> SourceMappingUrl(Isolate* isolate) const;
+  template <typename LocalIsolate>
+  Handle<String> SourceUrl(LocalIsolate* isolate) const;
+  template <typename LocalIsolate>
+  Handle<String> SourceMappingUrl(LocalIsolate* isolate) const;
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
-  bool allow_harmony_private_fields() const {
-    return allow_harmony_private_fields_;
+  bool allow_harmony_optional_chaining() const {
+    return allow_harmony_optional_chaining_;
   }
-  void set_allow_harmony_private_fields(bool allow) {
-    allow_harmony_private_fields_ = allow;
+
+  void set_allow_harmony_optional_chaining(bool allow) {
+    allow_harmony_optional_chaining_ = allow;
   }
-  bool allow_harmony_numeric_separator() const {
-    return allow_harmony_numeric_separator_;
-  }
-  void set_allow_harmony_numeric_separator(bool allow) {
-    allow_harmony_numeric_separator_ = allow;
-  }
+
+  bool allow_harmony_nullish() const { return allow_harmony_nullish_; }
+
+  void set_allow_harmony_nullish(bool allow) { allow_harmony_nullish_ = allow; }
 
   const Utf16CharacterStream* stream() const { return source_; }
-
-  // If the next characters in the stream are "#!", the line is skipped.
-  void SkipHashBang();
 
  private:
   // Scoped helper for saving & restoring scanner error state.
   // This is used for tagged template literals, in which normally forbidden
   // escape sequences are allowed.
   class ErrorState;
-
-  // LiteralBuffer -  Collector of chars of literals.
-  class LiteralBuffer {
-   public:
-    LiteralBuffer() : backing_store_(), position_(0), is_one_byte_(true) {}
-
-    ~LiteralBuffer() { backing_store_.Dispose(); }
-
-    V8_INLINE void AddChar(char code_unit) {
-      DCHECK(IsValidAscii(code_unit));
-      AddOneByteChar(static_cast<byte>(code_unit));
-    }
-
-    V8_INLINE void AddChar(uc32 code_unit) {
-      if (is_one_byte()) {
-        if (code_unit <= static_cast<uc32>(unibrow::Latin1::kMaxChar)) {
-          AddOneByteChar(static_cast<byte>(code_unit));
-          return;
-        }
-        ConvertToTwoByte();
-      }
-      AddTwoByteChar(code_unit);
-    }
-
-    bool is_one_byte() const { return is_one_byte_; }
-
-    bool Equals(Vector<const char> keyword) const {
-      return is_one_byte() && keyword.length() == position_ &&
-             (memcmp(keyword.start(), backing_store_.start(), position_) == 0);
-    }
-
-    Vector<const uint16_t> two_byte_literal() const {
-      DCHECK(!is_one_byte());
-      DCHECK_EQ(position_ & 0x1, 0);
-      return Vector<const uint16_t>(
-          reinterpret_cast<const uint16_t*>(backing_store_.start()),
-          position_ >> 1);
-    }
-
-    Vector<const uint8_t> one_byte_literal() const {
-      DCHECK(is_one_byte());
-      return Vector<const uint8_t>(
-          reinterpret_cast<const uint8_t*>(backing_store_.start()), position_);
-    }
-
-    int length() const { return is_one_byte() ? position_ : (position_ >> 1); }
-
-    void Start() {
-      position_ = 0;
-      is_one_byte_ = true;
-    }
-
-    Handle<String> Internalize(Isolate* isolate) const;
-
-   private:
-    static const int kInitialCapacity = 16;
-    static const int kGrowthFactor = 4;
-    static const int kMaxGrowth = 1 * MB;
-
-    inline bool IsValidAscii(char code_unit) {
-      // Control characters and printable characters span the range of
-      // valid ASCII characters (0-127). Chars are unsigned on some
-      // platforms which causes compiler warnings if the validity check
-      // tests the lower bound >= 0 as it's always true.
-      return iscntrl(code_unit) || isprint(code_unit);
-    }
-
-    V8_INLINE void AddOneByteChar(byte one_byte_char) {
-      DCHECK(is_one_byte());
-      if (position_ >= backing_store_.length()) ExpandBuffer();
-      backing_store_[position_] = one_byte_char;
-      position_ += kOneByteSize;
-    }
-
-    void AddTwoByteChar(uc32 code_unit);
-    int NewCapacity(int min_capacity);
-    void ExpandBuffer();
-    void ConvertToTwoByte();
-
-    Vector<byte> backing_store_;
-    int position_;
-
-    bool is_one_byte_;
-
-    DISALLOW_COPY_AND_ASSIGN(LiteralBuffer);
-  };
 
   // The current and look-ahead token.
   struct TokenDesc {
@@ -530,14 +444,15 @@ class V8_EXPORT_PRIVATE Scanner {
 #ifdef DEBUG
     bool CanAccessLiteral() const {
       return token == Token::PRIVATE_NAME || token == Token::ILLEGAL ||
-             token == Token::UNINITIALIZED || token == Token::REGEXP_LITERAL ||
-             IsInRange(token, Token::NUMBER, Token::STRING) ||
+             token == Token::ESCAPED_KEYWORD || token == Token::UNINITIALIZED ||
+             token == Token::REGEXP_LITERAL ||
+             base::IsInRange(token, Token::NUMBER, Token::STRING) ||
              Token::IsAnyIdentifier(token) || Token::IsKeyword(token) ||
-             IsInRange(token, Token::TEMPLATE_SPAN, Token::TEMPLATE_TAIL);
+             base::IsInRange(token, Token::TEMPLATE_SPAN, Token::TEMPLATE_TAIL);
     }
     bool CanAccessRawLiteral() const {
       return token == Token::ILLEGAL || token == Token::UNINITIALIZED ||
-             IsInRange(token, Token::TEMPLATE_SPAN, Token::TEMPLATE_TAIL);
+             base::IsInRange(token, Token::TEMPLATE_SPAN, Token::TEMPLATE_TAIL);
     }
 #endif  // DEBUG
   };
@@ -552,11 +467,11 @@ class V8_EXPORT_PRIVATE Scanner {
   };
 
   inline bool IsValidBigIntKind(NumberKind kind) {
-    return IsInRange(kind, BINARY, DECIMAL);
+    return base::IsInRange(kind, BINARY, DECIMAL);
   }
 
   inline bool IsDecimalNumberKind(NumberKind kind) {
-    return IsInRange(kind, DECIMAL, DECIMAL_WITH_LEADING_ZERO);
+    return base::IsInRange(kind, DECIMAL, DECIMAL_WITH_LEADING_ZERO);
   }
 
   static const int kCharacterLookaheadBufferSize = 1;
@@ -672,15 +587,18 @@ class V8_EXPORT_PRIVATE Scanner {
   // token as a one-byte literal. E.g. Token::FUNCTION pretends to have a
   // literal "function".
   Vector<const uint8_t> literal_one_byte_string() const {
-    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token));
+    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token) ||
+           current().token == Token::ESCAPED_KEYWORD);
     return current().literal_chars.one_byte_literal();
   }
   Vector<const uint16_t> literal_two_byte_string() const {
-    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token));
+    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token) ||
+           current().token == Token::ESCAPED_KEYWORD);
     return current().literal_chars.two_byte_literal();
   }
   bool is_literal_one_byte() const {
-    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token));
+    DCHECK(current().CanAccessLiteral() || Token::IsKeyword(current().token) ||
+           current().token == Token::ESCAPED_KEYWORD);
     return current().literal_chars.is_one_byte();
   }
   // Returns the literal string for the next token (the token that
@@ -738,9 +656,9 @@ class V8_EXPORT_PRIVATE Scanner {
 
   bool ScanDigitsWithNumericSeparators(bool (*predicate)(uc32 ch),
                                        bool is_check_first_digit);
-  bool ScanDecimalDigits();
+  bool ScanDecimalDigits(bool allow_numeric_separator);
   // Optimized function to scan decimal number as Smi.
-  bool ScanDecimalAsSmi(uint64_t* value);
+  bool ScanDecimalAsSmi(uint64_t* value, bool allow_numeric_separator);
   bool ScanDecimalAsSmiWithNumericSeparators(uint64_t* value);
   bool ScanHexDigits();
   bool ScanBinaryDigits();
@@ -813,8 +731,8 @@ class V8_EXPORT_PRIVATE Scanner {
   bool found_html_comment_;
 
   // Harmony flags to allow ESNext features.
-  bool allow_harmony_private_fields_;
-  bool allow_harmony_numeric_separator_;
+  bool allow_harmony_optional_chaining_;
+  bool allow_harmony_nullish_;
 
   const bool is_module_;
 

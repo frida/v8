@@ -4,12 +4,12 @@
 
 #include "src/heap/memory-reducer.h"
 
-#include "src/flags.h"
+#include "src/flags/flags.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
 #include "src/heap/incremental-marking.h"
-#include "src/utils.h"
-#include "src/v8.h"
+#include "src/init/v8.h"
+#include "src/utils/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -39,7 +39,8 @@ void MemoryReducer::TimerTask::RunInternal() {
   Event event;
   double time_ms = heap->MonotonicallyIncreasingTimeInMs();
   heap->tracer()->SampleAllocation(time_ms, heap->NewSpaceAllocationCounter(),
-                                   heap->OldGenerationAllocationCounter());
+                                   heap->OldGenerationAllocationCounter(),
+                                   heap->EmbedderAllocationCounter());
   bool low_allocation_rate = heap->HasLowAllocationRate();
   bool optimize_for_memory = heap->ShouldOptimizeForMemoryUsage();
   if (FLAG_trace_gc_verbose) {
@@ -213,9 +214,8 @@ void MemoryReducer::ScheduleTimer(double delay_ms) {
   if (heap()->IsTearingDown()) return;
   // Leave some room for precision error in task scheduler.
   const double kSlackMs = 100;
-  taskrunner_->PostDelayedTask(
-      base::make_unique<MemoryReducer::TimerTask>(this),
-      (delay_ms + kSlackMs) / 1000.0);
+  taskrunner_->PostDelayedTask(std::make_unique<MemoryReducer::TimerTask>(this),
+                               (delay_ms + kSlackMs) / 1000.0);
 }
 
 void MemoryReducer::TearDown() { state_ = State(kDone, 0, 0, 0.0, 0); }

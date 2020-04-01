@@ -12,14 +12,15 @@ let cleanup = function(iter) {
     ++cleanup_holdings_count;
   }
   // Unregister an already iterated over weak reference.
-  fg.unregister(key);
+  let success = fg.unregister(key);
+  assertFalse(success);
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key = {"k": "this is the key"};
 
-// Create an object and register it in the FinalizationGroup. The object needs to be inside
+// Create an object and register it in the FinalizationRegistry. The object needs to be inside
 // a closure so that we can reliably kill them!
 
 (function() {

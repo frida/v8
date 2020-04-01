@@ -4,14 +4,12 @@
 
 #include "src/compiler/linkage.h"
 
-#include "src/assembler-inl.h"
-#include "src/compiler/common-operator.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/frame.h"
-#include "src/compiler/node.h"
 #include "src/compiler/osr.h"
 #include "src/compiler/pipeline.h"
-#include "src/macro-assembler.h"
-#include "src/optimized-compilation-info.h"
 
 namespace v8 {
 namespace internal {
@@ -36,6 +34,9 @@ std::ostream& operator<<(std::ostream& os, const CallDescriptor::Kind& k) {
       break;
     case CallDescriptor::kCallAddress:
       os << "Addr";
+      break;
+    case CallDescriptor::kCallWasmCapiFunction:
+      os << "WasmExit";
       break;
     case CallDescriptor::kCallWasmFunction:
       os << "WasmFunction";
@@ -72,15 +73,6 @@ MachineSignature* CallDescriptor::GetMachineSignature(Zone* zone) const {
   return new (zone) MachineSignature(return_count, param_count, types);
 }
 
-bool CallDescriptor::HasSameReturnLocationsAs(
-    const CallDescriptor* other) const {
-  if (ReturnCount() != other->ReturnCount()) return false;
-  for (size_t i = 0; i < ReturnCount(); ++i) {
-    if (GetReturnLocation(i) != other->GetReturnLocation(i)) return false;
-  }
-  return true;
-}
-
 int CallDescriptor::GetFirstUnusedStackSlot() const {
   int slots_above_sp = 0;
   for (size_t i = 0; i < InputCount(); ++i) {
@@ -101,19 +93,16 @@ int CallDescriptor::GetStackParameterDelta(
   int callee_slots_above_sp = GetFirstUnusedStackSlot();
   int tail_caller_slots_above_sp = tail_caller->GetFirstUnusedStackSlot();
   int stack_param_delta = callee_slots_above_sp - tail_caller_slots_above_sp;
-  if (kPadArguments) {
-    // Adjust stack delta when it is odd.
-    if (stack_param_delta % 2 != 0) {
-      if (callee_slots_above_sp % 2 != 0) {
-        // The delta is odd due to the callee - we will need to add one slot
-        // of padding.
-        ++stack_param_delta;
-      } else {
-        // The delta is odd because of the caller. We already have one slot of
-        // padding that we can reuse for arguments, so we will need one fewer
-        // slot.
-        --stack_param_delta;
-      }
+  if (ShouldPadArguments(stack_param_delta)) {
+    if (callee_slots_above_sp % 2 != 0) {
+      // The delta is odd due to the callee - we will need to add one slot
+      // of padding.
+      ++stack_param_delta;
+    } else {
+      // The delta is odd because of the caller. We already have one slot of
+      // padding that we can reuse for arguments, so we will need one fewer
+      // slot.
+      --stack_param_delta;
     }
   }
   return stack_param_delta;
@@ -130,17 +119,29 @@ int CallDescriptor::GetTaggedParameterSlots() const {
   return result;
 }
 
-bool CallDescriptor::CanTailCall(const Node* node) const {
-  return HasSameReturnLocationsAs(CallDescriptorOf(node->op()));
+bool CallDescriptor::CanTailCall(const CallDescriptor* callee) const {
+  if (ReturnCount() != callee->ReturnCount()) return false;
+  for (size_t i = 0; i < ReturnCount(); ++i) {
+    if (!LinkageLocation::IsSameLocation(GetReturnLocation(i),
+                                         callee->GetReturnLocation(i)))
+      return false;
+  }
+  return true;
 }
 
-int CallDescriptor::CalculateFixedFrameSize() const {
+// TODO(jkummerow, sigurds): Arguably frame size calculation should be
+// keyed on code/frame type, not on CallDescriptor kind. Think about a
+// good way to organize this logic.
+int CallDescriptor::CalculateFixedFrameSize(Code::Kind code_kind) const {
   switch (kind_) {
     case kCallJSFunction:
       return PushArgumentCount()
                  ? OptimizedBuiltinFrameConstants::kFixedSlotCount
                  : StandardFrameConstants::kFixedSlotCount;
     case kCallAddress:
+      if (code_kind == Code::C_WASM_ENTRY) {
+        return CWasmEntryFrameConstants::kFixedSlotCount;
+      }
       return CommonFrameConstants::kFixedSlotCountAboveFp +
              CommonFrameConstants::kCPSlotCount;
     case kCallCodeObject:
@@ -149,6 +150,8 @@ int CallDescriptor::CalculateFixedFrameSize() const {
     case kCallWasmFunction:
     case kCallWasmImportWrapper:
       return WasmCompiledFrameConstants::kFixedSlotCount;
+    case kCallWasmCapiFunction:
+      return WasmExitFrameConstants::kFixedSlotCount;
   }
   UNREACHABLE();
 }
@@ -161,7 +164,7 @@ CallDescriptor* Linkage::ComputeIncoming(Zone* zone,
     // plus the receiver.
     SharedFunctionInfo shared = info->closure()->shared();
     return GetJSCallDescriptor(zone, info->is_osr(),
-                               1 + shared->internal_formal_parameter_count(),
+                               1 + shared.internal_formal_parameter_count(),
                                CallDescriptor::kCanUseRoots);
   }
   return nullptr;  // TODO(titzer): ?
@@ -205,7 +208,6 @@ bool Linkage::NeedsFrameStateInput(Runtime::FunctionId function) {
     case Runtime::kInlineIsJSReceiver:
     case Runtime::kInlineIsRegExp:
     case Runtime::kInlineIsSmi:
-    case Runtime::kInlineIsTypedArray:
       return false;
 
     default:
@@ -399,7 +401,9 @@ CallDescriptor* Linkage::GetStubCallDescriptor(
       // The rest of the parameters go on the stack.
       int stack_slot = i - register_parameter_count - stack_parameter_count;
       locations.AddParam(LinkageLocation::ForCallerFrameSlot(
-          stack_slot, MachineType::AnyTagged()));
+          stack_slot, i < descriptor.GetParameterCount()
+                          ? descriptor.GetParameterType(i)
+                          : MachineType::AnyTagged()));
     }
   }
   // Add context.

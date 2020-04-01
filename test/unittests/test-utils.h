@@ -8,12 +8,12 @@
 #include <vector>
 
 #include "include/v8.h"
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/base/macros.h"
 #include "src/base/utils/random-number-generator.h"
-#include "src/handles.h"
-#include "src/objects-inl.h"
-#include "src/objects.h"
+#include "src/handles/handles.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/zone/accounting-allocator.h"
 #include "src/zone/zone.h"
 #include "testing/gtest-support.h"
@@ -22,7 +22,7 @@ namespace v8 {
 
 class ArrayBufferAllocator;
 
-typedef std::map<std::string, int> CounterMap;
+using CounterMap = std::map<std::string, int>;
 
 // RAII-like Isolate instance wrapper.
 class IsolateWrapper final {
@@ -181,9 +181,8 @@ class WithContextMixin : public TMixin {
   const Local<Context>& v8_context() const { return context_; }
 
   Local<Value> RunJS(const char* source) {
-    return RunJS(v8::String::NewFromUtf8(v8_isolate(), source,
-                                         v8::NewStringType::kNormal)
-                     .ToLocalChecked());
+    return RunJS(
+        v8::String::NewFromUtf8(v8_isolate(), source).ToLocalChecked());
   }
 
   Local<Value> RunJS(v8::String::ExternalOneByteStringResource* source) {
@@ -192,9 +191,7 @@ class WithContextMixin : public TMixin {
   }
 
   v8::Local<v8::String> NewString(const char* string) {
-    return v8::String::NewFromUtf8(v8_isolate(), string,
-                                   v8::NewStringType::kNormal)
-        .ToLocalChecked();
+    return v8::String::NewFromUtf8(v8_isolate(), string).ToLocalChecked();
   }
 
   void SetGlobalProperty(const char* name, v8::Local<v8::Value> value) {
@@ -351,7 +348,7 @@ class SaveFlags {
 
  private:
 #define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) ctype SAVED_##nam;
-#include "src/flag-definitions.h"  // NOLINT
+#include "src/flags/flag-definitions.h"  // NOLINT
 #undef FLAG_MODE_APPLY
 
   DISALLOW_COPY_AND_ASSIGN(SaveFlags);

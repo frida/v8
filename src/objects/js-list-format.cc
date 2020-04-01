@@ -11,15 +11,15 @@
 #include <memory>
 #include <vector>
 
-#include "src/elements-inl.h"
-#include "src/elements.h"
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
+#include "src/objects/elements-inl.h"
+#include "src/objects/elements.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/js-list-format-inl.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects-inl.h"
 #include "unicode/fieldpos.h"
 #include "unicode/fpositer.h"
 #include "unicode/listformatter.h"
@@ -50,8 +50,6 @@ const char* GetIcuStyleString(JSListFormat::Style style,
           return kStandardShort;
         case JSListFormat::Style::NARROW:
           return kStandardNarrow;
-        case JSListFormat::Style::COUNT:
-          UNREACHABLE();
       }
     case JSListFormat::Type::DISJUNCTION:
       switch (style) {
@@ -61,8 +59,6 @@ const char* GetIcuStyleString(JSListFormat::Style style,
           return kOrShort;
         case JSListFormat::Style::NARROW:
           return kOrNarrow;
-        case JSListFormat::Style::COUNT:
-          UNREACHABLE();
       }
     case JSListFormat::Type::UNIT:
       switch (style) {
@@ -72,53 +68,16 @@ const char* GetIcuStyleString(JSListFormat::Style style,
           return kUnitShort;
         case JSListFormat::Style::NARROW:
           return kUnitNarrow;
-        case JSListFormat::Style::COUNT:
-          UNREACHABLE();
       }
-    case JSListFormat::Type::COUNT:
-      UNREACHABLE();
   }
+  UNREACHABLE();
 }
 
 }  // namespace
 
-JSListFormat::Style get_style(const char* str) {
-  switch (str[0]) {
-    case 'n':
-      if (strcmp(&str[1], "arrow") == 0) return JSListFormat::Style::NARROW;
-      break;
-    case 'l':
-      if (strcmp(&str[1], "ong") == 0) return JSListFormat::Style::LONG;
-      break;
-    case 's':
-      if (strcmp(&str[1], "hort") == 0) return JSListFormat::Style::SHORT;
-      break;
-  }
-  UNREACHABLE();
-}
-
-JSListFormat::Type get_type(const char* str) {
-  switch (str[0]) {
-    case 'c':
-      if (strcmp(&str[1], "onjunction") == 0)
-        return JSListFormat::Type::CONJUNCTION;
-      break;
-    case 'd':
-      if (strcmp(&str[1], "isjunction") == 0)
-        return JSListFormat::Type::DISJUNCTION;
-      break;
-    case 'u':
-      if (strcmp(&str[1], "nit") == 0) return JSListFormat::Type::UNIT;
-      break;
-  }
-  UNREACHABLE();
-}
-
-MaybeHandle<JSListFormat> JSListFormat::Initialize(
-    Isolate* isolate, Handle<JSListFormat> list_format, Handle<Object> locales,
-    Handle<Object> input_options) {
-  list_format->set_flags(0);
-
+MaybeHandle<JSListFormat> JSListFormat::New(Isolate* isolate, Handle<Map> map,
+                                            Handle<Object> locales,
+                                            Handle<Object> input_options) {
   Handle<JSReceiver> options;
   // 3. Let requestedLocales be ? CanonicalizeLocaleList(locales).
   Maybe<std::vector<std::string>> maybe_requested_locales =
@@ -153,14 +112,16 @@ MaybeHandle<JSListFormat> JSListFormat::Initialize(
 
   // 10. Let r be ResolveLocale(%ListFormat%.[[AvailableLocales]],
   // requestedLocales, opt, undefined, localeData).
-  Intl::ResolvedLocale r =
+  Maybe<Intl::ResolvedLocale> maybe_resolve_locale =
       Intl::ResolveLocale(isolate, JSListFormat::GetAvailableLocales(),
                           requested_locales, matcher, {});
-
-  // 11. Set listFormat.[[Locale]] to r.[[Locale]].
+  if (maybe_resolve_locale.IsNothing()) {
+    THROW_NEW_ERROR(isolate, NewRangeError(MessageTemplate::kIcuError),
+                    JSListFormat);
+  }
+  Intl::ResolvedLocale r = maybe_resolve_locale.FromJust();
   Handle<String> locale_str =
       isolate->factory()->NewStringFromAsciiChecked(r.locale.c_str());
-  list_format->set_locale(*locale_str);
 
   // 12. Let t be GetOption(options, "type", "string", «"conjunction",
   //    "disjunction", "unit"», "conjunction").
@@ -171,9 +132,6 @@ MaybeHandle<JSListFormat> JSListFormat::Initialize(
   MAYBE_RETURN(maybe_type, MaybeHandle<JSListFormat>());
   Type type_enum = maybe_type.FromJust();
 
-  // 13. Set listFormat.[[Type]] to t.
-  list_format->set_type(type_enum);
-
   // 14. Let s be ? GetOption(options, "style", "string",
   //                          «"long", "short", "narrow"», "long").
   Maybe<Style> maybe_style = Intl::GetStringOption<Style>(
@@ -182,23 +140,35 @@ MaybeHandle<JSListFormat> JSListFormat::Initialize(
   MAYBE_RETURN(maybe_style, MaybeHandle<JSListFormat>());
   Style style_enum = maybe_style.FromJust();
 
-  // 15. Set listFormat.[[Style]] to s.
-  list_format->set_style(style_enum);
-
   icu::Locale icu_locale = r.icu_locale;
   UErrorCode status = U_ZERO_ERROR;
   icu::ListFormatter* formatter = icu::ListFormatter::createInstance(
       icu_locale, GetIcuStyleString(style_enum, type_enum), status);
-  if (U_FAILURE(status)) {
+  if (U_FAILURE(status) || formatter == nullptr) {
     delete formatter;
-    FATAL("Failed to create ICU list formatter, are ICU data files missing?");
+    THROW_NEW_ERROR(isolate, NewRangeError(MessageTemplate::kIcuError),
+                    JSListFormat);
   }
-  CHECK_NOT_NULL(formatter);
 
   Handle<Managed<icu::ListFormatter>> managed_formatter =
       Managed<icu::ListFormatter>::FromRawPtr(isolate, 0, formatter);
 
+  // Now all properties are ready, so we can allocate the result object.
+  Handle<JSListFormat> list_format = Handle<JSListFormat>::cast(
+      isolate->factory()->NewFastOrSlowJSObjectFromMap(map));
+  DisallowHeapAllocation no_gc;
+  list_format->set_flags(0);
   list_format->set_icu_formatter(*managed_formatter);
+
+  // 11. Set listFormat.[[Locale]] to r.[[Locale]].
+  list_format->set_locale(*locale_str);
+
+  // 13. Set listFormat.[[Type]] to t.
+  list_format->set_type(type_enum);
+
+  // 15. Set listFormat.[[Style]] to s.
+  list_format->set_style(style_enum);
+
   return list_format;
 }
 
@@ -234,9 +204,8 @@ Handle<String> JSListFormat::StyleAsString() const {
       return GetReadOnlyRoots().short_string_handle();
     case Style::NARROW:
       return GetReadOnlyRoots().narrow_string_handle();
-    case Style::COUNT:
-      UNREACHABLE();
   }
+  UNREACHABLE();
 }
 
 Handle<String> JSListFormat::TypeAsString() const {
@@ -247,9 +216,8 @@ Handle<String> JSListFormat::TypeAsString() const {
       return GetReadOnlyRoots().disjunction_string_handle();
     case Type::UNIT:
       return GetReadOnlyRoots().unit_string_handle();
-    case Type::COUNT:
-      UNREACHABLE();
   }
+  UNREACHABLE();
 }
 
 namespace {
@@ -257,39 +225,21 @@ namespace {
 // Extract String from JSArray into array of UnicodeString
 Maybe<std::vector<icu::UnicodeString>> ToUnicodeStringArray(
     Isolate* isolate, Handle<JSArray> array) {
-  Factory* factory = isolate->factory();
-  // In general, ElementsAccessor::Get actually isn't guaranteed to give us the
-  // elements in order. But if it is a holey array, it will cause the exception
-  // with the IsString check.
+  // Thanks to iterable-to-list preprocessing, we never see dictionary-mode
+  // arrays here, so the loop below can construct an entry from the index.
+  DCHECK(array->HasFastElements(isolate));
   auto* accessor = array->GetElementsAccessor();
-  uint32_t length = accessor->NumberOfElements(*array);
+  size_t length = accessor->NumberOfElements(*array);
 
-  // ecma402 #sec-createpartsfromlist
-  // 2. If list contains any element value such that Type(value) is not String,
-  // throw a TypeError exception.
-  //
-  // Per spec it looks like we're supposed to throw a TypeError exception if the
-  // item isn't already a string, rather than coercing to a string.
   std::vector<icu::UnicodeString> result;
-  for (uint32_t i = 0; i < length; i++) {
-    DCHECK(accessor->HasElement(*array, i));
-    Handle<Object> item = accessor->Get(array, i);
-    DCHECK(!item.is_null());
-    if (!item->IsString()) {
-      THROW_NEW_ERROR_RETURN_VALUE(
-          isolate,
-          NewTypeError(MessageTemplate::kArrayItemNotType,
-                       factory->list_string(),
-                       // TODO(ftang): For dictionary-mode arrays, i isn't
-                       // actually the index in the array but the index in the
-                       // dictionary.
-                       factory->NewNumber(i), factory->String_string()),
-          Nothing<std::vector<icu::UnicodeString>>());
-    }
-    result.push_back(
-        Intl::ToICUUnicodeString(isolate, Handle<String>::cast(item)));
+  for (InternalIndex entry : InternalIndex::Range(length)) {
+    DCHECK(accessor->HasEntry(*array, entry));
+    Handle<Object> item = accessor->Get(array, entry);
+    DCHECK(item->IsString());
+    Handle<String> item_str = Handle<String>::cast(item);
+    if (!item_str->IsFlat()) item_str = String::Flatten(isolate, item_str);
+    result.push_back(Intl::ToICUUnicodeString(isolate, item_str));
   }
-  DCHECK(!array->HasDictionaryElements());
   return Just(result);
 }
 
@@ -298,15 +248,12 @@ MaybeHandle<T> FormatListCommon(
     Isolate* isolate, Handle<JSListFormat> format, Handle<JSArray> list,
     MaybeHandle<T> (*formatToResult)(Isolate*, const icu::FormattedValue&)) {
   DCHECK(!list->IsUndefined());
-  // ecma402 #sec-createpartsfromlist
-  // 2. If list contains any element value such that Type(value) is not String,
-  // throw a TypeError exception.
   Maybe<std::vector<icu::UnicodeString>> maybe_array =
       ToUnicodeStringArray(isolate, list);
   MAYBE_RETURN(maybe_array, Handle<T>());
   std::vector<icu::UnicodeString> array = maybe_array.FromJust();
 
-  icu::ListFormatter* formatter = format->icu_formatter()->raw();
+  icu::ListFormatter* formatter = format->icu_formatter().raw();
   CHECK_NOT_NULL(formatter);
 
   UErrorCode status = U_ZERO_ERROR;
@@ -374,11 +321,20 @@ MaybeHandle<JSArray> JSListFormat::FormatListToParts(
                                    FormattedListToJSArray);
 }
 
+namespace {
+
+struct CheckListPattern {
+  static const char* key() { return "listPattern"; }
+  static const char* path() { return nullptr; }
+};
+
+}  // namespace
+
 const std::set<std::string>& JSListFormat::GetAvailableLocales() {
-  // Since ListFormatter does not have a method to list all supported
-  // locales, use the one in icu::Locale per comments in
-  // ICU FR at https://unicode-org.atlassian.net/browse/ICU-20015
-  return Intl::GetAvailableLocalesForLocale();
+  static base::LazyInstance<
+      Intl::AvailableLocales<icu::Locale, CheckListPattern>>::type
+      available_locales = LAZY_INSTANCE_INITIALIZER;
+  return available_locales.Pointer()->Get();
 }
 
 }  // namespace internal

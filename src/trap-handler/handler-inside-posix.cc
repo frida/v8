@@ -27,7 +27,7 @@
 
 #include <signal.h>
 
-#ifdef V8_OS_LINUX
+#if defined(V8_OS_LINUX) || defined(V8_OS_FREEBSD)
 #include <ucontext.h>
 #elif V8_OS_MACOSX
 #include <sys/ucontext.h>
@@ -42,8 +42,6 @@
 namespace v8 {
 namespace internal {
 namespace trap_handler {
-
-#if V8_TRAP_HANDLER_SUPPORTED
 
 bool IsKernelGeneratedSignal(siginfo_t* info) {
   // On macOS, only `info->si_code > 0` is relevant, because macOS leaves
@@ -114,6 +112,8 @@ bool TryHandleSignal(int signum, siginfo_t* info, void* context) {
     auto* context_rip = &uc->uc_mcontext.gregs[REG_RIP];
 #elif V8_OS_MACOSX
     auto* context_rip = &uc->uc_mcontext->__ss.__rip;
+#elif V8_OS_FREEBSD
+    auto* context_rip = &uc->uc_mcontext.mc_rip;
 #else
 #error Unsupported platform
 #endif
@@ -151,8 +151,6 @@ void HandleSignal(int signum, siginfo_t* info, void* context) {
   }
   // TryHandleSignal modifies context to change where we return to.
 }
-
-#endif // V8_TRAP_HANDLER_SUPPORTED
 
 }  // namespace trap_handler
 }  // namespace internal

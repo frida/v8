@@ -12,17 +12,21 @@
 #include <set>
 #include <string>
 
+#include "src/base/bit-field.h"
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
 namespace U_ICU_NAMESPACE {
-class NumberFormat;
+class UnicodeString;
+namespace number {
+class LocalizedNumberFormatter;
+}  //  namespace number
 }  //  namespace U_ICU_NAMESPACE
 
 namespace v8 {
@@ -31,9 +35,9 @@ namespace internal {
 class JSNumberFormat : public JSObject {
  public:
   // ecma402/#sec-initializenumberformat
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSNumberFormat> Initialize(
-      Isolate* isolate, Handle<JSNumberFormat> number_format,
-      Handle<Object> locales, Handle<Object> options);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSNumberFormat> New(
+      Isolate* isolate, Handle<Map> map, Handle<Object> locales,
+      Handle<Object> options, const char* service);
 
   // ecma402/#sec-unwrapnumberformat
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSNumberFormat> UnwrapNumberFormat(
@@ -47,86 +51,35 @@ class JSNumberFormat : public JSObject {
       Isolate* isolate, Handle<JSNumberFormat> number_format,
       Handle<Object> numeric_obj);
 
-  // A utility function used by the above JSNumberFormat::FormatToParts()
-  // and JSRelativeTimeFormat::FormatToParts().
-  // Format the number by using the icu::NumberFormat to get the field
-  // information. It add an object into the result array, starting from the
-  // start_index and return the total number of elements in the result array.
-  // For each object added as element, it set the substring of the field as
-  // "value", the field type as "type". If the unit is not null, it also set
-  // unit as "unit" to each added object.
-  V8_WARN_UNUSED_RESULT static Maybe<int> FormatToParts(
-      Isolate* isolate, Handle<JSArray> result, int start_index,
-      const icu::NumberFormat& fmt, Handle<Object> numeric_obj,
-      Handle<String> unit);
-
   V8_WARN_UNUSED_RESULT static MaybeHandle<String> FormatNumeric(
-      Isolate* isolate, const icu::NumberFormat& number_format,
+      Isolate* isolate,
+      const icu::number::LocalizedNumberFormatter& number_format,
       Handle<Object> numeric_obj);
 
   V8_EXPORT_PRIVATE static const std::set<std::string>& GetAvailableLocales();
 
-  Handle<String> StyleAsString() const;
-  Handle<String> CurrencyDisplayAsString() const;
+  // Helper functions shared with JSPluralRules.
+  static int32_t MinimumIntegerDigitsFromSkeleton(
+      const icu::UnicodeString& skeleton);
+  static bool FractionDigitsFromSkeleton(const icu::UnicodeString& skeleton,
+                                         int32_t* minimum, int32_t* maximum);
+  static bool SignificantDigitsFromSkeleton(const icu::UnicodeString& skeleton,
+                                            int32_t* minimum, int32_t* maximum);
+  static icu::number::LocalizedNumberFormatter SetDigitOptionsToFormatter(
+      const icu::number::LocalizedNumberFormatter& icu_number_formatter,
+      const Intl::NumberFormatDigitOptions& digit_options);
 
   DECL_CAST(JSNumberFormat)
   DECL_PRINTER(JSNumberFormat)
   DECL_VERIFIER(JSNumberFormat)
 
-  // [[Style]] is one of the values "decimal", "percent" or "currency",
-  // identifying the style of the number format.
-  enum class Style {
-    DECIMAL,
-    PERCENT,
-    CURRENCY,
-
-    COUNT
-  };
-  inline void set_style(Style style);
-  inline Style style() const;
-
-  // [[CurrencyDisplay]] is one of the values "code", "symbol" or "name",
-  // identifying the display of the currency number format.
-  enum class CurrencyDisplay {
-    CODE,
-    SYMBOL,
-    NAME,
-
-    COUNT
-  };
-  inline void set_currency_display(CurrencyDisplay currency_display);
-  inline CurrencyDisplay currency_display() const;
-
-// Layout description.
-#define JS_NUMBER_FORMAT_FIELDS(V)       \
-  V(kLocaleOffset, kTaggedSize)          \
-  V(kICUNumberFormatOffset, kTaggedSize) \
-  V(kBoundFormatOffset, kTaggedSize)     \
-  V(kFlagsOffset, kTaggedSize)           \
-  /* Total size. */                      \
-  V(kSize, 0)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize, JS_NUMBER_FORMAT_FIELDS)
-#undef JS_NUMBER_FORMAT_FIELDS
-
-// Bit positions in |flags|.
-#define FLAGS_BIT_FIELDS(V, _) \
-  V(StyleBits, Style, 2, _)    \
-  V(CurrencyDisplayBits, CurrencyDisplay, 2, _)
-
-  DEFINE_BIT_FIELDS(FLAGS_BIT_FIELDS)
-#undef FLAGS_BIT_FIELDS
-
-  STATIC_ASSERT(Style::DECIMAL <= StyleBits::kMax);
-  STATIC_ASSERT(Style::PERCENT <= StyleBits::kMax);
-  STATIC_ASSERT(Style::CURRENCY <= StyleBits::kMax);
-
-  STATIC_ASSERT(CurrencyDisplay::CODE <= CurrencyDisplayBits::kMax);
-  STATIC_ASSERT(CurrencyDisplay::SYMBOL <= CurrencyDisplayBits::kMax);
-  STATIC_ASSERT(CurrencyDisplay::NAME <= CurrencyDisplayBits::kMax);
+  // Layout description.
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JS_NUMBER_FORMAT_FIELDS)
 
   DECL_ACCESSORS(locale, String)
-  DECL_ACCESSORS(icu_number_format, Managed<icu::NumberFormat>)
+  DECL_ACCESSORS(icu_number_formatter,
+                 Managed<icu::number::LocalizedNumberFormatter>)
   DECL_ACCESSORS(bound_format, Object)
   DECL_INT_ACCESSORS(flags)
 

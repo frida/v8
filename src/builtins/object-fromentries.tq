@@ -5,7 +5,7 @@
 namespace object {
 
   transitioning macro ObjectFromEntriesFastCase(implicit context: Context)(
-      iterable: Object): JSObject labels IfSlow {
+      iterable: JSAny): JSObject labels IfSlow {
     typeswitch (iterable) {
       case (array: FastJSArrayWithNoCustomIteration): {
         const elements: FixedArray =
@@ -14,7 +14,7 @@ namespace object {
         const result: JSObject = NewJSObject();
 
         for (let k: Smi = 0; k < length; ++k) {
-          const value: Object = array::LoadElementOrUndefined(elements, k);
+          const value: JSAny = array::LoadElementOrUndefined(elements, k);
           const pair: KeyValuePair =
               collections::LoadKeyValuePairNoSideEffects(value)
               otherwise IfSlow;
@@ -26,32 +26,31 @@ namespace object {
         }
         return result;
       }
-      case (Object): {
+      case (JSAny): {
         goto IfSlow;
       }
     }
   }
 
   transitioning javascript builtin
-  ObjectFromEntries(implicit context: Context)(receiver: Object, ...arguments):
-      Object {
-    const iterable: Object = arguments[0];
+  ObjectFromEntries(js-implicit context: NativeContext, receiver: JSAny)(
+      ...arguments): JSAny {
+    const iterable: JSAny = arguments[0];
     try {
       if (IsNullOrUndefined(iterable)) goto Throw;
       return ObjectFromEntriesFastCase(iterable) otherwise IfSlow;
     }
     label IfSlow {
       const result: JSObject = NewJSObject();
-      const fastIteratorResultMap: Map =
-          Cast<Map>(LoadNativeContext(context)[ITERATOR_RESULT_MAP_INDEX])
-          otherwise unreachable;
+      const fastIteratorResultMap: Map = GetIteratorResultMap();
       let i: iterator::IteratorRecord = iterator::GetIterator(iterable);
       try {
         assert(!IsNullOrUndefined(i.object));
         while (true) {
-          const step: Object = iterator::IteratorStep(i, fastIteratorResultMap)
+          const step: JSReceiver =
+              iterator::IteratorStep(i, fastIteratorResultMap)
               otherwise return result;
-          const iteratorValue: Object =
+          const iteratorValue: JSAny =
               iterator::IteratorValue(step, fastIteratorResultMap);
           const pair: KeyValuePair =
               collections::LoadKeyValuePair(iteratorValue);
@@ -63,7 +62,7 @@ namespace object {
       }
     }
     label Throw deferred {
-      ThrowTypeError(kNotIterable);
+      ThrowTypeError(MessageTemplate::kNotIterable);
     }
   }
 }  // namespace object

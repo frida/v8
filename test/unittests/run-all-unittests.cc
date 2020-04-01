@@ -38,9 +38,14 @@ int main(int argc, char** argv) {
   // Don't catch SEH exceptions and continue as the following tests might hang
   // in an broken environment on windows.
   testing::GTEST_FLAG(catch_exceptions) = false;
+
+  // Most V8 unit-tests are multi-threaded, so enable thread-safe death-tests.
+  testing::FLAGS_gtest_death_test_style = "threadsafe";
+
   testing::InitGoogleMock(&argc, argv);
   testing::AddGlobalTestEnvironment(new DefaultPlatformEnvironment);
   v8::V8::SetFlagsFromCommandLine(&argc, argv, true);
   v8::V8::InitializeExternalStartupData(argv[0]);
+  v8::V8::InitializeICUDefaultLocation(argv[0]);
   return RUN_ALL_TESTS();
 }

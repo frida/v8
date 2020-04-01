@@ -4,11 +4,11 @@
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
-#include "src/counters.h"
-#include "src/elements.h"
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/objects/elements.h"
 #include "src/objects/heap-number-inl.h"
 #include "src/objects/js-array-buffer-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -33,7 +33,7 @@ int64_t CapRelativeIndex(Handle<Object> num, int64_t minimum, int64_t maximum) {
                         : std::min<int64_t>(relative, maximum);
   } else {
     DCHECK(num->IsHeapNumber());
-    double relative = HeapNumber::cast(*num)->value();
+    double relative = HeapNumber::cast(*num).value();
     DCHECK(!std::isnan(relative));
     return static_cast<int64_t>(
         relative < 0 ? std::max<double>(relative + maximum, minimum)
@@ -93,14 +93,12 @@ BUILTIN(TypedArrayPrototypeCopyWithin) {
   DCHECK_LT(to, len);
   DCHECK_GE(len - count, 0);
 
-  Handle<FixedTypedArrayBase> elements(
-      FixedTypedArrayBase::cast(array->elements()), isolate);
   size_t element_size = array->element_size();
   to = to * element_size;
   from = from * element_size;
   count = count * element_size;
 
-  uint8_t* data = static_cast<uint8_t*>(elements->DataPtr());
+  uint8_t* data = static_cast<uint8_t*>(array->DataPtr());
   std::memmove(data + to, data + from, count);
 
   return *array;
@@ -156,9 +154,7 @@ BUILTIN(TypedArrayPrototypeFill) {
   DCHECK_LE(end, len);
   DCHECK_LE(count, len);
 
-  return ElementsAccessor::ForKind(kind)->Fill(array, obj_value,
-                                               static_cast<uint32_t>(start),
-                                               static_cast<uint32_t>(end));
+  return ElementsAccessor::ForKind(kind)->Fill(array, obj_value, start, end);
 }
 
 BUILTIN(TypedArrayPrototypeIncludes) {
@@ -188,9 +184,8 @@ BUILTIN(TypedArrayPrototypeIncludes) {
 
   Handle<Object> search_element = args.atOrUndefined(isolate, 1);
   ElementsAccessor* elements = array->GetElementsAccessor();
-  Maybe<bool> result = elements->IncludesValue(isolate, array, search_element,
-                                               static_cast<uint32_t>(index),
-                                               static_cast<uint32_t>(len));
+  Maybe<bool> result =
+      elements->IncludesValue(isolate, array, search_element, index, len);
   MAYBE_RETURN(result, ReadOnlyRoots(isolate).exception());
   return *isolate->factory()->ToBoolean(result.FromJust());
 }
@@ -219,9 +214,8 @@ BUILTIN(TypedArrayPrototypeIndexOf) {
 
   Handle<Object> search_element = args.atOrUndefined(isolate, 1);
   ElementsAccessor* elements = array->GetElementsAccessor();
-  Maybe<int64_t> result = elements->IndexOfValue(isolate, array, search_element,
-                                                 static_cast<uint32_t>(index),
-                                                 static_cast<uint32_t>(len));
+  Maybe<int64_t> result =
+      elements->IndexOfValue(isolate, array, search_element, index, len);
   MAYBE_RETURN(result, ReadOnlyRoots(isolate).exception());
   return *isolate->factory()->NewNumberFromInt64(result.FromJust());
 }
@@ -254,8 +248,8 @@ BUILTIN(TypedArrayPrototypeLastIndexOf) {
 
   Handle<Object> search_element = args.atOrUndefined(isolate, 1);
   ElementsAccessor* elements = array->GetElementsAccessor();
-  Maybe<int64_t> result = elements->LastIndexOfValue(
-      array, search_element, static_cast<uint32_t>(index));
+  Maybe<int64_t> result =
+      elements->LastIndexOfValue(array, search_element, index);
   MAYBE_RETURN(result, ReadOnlyRoots(isolate).exception());
   return *isolate->factory()->NewNumberFromInt64(result.FromJust());
 }

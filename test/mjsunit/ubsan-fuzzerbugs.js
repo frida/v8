@@ -50,6 +50,7 @@ float_array[0] = 1e51;
   function __f_14159(buffer) {
     try { return buffer.getUint16(Infinity, true); } catch(e) { return 0; }
   }
+  %PrepareFunctionForOptimization(__f_14159);
   __f_14159(buffer);
   %OptimizeFunctionOnNextCall(__f_14159);
   __f_14159(buffer);
@@ -67,26 +68,9 @@ float_array[0] = 1e51;
       }
     }
   }
+  %PrepareFunctionForOptimization(f);
   f();
   f();
   %OptimizeFunctionOnNextCall(f);
   f();
-})();
-
-// crbug.com/935133
-(function() {
-  var called_has = false;
-  var proxy = new Proxy({}, {
-    has: function(x, p) {
-      called_has = true;
-      throw "The test may finish now";
-    },
-  });
-  proxy.length = 2147483648;
-  try {
-    Array.prototype.sort.call(proxy);
-  } catch(e) {
-    assertTrue(e === "The test may finish now");
-  }
-  assertTrue(called_has);
 })();

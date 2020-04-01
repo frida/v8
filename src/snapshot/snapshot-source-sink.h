@@ -5,8 +5,11 @@
 #ifndef V8_SNAPSHOT_SNAPSHOT_SOURCE_SINK_H_
 #define V8_SNAPSHOT_SNAPSHOT_SOURCE_SINK_H_
 
+#include <utility>
+
 #include "src/base/logging.h"
-#include "src/utils.h"
+#include "src/snapshot/serializer-common.h"
+#include "src/utils/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -25,7 +28,7 @@ class SnapshotByteSource final {
         position_(0) {}
 
   explicit SnapshotByteSource(Vector<const byte> payload)
-      : data_(payload.start()), length_(payload.length()), position_(0) {}
+      : data_(payload.begin()), length_(payload.length()), position_(0) {}
 
   ~SnapshotByteSource() = default;
 
@@ -65,6 +68,10 @@ class SnapshotByteSource final {
 
   int position() { return position_; }
   void set_position(int position) { position_ = position; }
+
+  uint32_t GetChecksum() const {
+    return Checksum(Vector<const byte>(data_, length_));
+  }
 
  private:
   const byte* data_;

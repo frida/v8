@@ -46,9 +46,9 @@ zx_status_t zx_thread_read_state(zx_handle_t h, uint32_t k, void* b, size_t l) {
                               &dummy_out_len);
 }
 #if defined(__x86_64__)
-typedef zx_x86_64_general_regs_t zx_thread_state_general_regs_t;
+using zx_thread_state_general_regs_t = zx_x86_64_general_regs_t;
 #else
-typedef zx_arm64_general_regs_t zx_thread_state_general_regs_t;
+using zx_thread_state_general_regs_t = zx_arm64_general_regs_t;
 #endif
 #endif  // !defined(ZX_THREAD_STATE_GENERAL_REGS)
 
@@ -71,31 +71,31 @@ typedef zx_arm64_general_regs_t zx_thread_state_general_regs_t;
 
 #if defined(__arm__)
 
-typedef struct sigcontext mcontext_t;
+using mcontext_t = struct sigcontext;
 
-typedef struct ucontext {
+struct ucontext_t {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   // Other fields are not used by V8, don't define them here.
-} ucontext_t;
+};
 
 #elif defined(__aarch64__)
 
-typedef struct sigcontext mcontext_t;
+using mcontext_t = struct sigcontext;
 
-typedef struct ucontext {
+struct ucontext_t {
   uint64_t uc_flags;
   struct ucontext *uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   // Other fields are not used by V8, don't define them here.
-} ucontext_t;
+};
 
 #elif defined(__mips__)
 // MIPS version of sigcontext, for Android bionic.
-typedef struct {
+struct mcontext_t {
   uint32_t regmask;
   uint32_t status;
   uint64_t pc;
@@ -114,50 +114,50 @@ typedef struct {
   uint32_t lo2;
   uint32_t hi3;
   uint32_t lo3;
-} mcontext_t;
+};
 
-typedef struct ucontext {
+struct ucontext_t {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   // Other fields are not used by V8, don't define them here.
-} ucontext_t;
+};
 
 #elif defined(__i386__)
 // x86 version for Android.
-typedef struct {
+struct mcontext_t {
   uint32_t gregs[19];
   void* fpregs;
   uint32_t oldmask;
   uint32_t cr2;
-} mcontext_t;
+};
 
-typedef uint32_t kernel_sigset_t[2];  // x86 kernel uses 64-bit signal masks
-typedef struct ucontext {
+using kernel_sigset_t = uint32_t[2];  // x86 kernel uses 64-bit signal masks
+struct ucontext_t {
   uint32_t uc_flags;
   struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   // Other fields are not used by V8, don't define them here.
-} ucontext_t;
+};
 enum { REG_EBP = 6, REG_ESP = 7, REG_EIP = 14 };
 
 #elif defined(__x86_64__)
 // x64 version for Android.
-typedef struct {
+struct mcontext_t {
   uint64_t gregs[23];
   void* fpregs;
   uint64_t __reserved1[8];
-} mcontext_t;
+};
 
-typedef struct ucontext {
+struct ucontext_t {
   uint64_t uc_flags;
   struct ucontext *uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   // Other fields are not used by V8, don't define them here.
-} ucontext_t;
+};
 enum { REG_RBP = 10, REG_RSP = 15, REG_RIP = 16 };
 #endif
 
@@ -372,7 +372,9 @@ void SignalHandler::HandleProfilerSignal(int signal, siginfo_t* info,
 void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
   // Extracting the sample from the context is extremely machine dependent.
   ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(context);
-#if !(V8_OS_OPENBSD || (V8_OS_LINUX && (V8_HOST_ARCH_PPC || V8_HOST_ARCH_S390)))
+#if !(V8_OS_OPENBSD || \
+      (V8_OS_LINUX &&  \
+       (V8_HOST_ARCH_PPC || V8_HOST_ARCH_S390 || V8_HOST_ARCH_PPC64)))
   mcontext_t& mcontext = ucontext->uc_mcontext;
 #endif
 #if V8_OS_LINUX
@@ -413,18 +415,20 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
   state->pc = reinterpret_cast<void*>(mcontext.pc);
   state->sp = reinterpret_cast<void*>(mcontext.gregs[29]);
   state->fp = reinterpret_cast<void*>(mcontext.gregs[30]);
-#elif V8_HOST_ARCH_PPC
+#elif V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64
 #if V8_LIBC_GLIBC
   state->pc = reinterpret_cast<void*>(ucontext->uc_mcontext.regs->nip);
   state->sp =
       reinterpret_cast<void*>(ucontext->uc_mcontext.regs->gpr[PT_R1]);
   state->fp =
       reinterpret_cast<void*>(ucontext->uc_mcontext.regs->gpr[PT_R31]);
+  state->lr = reinterpret_cast<void*>(ucontext->uc_mcontext.regs->link);
 #else
   // Some C libraries, notably Musl, define the regs member as a void pointer
   state->pc = reinterpret_cast<void*>(ucontext->uc_mcontext.gp_regs[32]);
   state->sp = reinterpret_cast<void*>(ucontext->uc_mcontext.gp_regs[1]);
   state->fp = reinterpret_cast<void*>(ucontext->uc_mcontext.gp_regs[31]);
+  state->lr = reinterpret_cast<void*>(ucontext->uc_mcontext.gp_regs[36]);
 #endif
 #elif V8_HOST_ARCH_S390
 #if V8_TARGET_ARCH_32_BIT
@@ -437,38 +441,20 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
 #endif  // V8_TARGET_ARCH_32_BIT
   state->sp = reinterpret_cast<void*>(ucontext->uc_mcontext.gregs[15]);
   state->fp = reinterpret_cast<void*>(ucontext->uc_mcontext.gregs[11]);
+  state->lr = reinterpret_cast<void*>(ucontext->uc_mcontext.gregs[14]);
 #endif  // V8_HOST_ARCH_*
 #elif V8_OS_IOS
 
 #if V8_TARGET_ARCH_ARM64
   // Building for the iOS device.
-#ifdef __DARWIN_OPAQUE_ARM_THREAD_STATE64
-  state->pc = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
-  state->sp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
-  state->fp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
-#else
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__pc);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__sp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__fp);
-#endif
-#elif V8_TARGET_ARCH_ARM
-  // Building for the iOS device.
-  state->pc = reinterpret_cast<void *>(mcontext->__ss.__pc);
-  state->sp = reinterpret_cast<void *>(mcontext->__ss.__sp);
-  state->fp = reinterpret_cast<void *>(mcontext->__ss.__r[7]);
 #elif V8_TARGET_ARCH_X64
   // Building for the iOS simulator.
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__rip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__rsp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__rbp);
-#elif V8_TARGET_ARCH_IA32
-  // Building for the iOS simulator.
-  state->pc = reinterpret_cast<void*>(mcontext->__ss.__eip);
-  state->sp = reinterpret_cast<void*>(mcontext->__ss.__esp);
-  state->fp = reinterpret_cast<void*>(mcontext->__ss.__ebp);
 #else
 #error Unexpected iOS target architecture.
 #endif  // V8_TARGET_ARCH_ARM64
@@ -493,9 +479,9 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
   state->sp = reinterpret_cast<void*>(mcontext.mc_rsp);
   state->fp = reinterpret_cast<void*>(mcontext.mc_rbp);
 #elif V8_HOST_ARCH_ARM
-  state->pc = reinterpret_cast<void*>(mcontext.mc_r15);
-  state->sp = reinterpret_cast<void*>(mcontext.mc_r13);
-  state->fp = reinterpret_cast<void*>(mcontext.mc_r11);
+  state->pc = reinterpret_cast<void*>(mcontext.__gregs[_REG_PC]);
+  state->sp = reinterpret_cast<void*>(mcontext.__gregs[_REG_SP]);
+  state->fp = reinterpret_cast<void*>(mcontext.__gregs[_REG_FP]);
 #endif  // V8_HOST_ARCH_*
 #elif V8_OS_NETBSD
 #if V8_HOST_ARCH_IA32
@@ -535,13 +521,14 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
   state->pc = reinterpret_cast<void*>(mcontext.jmp_context.iar);
   state->sp = reinterpret_cast<void*>(mcontext.jmp_context.gpr[1]);
   state->fp = reinterpret_cast<void*>(mcontext.jmp_context.gpr[31]);
+  state->lr = reinterpret_cast<void*>(mcontext.jmp_context.lr);
 #endif  // V8_OS_AIX
 }
 
 #endif  // USE_SIGNALS
 
 Sampler::Sampler(Isolate* isolate)
-    : isolate_(isolate), data_(base::make_unique<PlatformData>()) {}
+    : isolate_(isolate), data_(std::make_unique<PlatformData>()) {}
 
 Sampler::~Sampler() {
   DCHECK(!IsActive());

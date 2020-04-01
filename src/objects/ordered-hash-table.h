@@ -6,11 +6,11 @@
 #define V8_OBJECTS_ORDERED_HASH_TABLE_H_
 
 #include "src/base/export-template.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/js-objects.h"
 #include "src/objects/smi.h"
-#include "src/roots.h"
+#include "src/roots/roots.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -64,8 +64,8 @@ class OrderedHashTable : public FixedArray {
  public:
   // Returns an OrderedHashTable (possibly |table|) with enough space
   // to add at least one new element.
-  static Handle<Derived> EnsureGrowable(Isolate* isolate,
-                                        Handle<Derived> table);
+  static MaybeHandle<Derived> EnsureGrowable(Isolate* isolate,
+                                             Handle<Derived> table);
 
   // Returns an OrderedHashTable (possibly |table|) that's shrunken
   // if possible.
@@ -126,7 +126,7 @@ class OrderedHashTable : public FixedArray {
     return get(EntryToIndex(entry));
   }
 
-  bool IsObsolete() { return !get(NextTableIndex())->IsSmi(); }
+  bool IsObsolete() { return !get(NextTableIndex()).IsSmi(); }
 
   // The next newer table. This is only valid if the table is obsolete.
   Derived NextTable() { return Derived::cast(get(NextTableIndex())); }
@@ -197,11 +197,11 @@ class OrderedHashTable : public FixedArray {
 
  protected:
   // Returns an OrderedHashTable with a capacity of at least |capacity|.
-  static Handle<Derived> Allocate(
+  static MaybeHandle<Derived> Allocate(
       Isolate* isolate, int capacity,
       AllocationType allocation = AllocationType::kYoung);
-  static Handle<Derived> Rehash(Isolate* isolate, Handle<Derived> table,
-                                int new_capacity);
+  static MaybeHandle<Derived> Rehash(Isolate* isolate, Handle<Derived> table,
+                                     int new_capacity);
 
   void SetNumberOfBuckets(int num) {
     set(NumberOfBucketsIndex(), Smi::FromInt(num));
@@ -235,20 +235,20 @@ class V8_EXPORT_PRIVATE OrderedHashSet
  public:
   DECL_CAST(OrderedHashSet)
 
-  static Handle<OrderedHashSet> Add(Isolate* isolate,
-                                    Handle<OrderedHashSet> table,
-                                    Handle<Object> value);
+  static MaybeHandle<OrderedHashSet> Add(Isolate* isolate,
+                                         Handle<OrderedHashSet> table,
+                                         Handle<Object> value);
   static Handle<FixedArray> ConvertToKeysArray(Isolate* isolate,
                                                Handle<OrderedHashSet> table,
                                                GetKeysConversion convert);
-  static Handle<OrderedHashSet> Rehash(Isolate* isolate,
-                                       Handle<OrderedHashSet> table,
-                                       int new_capacity);
-  static Handle<OrderedHashSet> Allocate(
+  static MaybeHandle<OrderedHashSet> Rehash(Isolate* isolate,
+                                            Handle<OrderedHashSet> table,
+                                            int new_capacity);
+  static MaybeHandle<OrderedHashSet> Allocate(
       Isolate* isolate, int capacity,
       AllocationType allocation = AllocationType::kYoung);
   static HeapObject GetEmpty(ReadOnlyRoots ro_roots);
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
   static inline bool Is(Handle<HeapObject> table);
   static const int kPrefixSize = 0;
 
@@ -262,16 +262,17 @@ class V8_EXPORT_PRIVATE OrderedHashMap
 
   // Returns a value if the OrderedHashMap contains the key, otherwise
   // returns undefined.
-  static Handle<OrderedHashMap> Add(Isolate* isolate,
-                                    Handle<OrderedHashMap> table,
-                                    Handle<Object> key, Handle<Object> value);
+  static MaybeHandle<OrderedHashMap> Add(Isolate* isolate,
+                                         Handle<OrderedHashMap> table,
+                                         Handle<Object> key,
+                                         Handle<Object> value);
 
-  static Handle<OrderedHashMap> Allocate(
+  static MaybeHandle<OrderedHashMap> Allocate(
       Isolate* isolate, int capacity,
       AllocationType allocation = AllocationType::kYoung);
-  static Handle<OrderedHashMap> Rehash(Isolate* isolate,
-                                       Handle<OrderedHashMap> table,
-                                       int new_capacity);
+  static MaybeHandle<OrderedHashMap> Rehash(Isolate* isolate,
+                                            Handle<OrderedHashMap> table,
+                                            int new_capacity);
   Object ValueAt(int entry);
 
   // This takes and returns raw Address values containing tagged Object
@@ -279,7 +280,7 @@ class V8_EXPORT_PRIVATE OrderedHashMap
   static Address GetHash(Isolate* isolate, Address raw_key);
 
   static HeapObject GetEmpty(ReadOnlyRoots ro_roots);
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
   static inline bool Is(Handle<HeapObject> table);
 
   static const int kValueOffset = 1;
@@ -527,8 +528,16 @@ class SmallOrderedHashTable : public HeapObject {
     return NumberOfDeletedElementsOffset() + kOneByteSize;
   }
 
+  static constexpr Offset PaddingOffset() {
+    return NumberOfBucketsOffset() + kOneByteSize;
+  }
+
+  static constexpr size_t PaddingSize() {
+    return RoundUp<kTaggedSize>(PaddingOffset()) - PaddingOffset();
+  }
+
   static constexpr Offset DataTableStartOffset() {
-    return RoundUp<kTaggedSize>(NumberOfBucketsOffset());
+    return PaddingOffset() + PaddingSize();
   }
 
   static constexpr int DataTableSizeFor(int capacity) {
@@ -540,13 +549,13 @@ class SmallOrderedHashTable : public HeapObject {
   byte getByte(Offset offset, ByteIndex index) const {
     DCHECK(offset < DataTableStartOffset() ||
            offset >= GetBucketsStartOffset());
-    return READ_BYTE_FIELD(*this, offset + (index * kOneByteSize));
+    return ReadField<byte>(offset + (index * kOneByteSize));
   }
 
   void setByte(Offset offset, ByteIndex index, byte value) {
     DCHECK(offset < DataTableStartOffset() ||
            offset >= GetBucketsStartOffset());
-    WRITE_BYTE_FIELD(*this, offset + (index * kOneByteSize), value);
+    WriteField<byte>(offset + (index * kOneByteSize), value);
   }
 
   Offset GetDataEntryOffset(int entry, int relative_index) const {
@@ -593,7 +602,7 @@ class SmallOrderedHashSet : public SmallOrderedHashTable<SmallOrderedHashSet> {
   V8_EXPORT_PRIVATE bool HasKey(Isolate* isolate, Handle<Object> key);
 
   static inline bool Is(Handle<HeapObject> table);
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
   static Handle<SmallOrderedHashSet> Rehash(Isolate* isolate,
                                             Handle<SmallOrderedHashSet> table,
                                             int new_capacity);
@@ -626,7 +635,7 @@ class SmallOrderedHashMap : public SmallOrderedHashTable<SmallOrderedHashMap> {
                                        SmallOrderedHashMap table, Object key);
   V8_EXPORT_PRIVATE bool HasKey(Isolate* isolate, Handle<Object> key);
   static inline bool Is(Handle<HeapObject> table);
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
 
   static Handle<SmallOrderedHashMap> Rehash(Isolate* isolate,
                                             Handle<SmallOrderedHashMap> table,
@@ -648,8 +657,9 @@ class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) OrderedHashTableHandler {
  public:
   using Entry = int;
 
-  static Handle<HeapObject> Allocate(Isolate* isolate, int capacity);
-  static bool Delete(Handle<HeapObject> table, Handle<Object> key);
+  static MaybeHandle<HeapObject> Allocate(Isolate* isolate, int capacity);
+  static bool Delete(Isolate* isolate, Handle<HeapObject> table,
+                     Handle<Object> key);
   static bool HasKey(Isolate* isolate, Handle<HeapObject> table,
                      Handle<Object> key);
 
@@ -664,9 +674,9 @@ extern template class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
 class V8_EXPORT_PRIVATE OrderedHashMapHandler
     : public OrderedHashTableHandler<SmallOrderedHashMap, OrderedHashMap> {
  public:
-  static Handle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
-                                Handle<Object> key, Handle<Object> value);
-  static Handle<OrderedHashMap> AdjustRepresentation(
+  static MaybeHandle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
+                                     Handle<Object> key, Handle<Object> value);
+  static MaybeHandle<OrderedHashMap> AdjustRepresentation(
       Isolate* isolate, Handle<SmallOrderedHashMap> table);
 };
 
@@ -676,9 +686,9 @@ extern template class EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
 class V8_EXPORT_PRIVATE OrderedHashSetHandler
     : public OrderedHashTableHandler<SmallOrderedHashSet, OrderedHashSet> {
  public:
-  static Handle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
-                                Handle<Object> key);
-  static Handle<OrderedHashSet> AdjustRepresentation(
+  static MaybeHandle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
+                                     Handle<Object> key);
+  static MaybeHandle<OrderedHashSet> AdjustRepresentation(
       Isolate* isolate, Handle<SmallOrderedHashSet> table);
 };
 
@@ -687,21 +697,21 @@ class OrderedNameDictionary
  public:
   DECL_CAST(OrderedNameDictionary)
 
-  V8_EXPORT_PRIVATE static Handle<OrderedNameDictionary> Add(
+  V8_EXPORT_PRIVATE static MaybeHandle<OrderedNameDictionary> Add(
       Isolate* isolate, Handle<OrderedNameDictionary> table, Handle<Name> key,
       Handle<Object> value, PropertyDetails details);
 
-  V8_EXPORT_PRIVATE void SetEntry(Isolate* isolate, int entry, Object key,
-                                  Object value, PropertyDetails details);
+  V8_EXPORT_PRIVATE void SetEntry(int entry, Object key, Object value,
+                                  PropertyDetails details);
 
   V8_EXPORT_PRIVATE static Handle<OrderedNameDictionary> DeleteEntry(
       Isolate* isolate, Handle<OrderedNameDictionary> table, int entry);
 
-  static Handle<OrderedNameDictionary> Allocate(
+  static MaybeHandle<OrderedNameDictionary> Allocate(
       Isolate* isolate, int capacity,
       AllocationType allocation = AllocationType::kYoung);
 
-  static Handle<OrderedNameDictionary> Rehash(
+  static MaybeHandle<OrderedNameDictionary> Rehash(
       Isolate* isolate, Handle<OrderedNameDictionary> table, int new_capacity);
 
   // Returns the value for entry.
@@ -720,7 +730,8 @@ class OrderedNameDictionary
   inline int Hash();
 
   static HeapObject GetEmpty(ReadOnlyRoots ro_roots);
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
+  static inline bool Is(Handle<HeapObject> table);
 
   static const int kValueOffset = 1;
   static const int kPropertyDetailsOffset = 2;
@@ -737,16 +748,16 @@ class V8_EXPORT_PRIVATE OrderedNameDictionaryHandler
     : public OrderedHashTableHandler<SmallOrderedNameDictionary,
                                      OrderedNameDictionary> {
  public:
-  static Handle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
-                                Handle<Name> key, Handle<Object> value,
-                                PropertyDetails details);
+  static MaybeHandle<HeapObject> Add(Isolate* isolate, Handle<HeapObject> table,
+                                     Handle<Name> key, Handle<Object> value,
+                                     PropertyDetails details);
   static Handle<HeapObject> Shrink(Isolate* isolate, Handle<HeapObject> table);
 
   static Handle<HeapObject> DeleteEntry(Isolate* isolate,
                                         Handle<HeapObject> table, int entry);
   static int FindEntry(Isolate* isolate, HeapObject table, Name key);
-  static void SetEntry(Isolate* isolate, HeapObject table, int entry,
-                       Object key, Object value, PropertyDetails details);
+  static void SetEntry(HeapObject table, int entry, Object key, Object value,
+                       PropertyDetails details);
 
   // Returns the value for entry.
   static Object ValueAt(HeapObject table, int entry);
@@ -771,7 +782,7 @@ class V8_EXPORT_PRIVATE OrderedNameDictionaryHandler
   static const int kNotFound = -1;
 
  protected:
-  static Handle<OrderedNameDictionary> AdjustRepresentation(
+  static MaybeHandle<OrderedNameDictionary> AdjustRepresentation(
       Isolate* isolate, Handle<SmallOrderedNameDictionary> table);
 };
 
@@ -818,10 +829,11 @@ class SmallOrderedNameDictionary
       Isolate* isolate, Handle<SmallOrderedNameDictionary> table,
       Handle<Name> key, Handle<Object> value, PropertyDetails details);
 
-  V8_EXPORT_PRIVATE void SetEntry(Isolate* isolate, int entry, Object key,
-                                  Object value, PropertyDetails details);
+  V8_EXPORT_PRIVATE void SetEntry(int entry, Object key, Object value,
+                                  PropertyDetails details);
 
-  static inline RootIndex GetMapRootIndex();
+  static inline Handle<Map> GetMap(ReadOnlyRoots roots);
+  static inline bool Is(Handle<HeapObject> table);
 
   OBJECT_CONSTRUCTORS(SmallOrderedNameDictionary,
                       SmallOrderedHashTable<SmallOrderedNameDictionary>);

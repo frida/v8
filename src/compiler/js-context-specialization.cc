@@ -6,11 +6,12 @@
 
 #include "src/compiler/common-operator.h"
 #include "src/compiler/js-graph.h"
+#include "src/compiler/js-heap-broker.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/node-properties.h"
-#include "src/contexts-inl.h"
+#include "src/objects/contexts-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -37,7 +38,7 @@ Reduction JSContextSpecialization::ReduceParameter(Node* node) {
     // Constant-fold the function parameter {node}.
     Handle<JSFunction> function;
     if (closure().ToHandle(&function)) {
-      Node* value = jsgraph()->HeapConstant(function);
+      Node* value = jsgraph()->Constant(JSFunctionRef(broker_, function));
       return Replace(value);
     }
   }
@@ -144,9 +145,10 @@ Reduction JSContextSpecialization::ReduceJSLoadContext(Node* node) {
 
   // Now walk up the concrete context chain for the remaining depth.
   ContextRef concrete = maybe_concrete.value();
-  concrete.SerializeContextChain();  // TODO(neis): Remove later.
-  for (; depth > 0; --depth) {
-    concrete = concrete.previous();
+  concrete = concrete.previous(&depth);
+  if (depth > 0) {
+    TRACE_BROKER_MISSING(broker(), "previous value for context " << concrete);
+    return SimplifyJSLoadContext(node, jsgraph()->Constant(concrete), depth);
   }
 
   if (!access.immutable()) {
@@ -157,10 +159,16 @@ Reduction JSContextSpecialization::ReduceJSLoadContext(Node* node) {
 
   // This will hold the final value, if we can figure it out.
   base::Optional<ObjectRef> maybe_value;
-
-  concrete.SerializeSlot(static_cast<int>(access.index()));
   maybe_value = concrete.get(static_cast<int>(access.index()));
-  if (maybe_value.has_value() && !maybe_value->IsSmi()) {
+
+  if (!maybe_value.has_value()) {
+    TRACE_BROKER_MISSING(broker(), "slot value " << access.index()
+                                                 << " for context "
+                                                 << concrete);
+    return SimplifyJSLoadContext(node, jsgraph()->Constant(concrete), depth);
+  }
+
+  if (!maybe_value->IsSmi()) {
     // Even though the context slot is immutable, the context might have escaped
     // before the function to which it belongs has initialized the slot.
     // We must be conservative and check if the value in the slot is currently
@@ -169,18 +177,11 @@ Reduction JSContextSpecialization::ReduceJSLoadContext(Node* node) {
     OddballType oddball_type = maybe_value->AsHeapObject().map().oddball_type();
     if (oddball_type == OddballType::kUndefined ||
         oddball_type == OddballType::kHole) {
-      maybe_value.reset();
+      return SimplifyJSLoadContext(node, jsgraph()->Constant(concrete), depth);
     }
   }
 
-  if (!maybe_value.has_value()) {
-    return SimplifyJSLoadContext(node, jsgraph()->Constant(concrete), depth);
-  }
-
   // Success. The context load can be replaced with the constant.
-  // TODO(titzer): record the specialization for sharing code across
-  // multiple contexts that have the same value in the corresponding context
-  // slot.
   Node* constant = jsgraph_->Constant(*maybe_value);
   ReplaceWithValue(node, constant);
   return Replace(constant);
@@ -207,9 +208,10 @@ Reduction JSContextSpecialization::ReduceJSStoreContext(Node* node) {
 
   // Now walk up the concrete context chain for the remaining depth.
   ContextRef concrete = maybe_concrete.value();
-  concrete.SerializeContextChain();  // TODO(neis): Remove later.
-  for (; depth > 0; --depth) {
-    concrete = concrete.previous();
+  concrete = concrete.previous(&depth);
+  if (depth > 0) {
+    TRACE_BROKER_MISSING(broker(), "previous value for context " << concrete);
+    return SimplifyJSStoreContext(node, jsgraph()->Constant(concrete), depth);
   }
 
   return SimplifyJSStoreContext(node, jsgraph()->Constant(concrete), depth);

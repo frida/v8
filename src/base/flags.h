@@ -53,13 +53,13 @@ class Flags final {
   }
 
   constexpr Flags operator&(const Flags& flags) const {
-    return Flags(*this) &= flags;
+    return Flags(mask_ & flags.mask_);
   }
   constexpr Flags operator|(const Flags& flags) const {
-    return Flags(*this) |= flags;
+    return Flags(mask_ | flags.mask_);
   }
   constexpr Flags operator^(const Flags& flags) const {
-    return Flags(*this) ^= flags;
+    return Flags(mask_ ^ flags.mask_);
   }
 
   Flags& operator&=(flag_type flag) { return operator&=(Flags(flag)); }
@@ -80,6 +80,8 @@ class Flags final {
 
   constexpr operator mask_type() const { return mask_; }
   constexpr bool operator!() const { return !mask_; }
+
+  Flags without(flag_type flag) { return *this & (~Flags(flag)); }
 
   friend size_t hash_value(const Flags& flags) { return flags.mask_; }
 

@@ -183,8 +183,7 @@ bool JsHttpRequestProcessor::Initialize(map<string, string>* opts,
   // Create a template for the global object where we set the
   // built-in global functions.
   Local<ObjectTemplate> global = ObjectTemplate::New(GetIsolate());
-  global->Set(String::NewFromUtf8(GetIsolate(), "log", NewStringType::kNormal)
-                  .ToLocalChecked(),
+  global->Set(String::NewFromUtf8Literal(GetIsolate(), "log"),
               FunctionTemplate::New(GetIsolate(), LogCallback));
 
   // Each processor gets its own context so different processors don't
@@ -210,8 +209,7 @@ bool JsHttpRequestProcessor::Initialize(map<string, string>* opts,
   // The script compiled and ran correctly.  Now we fetch out the
   // Process function from the global object.
   Local<String> process_name =
-      String::NewFromUtf8(GetIsolate(), "Process", NewStringType::kNormal)
-          .ToLocalChecked();
+      String::NewFromUtf8Literal(GetIsolate(), "Process");
   Local<Value> process_val;
   // If there is no Process function, or if it is not a function,
   // bail out
@@ -276,17 +274,13 @@ bool JsHttpRequestProcessor::InstallMaps(map<string, string>* opts,
 
   // Set the options object as a property on the global object.
   context->Global()
-      ->Set(context,
-            String::NewFromUtf8(GetIsolate(), "options", NewStringType::kNormal)
-                .ToLocalChecked(),
+      ->Set(context, String::NewFromUtf8Literal(GetIsolate(), "options"),
             opts_obj)
       .FromJust();
 
   Local<Object> output_obj = WrapMap(output);
   context->Global()
-      ->Set(context,
-            String::NewFromUtf8(GetIsolate(), "output", NewStringType::kNormal)
-                .ToLocalChecked(),
+      ->Set(context, String::NewFromUtf8Literal(GetIsolate(), "output"),
             output_obj)
       .FromJust();
 
@@ -563,21 +557,17 @@ Local<ObjectTemplate> JsHttpRequestProcessor::MakeRequestTemplate(
 
   // Add accessors for each of the fields of the request.
   result->SetAccessor(
-      String::NewFromUtf8(isolate, "path", NewStringType::kInternalized)
-          .ToLocalChecked(),
+      String::NewFromUtf8Literal(isolate, "path", NewStringType::kInternalized),
       GetPath);
+  result->SetAccessor(String::NewFromUtf8Literal(isolate, "referrer",
+                                                 NewStringType::kInternalized),
+                      GetReferrer);
   result->SetAccessor(
-      String::NewFromUtf8(isolate, "referrer", NewStringType::kInternalized)
-          .ToLocalChecked(),
-      GetReferrer);
-  result->SetAccessor(
-      String::NewFromUtf8(isolate, "host", NewStringType::kInternalized)
-          .ToLocalChecked(),
+      String::NewFromUtf8Literal(isolate, "host", NewStringType::kInternalized),
       GetHost);
-  result->SetAccessor(
-      String::NewFromUtf8(isolate, "userAgent", NewStringType::kInternalized)
-          .ToLocalChecked(),
-      GetUserAgent);
+  result->SetAccessor(String::NewFromUtf8Literal(isolate, "userAgent",
+                                                 NewStringType::kInternalized),
+                      GetUserAgent);
 
   // Again, return the result through the current handle scope.
   return handle_scope.Escape(result);
@@ -676,18 +666,16 @@ StringHttpRequest kSampleRequests[kSampleSize] = {
   StringHttpRequest("/", "localhost", "yahoo.com", "firefox")
 };
 
-
-bool ProcessEntries(v8::Platform* platform, HttpRequestProcessor* processor,
-                    int count, StringHttpRequest* reqs) {
+bool ProcessEntries(v8::Isolate* isolate, v8::Platform* platform,
+                    HttpRequestProcessor* processor, int count,
+                    StringHttpRequest* reqs) {
   for (int i = 0; i < count; i++) {
     bool result = processor->Process(&reqs[i]);
-    while (v8::platform::PumpMessageLoop(platform, Isolate::GetCurrent()))
-      continue;
+    while (v8::platform::PumpMessageLoop(platform, isolate)) continue;
     if (!result) return false;
   }
   return true;
 }
-
 
 void PrintMap(map<string, string>* m) {
   for (map<string, string>::iterator i = m->begin(); i != m->end(); i++) {
@@ -727,7 +715,9 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "Error initializing processor.\n");
     return 1;
   }
-  if (!ProcessEntries(platform.get(), &processor, kSampleSize, kSampleRequests))
+  if (!ProcessEntries(isolate, platform.get(), &processor, kSampleSize,
+                      kSampleRequests)) {
     return 1;
+  }
   PrintMap(&output);
 }

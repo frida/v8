@@ -4,9 +4,9 @@
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
-#include "src/counters.h"
 #include "src/heap/heap-inl.h"  // For public_symbol_table().
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -28,7 +28,7 @@ BUILTIN(SymbolConstructor) {
   if (!description->IsUndefined(isolate)) {
     ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, description,
                                        Object::ToString(isolate, description));
-    result->set_name(*description);
+    result->set_description(String::cast(*description));
   }
   return *result;
 }
@@ -54,13 +54,13 @@ BUILTIN(SymbolKeyFor) {
   Handle<Symbol> symbol = Handle<Symbol>::cast(obj);
   DisallowHeapAllocation no_gc;
   Object result;
-  if (symbol->is_public()) {
-    result = symbol->name();
-    DCHECK(result->IsString());
+  if (symbol->is_in_public_symbol_table()) {
+    result = symbol->description();
+    DCHECK(result.IsString());
   } else {
     result = ReadOnlyRoots(isolate).undefined_value();
   }
-  DCHECK_EQ(isolate->heap()->public_symbol_table()->SlowReverseLookup(*symbol),
+  DCHECK_EQ(isolate->heap()->public_symbol_table().SlowReverseLookup(*symbol),
             result);
   return result;
 }

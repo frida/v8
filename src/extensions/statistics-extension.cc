@@ -4,9 +4,9 @@
 
 #include "src/extensions/statistics-extension.h"
 
-#include "src/counters.h"
+#include "src/execution/isolate.h"
 #include "src/heap/heap-inl.h"  // crbug.com/v8/8499
-#include "src/isolate.h"
+#include "src/logging/counters.h"
 
 namespace v8 {
 namespace internal {
@@ -27,10 +27,10 @@ static void AddCounter(v8::Isolate* isolate,
                        StatsCounter* counter,
                        const char* name) {
   if (counter->Enabled()) {
-    object->Set(isolate->GetCurrentContext(),
-                v8::String::NewFromUtf8(isolate, name, NewStringType::kNormal)
-                    .ToLocalChecked(),
-                v8::Number::New(isolate, *counter->GetInternalPointer()))
+    object
+        ->Set(isolate->GetCurrentContext(),
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              v8::Number::New(isolate, *counter->GetInternalPointer()))
         .FromJust();
   }
 }
@@ -39,8 +39,7 @@ static void AddNumber(v8::Isolate* isolate, v8::Local<v8::Object> object,
                       double value, const char* name) {
   object
       ->Set(isolate->GetCurrentContext(),
-            v8::String::NewFromUtf8(isolate, name, NewStringType::kNormal)
-                .ToLocalChecked(),
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
             v8::Number::New(isolate, value))
       .FromJust();
 }
@@ -50,10 +49,11 @@ static void AddNumber64(v8::Isolate* isolate,
                         v8::Local<v8::Object> object,
                         int64_t value,
                         const char* name) {
-  object->Set(isolate->GetCurrentContext(),
-              v8::String::NewFromUtf8(isolate, name, NewStringType::kNormal)
-                  .ToLocalChecked(),
-              v8::Number::New(isolate, static_cast<double>(value))).FromJust();
+  object
+      ->Set(isolate->GetCurrentContext(),
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+            v8::Number::New(isolate, static_cast<double>(value)))
+      .FromJust();
 }
 
 
@@ -124,21 +124,22 @@ void StatisticsExtension::GetCounters(
               "amount_of_external_allocated_memory");
   args.GetReturnValue().Set(result);
 
-  HeapIterator iterator(reinterpret_cast<Isolate*>(args.GetIsolate())->heap());
+  HeapObjectIterator iterator(
+      reinterpret_cast<Isolate*>(args.GetIsolate())->heap());
   int reloc_info_total = 0;
   int source_position_table_total = 0;
-  for (HeapObject obj = iterator.next(); !obj.is_null();
-       obj = iterator.next()) {
-    if (obj->IsCode()) {
+  for (HeapObject obj = iterator.Next(); !obj.is_null();
+       obj = iterator.Next()) {
+    if (obj.IsCode()) {
       Code code = Code::cast(obj);
-      reloc_info_total += code->relocation_info()->Size();
-      ByteArray source_position_table = code->SourcePositionTable();
-      if (source_position_table->length() > 0) {
-        source_position_table_total += code->SourcePositionTable()->Size();
+      reloc_info_total += code.relocation_info().Size();
+      ByteArray source_position_table = code.SourcePositionTable();
+      if (source_position_table.length() > 0) {
+        source_position_table_total += code.SourcePositionTable().Size();
       }
-    } else if (obj->IsBytecodeArray()) {
+    } else if (obj.IsBytecodeArray()) {
       source_position_table_total +=
-          BytecodeArray::cast(obj)->SourcePositionTable()->Size();
+          BytecodeArray::cast(obj).SourcePositionTable().Size();
     }
   }
 

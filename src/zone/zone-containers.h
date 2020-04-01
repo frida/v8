@@ -66,8 +66,8 @@ class ZoneDeque : public std::deque<T, RecyclingZoneAllocator<T>> {
 
 // A wrapper subclass for std::list to make it easy to construct one
 // that uses a zone allocator.
-// TODO(mstarzinger): This should be renamed to ZoneList once we got rid of our
-// own home-grown ZoneList that actually is a ZoneVector.
+// TODO(all): This should be renamed to ZoneList once we got rid of our own
+// home-grown ZoneList that actually is a ZoneVector.
 template <typename T>
 class ZoneLinkedList : public std::list<T, ZoneAllocator<T>> {
  public:
@@ -195,8 +195,8 @@ class ZoneMultimap
 };
 
 // Typedefs to shorten commonly used vectors.
-typedef ZoneVector<bool> BoolVector;
-typedef ZoneVector<int> IntVector;
+using BoolVector = ZoneVector<bool>;
+using IntVector = ZoneVector<int>;
 
 }  // namespace internal
 }  // namespace v8

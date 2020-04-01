@@ -5,14 +5,14 @@
 #ifndef V8_SNAPSHOT_SERIALIZER_COMMON_H_
 #define V8_SNAPSHOT_SERIALIZER_COMMON_H_
 
-#include "src/address-map.h"
 #include "src/base/bits.h"
-#include "src/external-reference-table.h"
-#include "src/globals.h"
-#include "src/msan.h"
+#include "src/base/memory.h"
+#include "src/codegen/external-reference-table.h"
+#include "src/common/globals.h"
+#include "src/objects/visitors.h"
+#include "src/sanitizer/msan.h"
 #include "src/snapshot/references.h"
-#include "src/v8memory.h"
-#include "src/visitors.h"
+#include "src/utils/address-map.h"
 
 namespace v8 {
 namespace internal {
@@ -34,8 +34,8 @@ class ExternalReferenceEncoder {
     uint32_t index() const { return Index::decode(value_); }
 
    private:
-    class Index : public BitField<uint32_t, 0, 31> {};
-    class IsFromAPI : public BitField<bool, 31, 1> {};
+    using Index = base::BitField<uint32_t, 0, 31>;
+    using IsFromAPI = base::BitField<bool, 31, 1>;
     uint32_t value_;
   };
 
@@ -102,19 +102,6 @@ class SerializerDeserializer : public RootVisitor {
  public:
   static void Iterate(Isolate* isolate, RootVisitor* visitor);
 
-  // No reservation for large object space necessary.
-  // We also handle map space differenly.
-  STATIC_ASSERT(MAP_SPACE == CODE_SPACE + 1);
-
-  // We do not support young generation large objects and large code objects.
-  STATIC_ASSERT(LAST_SPACE == NEW_LO_SPACE);
-  STATIC_ASSERT(LAST_SPACE - 2 == LO_SPACE);
-  static const int kNumberOfPreallocatedSpaces = CODE_SPACE + 1;
-
-  // The number of spaces supported by the serializer. Spaces after LO_SPACE
-  // (NEW_LO_SPACE and CODE_LO_SPACE) are not supported.
-  static const int kNumberOfSpaces = LO_SPACE + 1;
-
  protected:
   static bool CanBeDeferred(HeapObject o);
 
@@ -122,6 +109,12 @@ class SerializerDeserializer : public RootVisitor {
       const std::vector<AccessorInfo>& accessor_infos);
   void RestoreExternalReferenceRedirectors(
       const std::vector<CallHandlerInfo>& call_handler_infos);
+
+  static const int kNumberOfPreallocatedSpaces =
+      static_cast<int>(SnapshotSpace::kNumberOfPreallocatedSpaces);
+
+  static const int kNumberOfSpaces =
+      static_cast<int>(SnapshotSpace::kNumberOfSpaces);
 
 // clang-format off
 #define UNUSED_SERIALIZER_BYTE_CODES(V)                           \
@@ -259,7 +252,7 @@ class SerializerDeserializer : public RootVisitor {
   //
   // Some other constants.
   //
-  static const int kAnyOldSpace = -1;
+  static const SnapshotSpace kAnyOldSpace = SnapshotSpace::kNumberOfSpaces;
 
   // Sentinel after a new object to indicate that double alignment is needed.
   static const int kDoubleAlignmentSentinel = 0;
@@ -273,15 +266,15 @@ class SerializerDeserializer : public RootVisitor {
 
   // Encodes repeat count into a fixed repeat bytecode.
   static int EncodeFixedRepeat(int repeat_count) {
-    DCHECK(IsInRange(repeat_count, kFirstEncodableRepeatCount,
-                     kLastEncodableFixedRepeatCount));
+    DCHECK(base::IsInRange(repeat_count, kFirstEncodableRepeatCount,
+                           kLastEncodableFixedRepeatCount));
     return kFixedRepeat + repeat_count - kFirstEncodableRepeatCount;
   }
 
   // Decodes repeat count from a fixed repeat bytecode.
   static int DecodeFixedRepeatCount(int bytecode) {
-    DCHECK(IsInRange(bytecode, kFixedRepeat + 0,
-                     kFixedRepeat + kNumberOfFixedRepeat));
+    DCHECK(base::IsInRange(bytecode, kFixedRepeat + 0,
+                           kFixedRepeat + kNumberOfFixedRepeat));
     return bytecode - kFixedRepeat + kFirstEncodableRepeatCount;
   }
 
@@ -335,8 +328,8 @@ class SerializedData {
 
   uint32_t GetMagicNumber() const { return GetHeaderValue(kMagicNumberOffset); }
 
-  class ChunkSizeBits : public BitField<uint32_t, 0, 31> {};
-  class IsLastChunkBits : public BitField<bool, 31, 1> {};
+  using ChunkSizeBits = base::BitField<uint32_t, 0, 31>;
+  using IsLastChunkBits = base::BitField<bool, 31, 1>;
 
   static constexpr uint32_t kMagicNumberOffset = 0;
   static constexpr uint32_t kMagicNumber =
@@ -344,12 +337,13 @@ class SerializedData {
 
  protected:
   void SetHeaderValue(uint32_t offset, uint32_t value) {
-    WriteLittleEndianValue(reinterpret_cast<Address>(data_) + offset, value);
+    base::WriteLittleEndianValue(reinterpret_cast<Address>(data_) + offset,
+                                 value);
   }
 
   uint32_t GetHeaderValue(uint32_t offset) const {
-    return ReadLittleEndianValue<uint32_t>(reinterpret_cast<Address>(data_) +
-                                           offset);
+    return base::ReadLittleEndianValue<uint32_t>(
+        reinterpret_cast<Address>(data_) + offset);
   }
 
   void AllocateData(uint32_t size);
@@ -364,44 +358,7 @@ class SerializedData {
   DISALLOW_COPY_AND_ASSIGN(SerializedData);
 };
 
-class Checksum {
- public:
-  explicit Checksum(Vector<const byte> payload) {
-#ifdef MEMORY_SANITIZER
-    // Computing the checksum includes padding bytes for objects like strings.
-    // Mark every object as initialized in the code serializer.
-    MSAN_MEMORY_IS_INITIALIZED(payload.start(), payload.length());
-#endif  // MEMORY_SANITIZER
-    // Fletcher's checksum. Modified to reduce 64-bit sums to 32-bit.
-    uintptr_t a = 1;
-    uintptr_t b = 0;
-    const uintptr_t* cur = reinterpret_cast<const uintptr_t*>(payload.start());
-    DCHECK(IsAligned(payload.length(), kIntptrSize));
-    const uintptr_t* end = cur + payload.length() / kIntptrSize;
-    while (cur < end) {
-      // Unsigned overflow expected and intended.
-      a += *cur++;
-      b += a;
-    }
-#if V8_HOST_ARCH_64_BIT
-    a ^= a >> 32;
-    b ^= b >> 32;
-#endif  // V8_HOST_ARCH_64_BIT
-    a_ = static_cast<uint32_t>(a);
-    b_ = static_cast<uint32_t>(b);
-  }
-
-  bool Check(uint32_t a, uint32_t b) const { return a == a_ && b == b_; }
-
-  uint32_t a() const { return a_; }
-  uint32_t b() const { return b_; }
-
- private:
-  uint32_t a_;
-  uint32_t b_;
-
-  DISALLOW_COPY_AND_ASSIGN(Checksum);
-};
+V8_EXPORT_PRIVATE uint32_t Checksum(Vector<const byte> payload);
 
 }  // namespace internal
 }  // namespace v8

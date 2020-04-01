@@ -5,12 +5,12 @@
 #include "src/runtime/runtime.h"
 
 #include "src/base/hashmap.h"
-#include "src/contexts.h"
-#include "src/handles-inl.h"
+#include "src/codegen/reloc-info.h"
+#include "src/execution/isolate.h"
+#include "src/handles/handles-inl.h"
 #include "src/heap/heap.h"
-#include "src/isolate.h"
-#include "src/objects-inl.h"
-#include "src/reloc-info.h"
+#include "src/objects/contexts.h"
+#include "src/objects/objects-inl.h"
 #include "src/runtime/runtime-utils.h"
 
 namespace v8 {
@@ -106,9 +106,14 @@ bool Runtime::NeedsExactContext(FunctionId id) {
       // try-catch in async function.
       return false;
     case Runtime::kAddPrivateField:
+    case Runtime::kAddPrivateBrand:
+    case Runtime::kCreatePrivateAccessors:
     case Runtime::kCopyDataProperties:
     case Runtime::kCreateDataProperty:
     case Runtime::kCreatePrivateNameSymbol:
+    case Runtime::kCreatePrivateBrandSymbol:
+    case Runtime::kLoadPrivateGetter:
+    case Runtime::kLoadPrivateSetter:
     case Runtime::kReThrow:
     case Runtime::kThrow:
     case Runtime::kThrowApplyNonFunction:
@@ -172,6 +177,44 @@ bool Runtime::IsNonReturning(FunctionId id) {
     case Runtime::kThrowWasmError:
     case Runtime::kThrowWasmStackOverflow:
       return true;
+    default:
+      return false;
+  }
+}
+
+bool Runtime::MayAllocate(FunctionId id) {
+  switch (id) {
+    case Runtime::kCompleteInobjectSlackTracking:
+    case Runtime::kCompleteInobjectSlackTrackingForMap:
+      return false;
+    default:
+      return true;
+  }
+}
+
+bool Runtime::IsWhitelistedForFuzzing(FunctionId id) {
+  CHECK(FLAG_allow_natives_for_fuzzing);
+  switch (id) {
+    // Runtime functions whitelisted for all fuzzers. Only add functions that
+    // help increase coverage.
+    case Runtime::kArrayBufferDetach:
+    case Runtime::kDeoptimizeFunction:
+    case Runtime::kDeoptimizeNow:
+    case Runtime::kEnableCodeLoggingForTesting:
+    case Runtime::kGetUndetectable:
+    case Runtime::kNeverOptimizeFunction:
+    case Runtime::kOptimizeFunctionOnNextCall:
+    case Runtime::kOptimizeOsr:
+    case Runtime::kPrepareFunctionForOptimization:
+    case Runtime::kSetAllocationTimeout:
+    case Runtime::kSimulateNewspaceFull:
+      return true;
+    // Runtime functions only permitted for non-differential fuzzers.
+    // This list may contain functions performing extra checks or returning
+    // different values in the context of different flags passed to V8.
+    case Runtime::kHeapObjectVerify:
+    case Runtime::kIsBeingInterpreted:
+      return !FLAG_allow_natives_for_differential_fuzzing;
     default:
       return false;
   }

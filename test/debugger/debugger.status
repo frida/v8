@@ -36,7 +36,7 @@
 
 ##############################################################################
 ['variant == stress', {
-  # TODO(jarin/mstarzinger): Functions with eval or debugger now get optimized
+  # TODO(turbofan): Functions with eval or debugger now get optimized
   # with Turbofan, which has issues with the debugger issues.
   'debug/debug-evaluate-locals': [FAIL],
 
@@ -128,12 +128,36 @@
   # TODO(v8:7777): Re-enable once wasm is supported in jitless mode.
   'debug/wasm/*': [SKIP],
   'regress/regress-crbug-840288': [SKIP],
+  'regress/regress-crbug-1032042': [SKIP],
   'wasm-*': [SKIP],
 }], # lite_mode or variant == jitless
 
 ##############################################################################
-['variant == jitless and not embedded_builtins', {
-  '*': [SKIP],
-}], # variant == jitless and not embedded_builtins
+['variant == turboprop', {
+  # Deopts differently than TurboFan.
+  'debug/debug-optimize': [SKIP],
+}],  # variant == turboprop
+
+##############################################################################
+# Liftoff needs to be enabled before running these tests.
+['arch in (s390, s390x, ppc, ppc64)', {
+  'regress/regress-crbug-1032042': [SKIP],
+  'regress/regress-crbug-840288': [SKIP],
+  'debug/wasm/asm-debug': [SKIP],
+  'debug/wasm/debug-enabled-tier-down-wasm': [SKIP],
+  'debug/wasm/debug-step-into-wasm': [SKIP],
+  'debug/wasm/frame-inspection': [SKIP],
+}],
+
+##############################################################################
+['isolates', {
+  # WebAssembly debugging does not work reliably when multiple isolates are
+  # involved (https://crbug.com/v8/10359).
+  # (this list might need to be extended by more debugging tests as they
+  # start flaking)
+  'debug/wasm/debug-enabled-tier-down-wasm': [SKIP],
+  'debug/wasm/debug-enabled-tier-down-wasm-unsupported-liftoff': [SKIP],
+  'regress/regress-crbug-1032042': [SKIP],
+}],  # 'isolates'
 
 ]

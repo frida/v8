@@ -10,7 +10,7 @@
 #include <unistd.h>  // NOLINT
 #endif
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "test/cctest/cctest.h"
 
@@ -20,7 +20,7 @@ using v8::IdleTask;
 using v8::Isolate;
 using v8::Task;
 
-#include "src/allocation.h"
+#include "src/utils/allocation.h"
 #include "src/zone/accounting-allocator.h"
 
 // ASAN isn't configured to return nullptr, so skip all of these tests.
@@ -139,7 +139,7 @@ TEST(MallocedOperatorNewOOM) {
   CcTest::isolate()->SetFatalErrorHandler(OnMallocedOperatorNewOOM);
   // On failure, this won't return, since a Malloced::New failure is fatal.
   // In that case, behavior is checked in OnMallocedOperatorNewOOM before exit.
-  void* result = v8::internal::Malloced::New(GetHugeMemoryAmount());
+  void* result = v8::internal::Malloced::operator new(GetHugeMemoryAmount());
   // On a few systems, allocation somehow succeeds.
   CHECK_EQ(result == nullptr, platform.oom_callback_called);
 }

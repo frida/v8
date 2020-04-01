@@ -5,10 +5,12 @@
 #ifndef V8_PARSING_PREPARSE_DATA_H_
 #define V8_PARSING_PREPARSE_DATA_H_
 
-#include "src/globals.h"
-#include "src/handles.h"
-#include "src/maybe-handles.h"
-#include "src/vector.h"
+#include <memory>
+
+#include "src/common/globals.h"
+#include "src/handles/handles.h"
+#include "src/handles/maybe-handles.h"
+#include "src/utils/vector.h"
 #include "src/zone/zone-chunk-list.h"
 #include "src/zone/zone-containers.h"
 
@@ -22,6 +24,7 @@ class Parser;
 class PreParser;
 class PreparseData;
 class ZonePreparseData;
+class AstValueFactory;
 
 /*
 
@@ -137,6 +140,8 @@ class V8_EXPORT_PRIVATE PreparseDataBuilder : public ZoneObject,
     void Finalize(Zone* zone);
 
     Handle<PreparseData> CopyToHeap(Isolate* isolate, int children_length);
+    Handle<PreparseData> CopyToOffThreadHeap(OffThreadIsolate* isolate,
+                                             int children_length);
     inline ZonePreparseData* CopyToZone(Zone* zone, int children_length);
 
     void Reserve(size_t bytes);
@@ -205,6 +210,7 @@ class V8_EXPORT_PRIVATE PreparseDataBuilder : public ZoneObject,
   friend class BuilderProducedPreparseData;
 
   Handle<PreparseData> Serialize(Isolate* isolate);
+  Handle<PreparseData> Serialize(OffThreadIsolate* isolate);
   ZonePreparseData* Serialize(Zone* zone);
 
   void FinalizeChildren(Zone* zone);
@@ -247,6 +253,11 @@ class ProducedPreparseData : public ZoneObject {
   // MaybeHandle.
   virtual Handle<PreparseData> Serialize(Isolate* isolate) = 0;
 
+  // If there is data (if the Scope contains skippable inner functions), move
+  // the data into the heap and return a Handle to it; otherwise return a null
+  // MaybeHandle.
+  virtual Handle<PreparseData> Serialize(OffThreadIsolate* isolate) = 0;
+
   // If there is data (if the Scope contains skippable inner functions), return
   // an off-heap ZonePreparseData representing the data; otherwise
   // return nullptr.
@@ -286,7 +297,8 @@ class ConsumedPreparseData {
 
   // Restores the information needed for allocating the Scope's (and its
   // subscopes') variables.
-  virtual void RestoreScopeAllocationData(DeclarationScope* scope) = 0;
+  virtual void RestoreScopeAllocationData(
+      DeclarationScope* scope, AstValueFactory* ast_value_factory) = 0;
 
  protected:
   ConsumedPreparseData() = default;

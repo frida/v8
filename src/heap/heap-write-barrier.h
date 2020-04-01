@@ -6,55 +6,49 @@
 #define V8_HEAP_HEAP_WRITE_BARRIER_H_
 
 #include "include/v8-internal.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
 
 namespace v8 {
 namespace internal {
 
+class ArrayBufferExtension;
 class Code;
 class FixedArray;
 class Heap;
-class HeapObject;
-class MaybeObject;
-class Object;
 class RelocInfo;
 class EphemeronHashTable;
 
 // Note: In general it is preferred to use the macros defined in
 // object-macros.h.
 
-// Write barrier for FixedArray elements.
-#define FIXED_ARRAY_ELEMENTS_WRITE_BARRIER(heap, array, start, length) \
-  do {                                                                 \
-    GenerationalBarrierForElements(heap, array, start, length);        \
-    MarkingBarrierForElements(heap, array);                            \
-  } while (false)
-
 // Combined write barriers.
 void WriteBarrierForCode(Code host, RelocInfo* rinfo, Object value);
+void WriteBarrierForCode(Code host, RelocInfo* rinfo, HeapObject value);
 void WriteBarrierForCode(Code host);
 
 // Generational write barrier.
 void GenerationalBarrier(HeapObject object, ObjectSlot slot, Object value);
+void GenerationalBarrier(HeapObject object, ObjectSlot slot, HeapObject value);
 void GenerationalBarrier(HeapObject object, MaybeObjectSlot slot,
                          MaybeObject value);
 void GenerationalEphemeronKeyBarrier(EphemeronHashTable table, ObjectSlot slot,
                                      Object value);
-void GenerationalBarrierForElements(Heap* heap, FixedArray array, int offset,
-                                    int length);
 void GenerationalBarrierForCode(Code host, RelocInfo* rinfo, HeapObject object);
 
 // Marking write barrier.
 void MarkingBarrier(HeapObject object, ObjectSlot slot, Object value);
+void MarkingBarrier(HeapObject object, ObjectSlot slot, HeapObject value);
 void MarkingBarrier(HeapObject object, MaybeObjectSlot slot, MaybeObject value);
-void MarkingBarrierForElements(Heap* heap, HeapObject object);
 void MarkingBarrierForCode(Code host, RelocInfo* rinfo, HeapObject object);
+
+void MarkingBarrierForArrayBufferExtension(HeapObject object,
+                                           ArrayBufferExtension* extension);
 
 void MarkingBarrierForDescriptorArray(Heap* heap, HeapObject host,
                                       HeapObject descriptor_array,
                                       int number_of_own_descriptors);
 
-Heap* GetHeapFromWritableObject(const HeapObject object);
+inline bool IsReadOnlyHeapObject(HeapObject object);
 
 }  // namespace internal
 }  // namespace v8

@@ -4,16 +4,19 @@
 
 #include "src/profiler/tick-sample.h"
 
+#include <cinttypes>
+
 #include "include/v8-profiler.h"
-#include "src/asan.h"
-#include "src/counters.h"
-#include "src/frames-inl.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/simulator.h"
+#include "src/execution/vm-state-inl.h"
 #include "src/heap/heap-inl.h"  // For MemoryAllocator::code_range.
-#include "src/msan.h"
-#include "src/simulator.h"
-#include "src/vm-state-inl.h"
+#include "src/logging/counters.h"
+#include "src/sanitizer/asan.h"
+#include "src/sanitizer/msan.h"
 
 namespace v8 {
+namespace internal {
 namespace {
 
 bool IsSamePage(i::Address ptr1, i::Address ptr2) {
@@ -76,11 +79,6 @@ bool IsNoFrameRegion(i::Address address) {
   return false;
 }
 
-}  // namespace
-
-namespace internal {
-namespace {
-
 #if defined(USE_SIMULATOR)
 class SimulatorHelper {
  public:
@@ -112,18 +110,20 @@ bool SimulatorHelper::FillRegisters(Isolate* isolate,
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::fp));
-#elif V8_TARGET_ARCH_PPC
+#elif V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
   if (!simulator->has_bad_pc()) {
     state->pc = reinterpret_cast<void*>(simulator->get_pc());
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::fp));
+  state->lr = reinterpret_cast<void*>(simulator->get_lr());
 #elif V8_TARGET_ARCH_S390
   if (!simulator->has_bad_pc()) {
     state->pc = reinterpret_cast<void*>(simulator->get_pc());
   }
   state->sp = reinterpret_cast<void*>(simulator->get_register(Simulator::sp));
   state->fp = reinterpret_cast<void*>(simulator->get_register(Simulator::fp));
+  state->lr = reinterpret_cast<void*>(simulator->get_register(Simulator::ra));
 #endif
   if (state->sp == 0 || state->fp == 0) {
     // It possible that the simulator is interrupted while it is updating
@@ -143,22 +143,36 @@ bool SimulatorHelper::FillRegisters(Isolate* isolate,
 }
 #endif  // USE_SIMULATOR
 
-}  // namespace
-}  // namespace internal
+// Returns the native context for a JavaScript frame. If the frame wasn't a
+// JavaScript frame, it'll return kNullAddress.
+Address ScrapeNativeContextAddress(Heap* heap, Address context_address) {
+#if !defined(V8_TARGET_ARCH_IA32) && !defined(V8_TARGET_ARCH_X64)
+  return kNullAddress;
+#else
+  DCHECK_EQ(heap->gc_state(), Heap::NOT_IN_GC);
 
-//
-// StackTracer implementation
-//
+  // If the value is tagged, we're looking at a JavaScript frame.
+  if (!HAS_STRONG_HEAP_OBJECT_TAG(context_address)) return kNullAddress;
+
+  i::Object object(context_address);
+  return i::Context::cast(object).map().native_context().ptr();
+#endif
+}
+
+}  // namespace
+
 DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
                                    const RegisterState& reg_state,
                                    RecordCEntryFrame record_c_entry_frame,
                                    bool update_stats,
-                                   bool use_simulator_reg_state) {
+                                   bool use_simulator_reg_state,
+                                   base::TimeDelta sampling_interval) {
   this->update_stats = update_stats;
   SampleInfo info;
   RegisterState regs = reg_state;
   if (!GetStackSample(v8_isolate, &regs, record_c_entry_frame, stack,
-                      kMaxFramesCount, &info, use_simulator_reg_state)) {
+                      kMaxFramesCount, &info, use_simulator_reg_state,
+                      contexts)) {
     // It is executing JS but failed to collect a stack trace.
     // Mark the sample as spoiled.
     pc = nullptr;
@@ -169,6 +183,7 @@ DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
   pc = regs.pc;
   frames_count = static_cast<unsigned>(info.frames_count);
   has_external_callback = info.external_callback_entry != nullptr;
+  top_context = info.top_context;
   if (has_external_callback) {
     external_callback_entry = info.external_callback_entry;
   } else if (frames_count) {
@@ -187,17 +202,20 @@ DISABLE_ASAN void TickSample::Init(Isolate* v8_isolate,
   } else {
     tos = nullptr;
   }
+  this->sampling_interval = sampling_interval;
+  timestamp = base::TimeTicks::HighResolutionNow();
 }
 
 bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
                                 RecordCEntryFrame record_c_entry_frame,
                                 void** frames, size_t frames_limit,
                                 v8::SampleInfo* sample_info,
-                                bool use_simulator_reg_state) {
+                                bool use_simulator_reg_state, void** contexts) {
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(v8_isolate);
   sample_info->frames_count = 0;
   sample_info->vm_state = isolate->current_vm_state();
   sample_info->external_callback_entry = nullptr;
+  sample_info->top_context = nullptr;
   if (sample_info->vm_state == GC) return true;
 
   i::Address js_entry_sp = isolate->js_entry_sp();
@@ -225,7 +243,7 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
   i::ExternalCallbackScope* scope = isolate->external_callback_scope();
   i::Address handler = i::Isolate::handler(isolate->thread_local_top());
   // If there is a handler on top of the external callback scope then
-  // we have already entrered JavaScript again and the external callback
+  // we have already entered JavaScript again and the external callback
   // is not the top function.
   if (scope && scope->scope_address() < handler) {
     i::Address* external_callback_entry_ptr =
@@ -241,23 +259,62 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
                                reinterpret_cast<i::Address>(regs->sp),
                                reinterpret_cast<i::Address>(regs->lr),
                                js_entry_sp);
+
+  i::Address top_context_address = it.top_context_address();
+  if (top_context_address != i::kNullAddress) {
+    sample_info->top_context = reinterpret_cast<void*>(
+        i::ScrapeNativeContextAddress(isolate->heap(), top_context_address));
+  } else {
+    sample_info->top_context = nullptr;
+  }
+
   if (it.done()) return true;
 
   size_t i = 0;
   if (record_c_entry_frame == kIncludeCEntryFrame &&
       (it.top_frame_type() == internal::StackFrame::EXIT ||
        it.top_frame_type() == internal::StackFrame::BUILTIN_EXIT)) {
-    frames[i++] = reinterpret_cast<void*>(isolate->c_function());
+    frames[i] = reinterpret_cast<void*>(isolate->c_function());
+    if (contexts) contexts[i] = sample_info->top_context;
+    i++;
   }
+
+  // If we couldn't get a context address from the top frame due to execution
+  // being in a callback, borrow it from the next context on the stack.
+  bool borrows_top_context = it.top_frame_type() == i::StackFrame::EXIT ||
+                             it.top_frame_type() == i::StackFrame::BUILTIN_EXIT;
+
   i::RuntimeCallTimer* timer =
       isolate->counters()->runtime_call_stats()->current_timer();
   for (; !it.done() && i < frames_limit; it.Advance()) {
     while (timer && reinterpret_cast<i::Address>(timer) < it.frame()->fp() &&
            i < frames_limit) {
+      if (contexts) contexts[i] = nullptr;
       frames[i++] = reinterpret_cast<void*>(timer->counter());
       timer = timer->parent();
     }
     if (i == frames_limit) break;
+
+    // Attempt to read the native context associated with the frame from the
+    // heap for standard frames.
+    if (it.frame()->is_standard() && (contexts || borrows_top_context)) {
+      i::Address context_address = base::Memory<i::Address>(
+          it.frame()->fp() + i::StandardFrameConstants::kContextOffset);
+      i::Address native_context_address =
+          i::ScrapeNativeContextAddress(isolate->heap(), context_address);
+      if (contexts)
+        contexts[i] = reinterpret_cast<void*>(native_context_address);
+
+      if (borrows_top_context) {
+        DCHECK(!sample_info->top_context);
+        sample_info->top_context =
+            reinterpret_cast<void*>(native_context_address);
+      }
+    } else if (contexts) {
+      contexts[i] = nullptr;
+    }
+    borrows_top_context = false;
+
     if (it.frame()->is_interpreted()) {
       // For interpreted frames use the bytecode array pointer as the pc.
       i::InterpretedFrame* frame =
@@ -266,14 +323,15 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
       // bytecode_array might be garbage, so don't actually dereference it. We
       // avoid the frame->GetXXX functions since they call BytecodeArray::cast,
       // which has a heap access in its DCHECK.
-      i::Address bytecode_array = i::Memory<i::Address>(
+      i::Address bytecode_array = base::Memory<i::Address>(
           frame->fp() + i::InterpreterFrameConstants::kBytecodeArrayFromFp);
-      i::Address bytecode_offset = i::Memory<i::Address>(
+      i::Address bytecode_offset = base::Memory<i::Address>(
           frame->fp() + i::InterpreterFrameConstants::kBytecodeOffsetFromFp);
 
       // If the bytecode array is a heap object and the bytecode offset is a
       // Smi, use those, otherwise fall back to using the frame's pc.
-      if (HAS_HEAP_OBJECT_TAG(bytecode_array) && HAS_SMI_TAG(bytecode_offset)) {
+      if (HAS_STRONG_HEAP_OBJECT_TAG(bytecode_array) &&
+          HAS_SMI_TAG(bytecode_offset)) {
         frames[i++] = reinterpret_cast<void*>(
             bytecode_array + i::Internals::SmiValue(bytecode_offset));
         continue;
@@ -283,18 +341,6 @@ bool TickSample::GetStackSample(Isolate* v8_isolate, RegisterState* regs,
   }
   sample_info->frames_count = i;
   return true;
-}
-
-namespace internal {
-
-void TickSample::Init(Isolate* isolate, const v8::RegisterState& state,
-                      RecordCEntryFrame record_c_entry_frame, bool update_stats,
-                      bool use_simulator_reg_state) {
-  v8::TickSample::Init(reinterpret_cast<v8::Isolate*>(isolate), state,
-                       record_c_entry_frame, update_stats,
-                       use_simulator_reg_state);
-  if (pc == nullptr) return;
-  timestamp = base::TimeTicks::HighResolutionNow();
 }
 
 void TickSample::print() const {
@@ -309,6 +355,8 @@ void TickSample::print() const {
   PrintF(" - %s: %p\n",
          has_external_callback ? "external_callback_entry" : "tos", tos);
   PrintF(" - update_stats: %d\n", update_stats);
+  PrintF(" - sampling_interval: %" PRId64 "\n",
+         sampling_interval.InMicroseconds());
   PrintF("\n");
 }
 

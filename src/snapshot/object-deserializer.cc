@@ -4,11 +4,11 @@
 
 #include "src/snapshot/object-deserializer.h"
 
-#include "src/assembler-inl.h"
+#include "src/codegen/assembler-inl.h"
+#include "src/execution/isolate.h"
 #include "src/heap/heap-inl.h"
-#include "src/isolate.h"
-#include "src/objects.h"
 #include "src/objects/allocation-site-inl.h"
+#include "src/objects/objects.h"
 #include "src/objects/slots.h"
 #include "src/snapshot/code-serializer.h"
 
@@ -33,7 +33,6 @@ ObjectDeserializer::DeserializeSharedFunctionInfo(
 
 MaybeHandle<HeapObject> ObjectDeserializer::Deserialize(Isolate* isolate) {
   Initialize(isolate);
-
   if (!allocator()->ReserveSpace()) return MaybeHandle<HeapObject>();
 
   DCHECK(deserializing_user_code());
@@ -60,9 +59,11 @@ void ObjectDeserializer::FlushICache() {
   DCHECK(deserializing_user_code());
   for (Code code : new_code_objects()) {
     // Record all references to embedded objects in the new code object.
+#ifndef V8_DISABLE_WRITE_BARRIERS
     WriteBarrierForCode(code);
-    FlushInstructionCache(code->raw_instruction_start(),
-                          code->raw_instruction_size());
+#endif
+    FlushInstructionCache(code.raw_instruction_start(),
+                          code.raw_instruction_size());
   }
 }
 
@@ -73,8 +74,6 @@ void ObjectDeserializer::CommitPostProcessedObjects() {
   for (Handle<String> string : new_internalized_strings()) {
     DisallowHeapAllocation no_gc;
     StringTableInsertionKey key(*string);
-    DCHECK(
-        StringTable::ForwardStringIfExists(isolate(), &key, *string).is_null());
     StringTable::AddKeyNoResize(isolate(), &key);
   }
 
@@ -82,13 +81,22 @@ void ObjectDeserializer::CommitPostProcessedObjects() {
   Factory* factory = isolate()->factory();
   for (Handle<Script> script : new_scripts()) {
     // Assign a new script id to avoid collision.
-    script->set_id(isolate()->heap()->NextScriptId());
+    script->set_id(isolate()->GetNextScriptId());
     LogScriptEvents(*script);
     // Add script to list.
     Handle<WeakArrayList> list = factory->script_list();
     list = WeakArrayList::AddToEnd(isolate(), list,
                                    MaybeObjectHandle::Weak(script));
     heap->SetRootScriptList(*list);
+  }
+
+  for (Handle<JSArrayBuffer> buffer : new_off_heap_array_buffers()) {
+    // Serializer writes backing store ref in |backing_store| field.
+    size_t store_index = reinterpret_cast<size_t>(buffer->backing_store());
+    auto bs = backing_store(store_index);
+    SharedFlag shared =
+        bs && bs->is_shared() ? SharedFlag::kShared : SharedFlag::kNotShared;
+    buffer->Setup(shared, bs);
   }
 }
 
@@ -98,14 +106,14 @@ void ObjectDeserializer::LinkAllocationSites() {
   // Allocation sites are present in the snapshot, and must be linked into
   // a list at deserialization time.
   for (AllocationSite site : new_allocation_sites()) {
-    if (!site->HasWeakNext()) continue;
+    if (!site.HasWeakNext()) continue;
     // TODO(mvstanton): consider treating the heap()->allocation_sites_list()
     // as a (weak) root. If this root is relocated correctly, this becomes
     // unnecessary.
-    if (heap->allocation_sites_list() == Smi::kZero) {
-      site->set_weak_next(ReadOnlyRoots(heap).undefined_value());
+    if (heap->allocation_sites_list() == Smi::zero()) {
+      site.set_weak_next(ReadOnlyRoots(heap).undefined_value());
     } else {
-      site->set_weak_next(heap->allocation_sites_list());
+      site.set_weak_next(heap->allocation_sites_list());
     }
     heap->set_allocation_sites_list(site);
   }

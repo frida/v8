@@ -8,10 +8,10 @@
 #include "src/objects/ordered-hash-table.h"
 
 #include "src/heap/heap.h"
-#include "src/objects-inl.h"
 #include "src/objects/compressed-slots.h"
 #include "src/objects/fixed-array-inl.h"
 #include "src/objects/js-collection-iterator.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -54,7 +54,7 @@ template <class Derived>
 Object SmallOrderedHashTable<Derived>::KeyAt(int entry) const {
   DCHECK_LT(entry, Capacity());
   Offset entry_offset = GetDataEntryOffset(entry, Derived::kKeyIndex);
-  return READ_FIELD(*this, entry_offset);
+  return TaggedField<Object>::load(*this, entry_offset);
 }
 
 template <class Derived>
@@ -63,7 +63,7 @@ Object SmallOrderedHashTable<Derived>::GetDataEntry(int entry,
   DCHECK_LT(entry, Capacity());
   DCHECK_LE(static_cast<unsigned>(relative_index), Derived::kEntrySize);
   Offset entry_offset = GetDataEntryOffset(entry, relative_index);
-  return READ_FIELD(*this, entry_offset);
+  return TaggedField<Object>::load(*this, entry_offset);
 }
 
 OBJECT_CONSTRUCTORS_IMPL(SmallOrderedHashSet,
@@ -73,28 +73,28 @@ OBJECT_CONSTRUCTORS_IMPL(SmallOrderedHashMap,
 OBJECT_CONSTRUCTORS_IMPL(SmallOrderedNameDictionary,
                          SmallOrderedHashTable<SmallOrderedNameDictionary>)
 
-RootIndex OrderedHashSet::GetMapRootIndex() {
-  return RootIndex::kOrderedHashSetMap;
+Handle<Map> OrderedHashSet::GetMap(ReadOnlyRoots roots) {
+  return roots.ordered_hash_set_map_handle();
 }
 
-RootIndex OrderedHashMap::GetMapRootIndex() {
-  return RootIndex::kOrderedHashMapMap;
+Handle<Map> OrderedHashMap::GetMap(ReadOnlyRoots roots) {
+  return roots.ordered_hash_map_map_handle();
 }
 
-RootIndex OrderedNameDictionary::GetMapRootIndex() {
-  return RootIndex::kOrderedNameDictionaryMap;
+Handle<Map> OrderedNameDictionary::GetMap(ReadOnlyRoots roots) {
+  return roots.ordered_name_dictionary_map_handle();
 }
 
-RootIndex SmallOrderedNameDictionary::GetMapRootIndex() {
-  return RootIndex::kSmallOrderedNameDictionaryMap;
+Handle<Map> SmallOrderedNameDictionary::GetMap(ReadOnlyRoots roots) {
+  return roots.small_ordered_name_dictionary_map_handle();
 }
 
-RootIndex SmallOrderedHashMap::GetMapRootIndex() {
-  return RootIndex::kSmallOrderedHashMapMap;
+Handle<Map> SmallOrderedHashMap::GetMap(ReadOnlyRoots roots) {
+  return roots.small_ordered_hash_map_map_handle();
 }
 
-RootIndex SmallOrderedHashSet::GetMapRootIndex() {
-  return RootIndex::kSmallOrderedHashSetMap;
+Handle<Map> SmallOrderedHashSet::GetMap(ReadOnlyRoots roots) {
+  return roots.small_ordered_hash_set_map_handle();
 }
 
 inline Object OrderedHashMap::ValueAt(int entry) {
@@ -164,8 +164,16 @@ inline bool OrderedHashMap::Is(Handle<HeapObject> table) {
   return table->IsOrderedHashMap();
 }
 
+inline bool OrderedNameDictionary::Is(Handle<HeapObject> table) {
+  return table->IsOrderedNameDictionary();
+}
+
 inline bool SmallOrderedHashSet::Is(Handle<HeapObject> table) {
   return table->IsSmallOrderedHashSet();
+}
+
+inline bool SmallOrderedNameDictionary::Is(Handle<HeapObject> table) {
+  return table->IsSmallOrderedNameDictionary();
 }
 
 inline bool SmallOrderedHashMap::Is(Handle<HeapObject> table) {
@@ -185,18 +193,18 @@ template <class Derived, class TableType>
 Object OrderedHashTableIterator<Derived, TableType>::CurrentKey() {
   TableType table = TableType::cast(this->table());
   int index = Smi::ToInt(this->index());
-  Object key = table->KeyAt(index);
-  DCHECK(!key->IsTheHole());
+  Object key = table.KeyAt(index);
+  DCHECK(!key.IsTheHole());
   return key;
 }
 
 inline void SmallOrderedNameDictionary::SetHash(int hash) {
   DCHECK(PropertyArray::HashField::is_valid(hash));
-  WRITE_INT_FIELD(*this, PrefixOffset(), hash);
+  WriteField<int>(PrefixOffset(), hash);
 }
 
 inline int SmallOrderedNameDictionary::Hash() {
-  int hash = READ_INT_FIELD(*this, PrefixOffset());
+  int hash = ReadField<int>(PrefixOffset());
   DCHECK(PropertyArray::HashField::is_valid(hash));
   return hash;
 }

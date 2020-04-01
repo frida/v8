@@ -4,13 +4,13 @@
 
 #include "src/debug/debug-stack-trace-iterator.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/debug/debug-evaluate.h"
 #include "src/debug/debug-scope-iterator.h"
 #include "src/debug/debug.h"
 #include "src/debug/liveedit.h"
-#include "src/frames-inl.h"
-#include "src/isolate.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/isolate.h"
 
 namespace v8 {
 
@@ -69,9 +69,8 @@ int DebugStackTraceIterator::GetContextId() const {
   DCHECK(!Done());
   Handle<Object> context = frame_inspector_->GetContext();
   if (context->IsContext()) {
-    Object value =
-        Context::cast(*context)->native_context()->debug_context_id();
-    if (value->IsSmi()) return Smi::ToInt(value);
+    Object value = Context::cast(*context).native_context().debug_context_id();
+    if (value.IsSmi()) return Smi::ToInt(value);
   }
   return 0;
 }
@@ -79,7 +78,7 @@ int DebugStackTraceIterator::GetContextId() const {
 v8::MaybeLocal<v8::Value> DebugStackTraceIterator::GetReceiver() const {
   DCHECK(!Done());
   if (frame_inspector_->IsJavaScript() &&
-      frame_inspector_->GetFunction()->shared()->kind() == kArrowFunction) {
+      frame_inspector_->GetFunction()->shared().kind() == kArrowFunction) {
     // FrameInspector is not able to get receiver for arrow function.
     // So let's try to fetch it using same logic as is used to retrieve 'this'
     // during DebugEvaluate::Local.
@@ -88,25 +87,28 @@ v8::MaybeLocal<v8::Value> DebugStackTraceIterator::GetReceiver() const {
     // Arrow function defined in top level function without references to
     // variables may have NativeContext as context.
     if (!context->IsFunctionContext()) return v8::MaybeLocal<v8::Value>();
-    ScopeIterator scope_iterator(isolate_, frame_inspector_.get(),
-                                 ScopeIterator::COLLECT_NON_LOCALS);
+    ScopeIterator scope_iterator(
+        isolate_, frame_inspector_.get(),
+        ScopeIterator::ReparseStrategy::kFunctionLiteral);
     // We lookup this variable in function context only when it is used in arrow
     // function otherwise V8 can optimize it out.
-    if (!scope_iterator.GetNonLocals()->Has(isolate_,
-                                            isolate_->factory()->this_string()))
+    if (!scope_iterator.ClosureScopeHasThisReference()) {
       return v8::MaybeLocal<v8::Value>();
+    }
     DisallowHeapAllocation no_gc;
     VariableMode mode;
     InitializationFlag flag;
     MaybeAssignedFlag maybe_assigned_flag;
+    IsStaticFlag is_static_flag;
     int slot_index = ScopeInfo::ContextSlotIndex(
         context->scope_info(), ReadOnlyRoots(isolate_->heap()).this_string(),
-        &mode, &flag, &maybe_assigned_flag);
+        &mode, &flag, &maybe_assigned_flag, &is_static_flag);
     if (slot_index < 0) return v8::MaybeLocal<v8::Value>();
     Handle<Object> value = handle(context->get(slot_index), isolate_);
     if (value->IsTheHole(isolate_)) return v8::MaybeLocal<v8::Value>();
     return Utils::ToLocal(value);
   }
+
   Handle<Object> value = frame_inspector_->GetReceiver();
   if (value.is_null() || (value->IsSmi() || !value->IsTheHole(isolate_))) {
     return Utils::ToLocal(value);
@@ -115,10 +117,11 @@ v8::MaybeLocal<v8::Value> DebugStackTraceIterator::GetReceiver() const {
 }
 
 v8::Local<v8::Value> DebugStackTraceIterator::GetReturnValue() const {
-  DCHECK(!Done());
+  CHECK(!Done());
   if (frame_inspector_ && frame_inspector_->IsWasm()) {
     return v8::Local<v8::Value>();
   }
+  CHECK_NOT_NULL(iterator_.frame());
   bool is_optimized = iterator_.frame()->is_optimized();
   if (is_optimized || !is_top_frame_ ||
       !isolate_->debug()->IsBreakAtReturn(iterator_.javascript_frame())) {
@@ -156,18 +159,17 @@ std::unique_ptr<v8::debug::ScopeIterator>
 DebugStackTraceIterator::GetScopeIterator() const {
   DCHECK(!Done());
   StandardFrame* frame = iterator_.frame();
-  if (frame->is_wasm_interpreter_entry()) {
-    return std::unique_ptr<v8::debug::ScopeIterator>(new DebugWasmScopeIterator(
-        isolate_, iterator_.frame(), inlined_frame_index_));
+  if (frame->is_wasm()) {
+    return std::make_unique<DebugWasmScopeIterator>(isolate_, iterator_.frame(),
+                                                    inlined_frame_index_);
   }
-  return std::unique_ptr<v8::debug::ScopeIterator>(
-      new DebugScopeIterator(isolate_, frame_inspector_.get()));
+  return std::make_unique<DebugScopeIterator>(isolate_, frame_inspector_.get());
 }
 
 bool DebugStackTraceIterator::Restart() {
   DCHECK(!Done());
   if (iterator_.is_wasm()) return false;
-  return !LiveEdit::RestartFrame(iterator_.javascript_frame());
+  return LiveEdit::RestartFrame(iterator_.javascript_frame());
 }
 
 v8::MaybeLocal<v8::Value> DebugStackTraceIterator::Evaluate(

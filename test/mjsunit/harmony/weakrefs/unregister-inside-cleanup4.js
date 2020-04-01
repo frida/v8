@@ -10,20 +10,22 @@ let cleanup = function(iter) {
   for (holdings of iter) {
     // See which target we're iterating over and unregister the other one.
     if (holdings == 1) {
-      fg.unregister(key2);
+      let success = fg.unregister(key2);
+      assertTrue(success);
     } else {
       assertSame(holdings, 2);
-      fg.unregister(key1);
+      let success = fg.unregister(key1);
+      assertTrue(success);
     }
     ++cleanup_holdings_count;
   }
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key1 = {"k": "first key"};
 let key2 = {"k": "second key"};
-// Create two objects and register them in the FinalizationGroup. The objects
+// Create two objects and register them in the FinalizationRegistry. The objects
 // need to be inside a closure so that we can reliably kill them!
 
 (function() {

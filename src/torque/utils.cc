@@ -7,15 +7,18 @@
 #include <iostream>
 #include <string>
 
+#include "src/base/bits.h"
 #include "src/base/logging.h"
 #include "src/torque/ast.h"
+#include "src/torque/constants.h"
+#include "src/torque/declarable.h"
 #include "src/torque/utils.h"
 
 namespace v8 {
 namespace internal {
 namespace torque {
 
-DEFINE_CONTEXTUAL_VARIABLE(LintErrors)
+DEFINE_CONTEXTUAL_VARIABLE(TorqueMessages)
 
 std::string StringLiteralUnquote(const std::string& s) {
   DCHECK(('"' == s.front() && '"' == s.back()) ||
@@ -62,7 +65,6 @@ std::string StringLiteralQuote(const std::string& s) {
       case '\t':
         result << "\\t";
         break;
-      case '\'':
       case '"':
       case '\\':
         result << "\\" << s[i];
@@ -124,23 +126,43 @@ std::string CurrentPositionAsString() {
   return PositionAsString(CurrentSourcePosition::Get());
 }
 
-[[noreturn]] void ThrowTorqueError(const std::string& message,
-                                   bool include_position) {
-  TorqueError error(message);
-  if (include_position) error.position = CurrentSourcePosition::Get();
-  throw error;
+MessageBuilder::MessageBuilder(const std::string& message,
+                               TorqueMessage::Kind kind) {
+  base::Optional<SourcePosition> position;
+  if (CurrentSourcePosition::HasScope()) {
+    position = CurrentSourcePosition::Get();
+  }
+  message_ = TorqueMessage{message, position, kind};
+  if (CurrentScope::HasScope()) {
+    // Traverse the parent scopes to find one that was created to represent a
+    // specialization of something generic. If we find one, then log it and
+    // continue walking the scope tree of the code that requested that
+    // specialization. This allows us to collect the stack of locations that
+    // caused a specialization.
+    Scope* scope = CurrentScope::Get();
+    while (scope) {
+      SpecializationRequester requester = scope->GetSpecializationRequester();
+      if (!requester.IsNone()) {
+        extra_messages_.push_back(
+            {"Note: in specialization " + requester.name + " requested here",
+             requester.position, kind});
+        scope = requester.scope;
+      } else {
+        scope = scope->ParentScope();
+      }
+    }
+  }
 }
 
-void ReportLintError(const std::string& error) {
-  LintErrors::Get().push_back({error, CurrentSourcePosition::Get()});
+void MessageBuilder::Report() const {
+  TorqueMessages::Get().push_back(message_);
+  for (const auto& message : extra_messages_) {
+    TorqueMessages::Get().push_back(message);
+  }
 }
 
-void NamingConventionError(const std::string& type, const std::string& name,
-                           const std::string& convention) {
-  std::stringstream sstream;
-  sstream << type << " \"" << name << "\" does not follow \"" << convention
-          << "\" naming convention.";
-  ReportLintError(sstream.str());
+[[noreturn]] void MessageBuilder::Throw() const {
+  throw TorqueAbortCompilation{};
 }
 
 namespace {
@@ -159,7 +181,7 @@ bool ContainsUpperCase(const std::string& s) {
 // keywords, e.g.: 'True', 'Undefined', etc.
 // These do not need to follow the default naming convention for constants.
 bool IsKeywordLikeName(const std::string& s) {
-  static const char* const keyword_like_constants[]{"True", "False", "Hole",
+  static const char* const keyword_like_constants[]{"True", "False", "TheHole",
                                                     "Null", "Undefined"};
 
   return std::find(std::begin(keyword_like_constants),
@@ -171,9 +193,17 @@ bool IsKeywordLikeName(const std::string& s) {
 // naming convention and are those exempt from the normal type convention.
 bool IsMachineType(const std::string& s) {
   static const char* const machine_types[]{
-      "void",    "never",   "int8",    "uint8",  "int16",  "uint16",
-      "int31",   "uint31",  "int32",   "uint32", "int64",  "intptr",
-      "uintptr", "float32", "float64", "bool",   "string", "bint"};
+      VOID_TYPE_STRING,    NEVER_TYPE_STRING,
+      INT8_TYPE_STRING,    UINT8_TYPE_STRING,
+      INT16_TYPE_STRING,   UINT16_TYPE_STRING,
+      INT31_TYPE_STRING,   UINT31_TYPE_STRING,
+      INT32_TYPE_STRING,   UINT32_TYPE_STRING,
+      INT64_TYPE_STRING,   INTPTR_TYPE_STRING,
+      UINTPTR_TYPE_STRING, FLOAT32_TYPE_STRING,
+      FLOAT64_TYPE_STRING, FLOAT64_OR_HOLE_TYPE_STRING,
+      BOOL_TYPE_STRING,    "string",
+      BINT_TYPE_STRING,    CHAR8_TYPE_STRING,
+      CHAR16_TYPE_STRING};
 
   return std::find(std::begin(machine_types), std::end(machine_types), s) !=
          std::end(machine_types);
@@ -183,12 +213,16 @@ bool IsMachineType(const std::string& s) {
 
 bool IsLowerCamelCase(const std::string& s) {
   if (s.empty()) return false;
-  return islower(s[0]) && !ContainsUnderscore(s);
+  size_t start = 0;
+  if (s[0] == '_') start = 1;
+  return islower(s[start]) && !ContainsUnderscore(s.substr(start));
 }
 
 bool IsUpperCamelCase(const std::string& s) {
   if (s.empty()) return false;
-  return isupper(s[0]) && !ContainsUnderscore(s);
+  size_t start = 0;
+  if (s[0] == '_') start = 1;
+  return isupper(s[start]);
 }
 
 bool IsSnakeCase(const std::string& s) {
@@ -211,14 +245,25 @@ bool IsValidTypeName(const std::string& s) {
 }
 
 std::string CapifyStringWithUnderscores(const std::string& camellified_string) {
+  // Special case: JSAbc yields JS_ABC, not JSABC, for any Abc.
+  size_t js_position = camellified_string.find("JS");
+
   std::string result;
-  bool previousWasLower = false;
-  for (auto current : camellified_string) {
-    if (previousWasLower && isupper(current)) {
+  bool previousWasLowerOrDigit = false;
+  for (size_t index = 0; index < camellified_string.size(); ++index) {
+    char current = camellified_string[index];
+    if ((previousWasLowerOrDigit && isupper(current)) ||
+        (js_position != std::string::npos &&
+         index == js_position + strlen("JS"))) {
       result += "_";
     }
+    if (current == '.' || current == '-') {
+      result += "_";
+      previousWasLowerOrDigit = false;
+      continue;
+    }
     result += toupper(current);
-    previousWasLower = (islower(current));
+    previousWasLowerOrDigit = islower(current) || isdigit(current);
   }
   return result;
 }
@@ -240,10 +285,32 @@ std::string CamelifyString(const std::string& underscore_string) {
   return result;
 }
 
+std::string SnakeifyString(const std::string& camel_string) {
+  std::string result;
+  bool previousWasLower = false;
+  for (auto current : camel_string) {
+    if (previousWasLower && isupper(current)) {
+      result += "_";
+    }
+    result += tolower(current);
+    previousWasLower = (islower(current));
+  }
+  return result;
+}
+
 std::string DashifyString(const std::string& underscore_string) {
   std::string result = underscore_string;
   std::replace(result.begin(), result.end(), '_', '-');
   return result;
+}
+
+std::string UnderlinifyPath(std::string path) {
+  std::replace(path.begin(), path.end(), '-', '_');
+  std::replace(path.begin(), path.end(), '/', '_');
+  std::replace(path.begin(), path.end(), '\\', '_');
+  std::replace(path.begin(), path.end(), '.', '_');
+  transform(path.begin(), path.end(), path.begin(), ::toupper);
+  return path;
 }
 
 void ReplaceFileContentsIfDifferent(const std::string& file_path,
@@ -262,6 +329,54 @@ void ReplaceFileContentsIfDifferent(const std::string& file_path,
     new_contents_stream << contents;
     new_contents_stream.close();
   }
+}
+
+IfDefScope::IfDefScope(std::ostream& os, std::string d)
+    : os_(os), d_(std::move(d)) {
+  os_ << "#ifdef " << d_ << "\n";
+}
+IfDefScope::~IfDefScope() { os_ << "#endif  // " << d_ << "\n"; }
+
+NamespaceScope::NamespaceScope(std::ostream& os,
+                               std::initializer_list<std::string> namespaces)
+    : os_(os), d_(std::move(namespaces)) {
+  for (const std::string& s : d_) {
+    os_ << "namespace " << s << " {\n";
+  }
+}
+NamespaceScope::~NamespaceScope() {
+  for (auto i = d_.rbegin(); i != d_.rend(); ++i) {
+    os_ << "}  // namespace " << *i << "\n";
+  }
+}
+
+IncludeGuardScope::IncludeGuardScope(std::ostream& os, std::string file_name)
+    : os_(os),
+      d_("V8_GEN_TORQUE_GENERATED_" + CapifyStringWithUnderscores(file_name) +
+         "_") {
+  os_ << "#ifndef " << d_ << "\n";
+  os_ << "#define " << d_ << "\n\n";
+}
+IncludeGuardScope::~IncludeGuardScope() { os_ << "#endif  // " << d_ << "\n"; }
+
+IncludeObjectMacrosScope::IncludeObjectMacrosScope(std::ostream& os) : os_(os) {
+  os_ << "\n// Has to be the last include (doesn't have include guards):\n"
+         "#include \"src/objects/object-macros.h\"\n";
+}
+IncludeObjectMacrosScope::~IncludeObjectMacrosScope() {
+  os_ << "\n#include \"src/objects/object-macros-undef.h\"\n";
+}
+
+size_t ResidueClass::AlignmentLog2() const {
+  if (value_ == 0) return modulus_log_2_;
+  return base::bits::CountTrailingZeros(value_);
+}
+
+const size_t ResidueClass::kMaxModulusLog2;
+
+std::ostream& operator<<(std::ostream& os, const ResidueClass& a) {
+  if (a.SingleValue().has_value()) return os << *a.SingleValue();
+  return os << "[" << a.value_ << " mod 2^" << a.modulus_log_2_ << "]";
 }
 
 }  // namespace torque

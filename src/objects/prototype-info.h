@@ -5,8 +5,8 @@
 #ifndef V8_OBJECTS_PROTOTYPE_INFO_H_
 #define V8_OBJECTS_PROTOTYPE_INFO_H_
 
-#include "src/objects.h"
 #include "src/objects/fixed-array.h"
+#include "src/objects/objects.h"
 #include "src/objects/struct.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -29,6 +29,8 @@ class PrototypeInfo : public Struct {
   // [prototype_users]: WeakArrayList containing weak references to maps using
   // this prototype, or Smi(0) if uninitialized.
   DECL_ACCESSORS(prototype_users, Object)
+
+  DECL_ACCESSORS(prototype_chain_enum_cache, Object)
 
   // [object_create_map]: A field caching the map for Object.create(prototype).
   static inline void SetObjectCreateMap(Handle<PrototypeInfo> info,
@@ -99,7 +101,7 @@ class V8_EXPORT_PRIVATE PrototypeUsers : public WeakArrayList {
   static inline Smi empty_slot_index(WeakArrayList array);
   static inline void set_empty_slot_index(WeakArrayList array, int index);
 
-  static void IsSlotEmpty(WeakArrayList array, int index);
+  static void ScanForEmptySlots(WeakArrayList array);
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(PrototypeUsers);
 };

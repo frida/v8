@@ -11,14 +11,14 @@ function addTableWithAccessors(builder, type, size, name) {
   const table = builder.addTable(type, size);
   const set_sig = makeSig([kWasmI32, type], []);
   builder.addFunction('set_' + name, set_sig)
-      .addBody([kExprGetLocal, 0,
-          kExprGetLocal, 1,
-          kExprSetTable, table.index])
+      .addBody([kExprLocalGet, 0,
+          kExprLocalGet, 1,
+          kExprTableSet, table.index])
       .exportFunc();
 
   const get_sig = makeSig([kWasmI32], [type]);
   builder.addFunction('get_' + name, get_sig)
-      .addBody([kExprGetLocal, 0, kExprGetTable, table.index])
+      .addBody([kExprLocalGet, 0, kExprTableGet, table.index])
       .exportFunc();
 }
 
@@ -66,7 +66,7 @@ const dummy_func = exports.set_table_func1;
   assertTraps(kTrapTableOutOfBounds, () => exports.set_table_ref1(44, dummy_ref));
 })();
 
-(function testSetTable() {
+(function testTableSet() {
   print(arguments.callee.name);
   assertSame(null, exports.get_table_func1(3));
   exports.set_table_func1(3, dummy_func);
@@ -109,16 +109,16 @@ const dummy_func = exports.set_table_func1;
   const f2 = builder.addFunction('f', kSig_i_v).addBody([kExprI32Const, value2]);
   const f3 = builder.addFunction('f', kSig_i_v).addBody([kExprI32Const, value3]);
   builder.addFunction('get_t1', kSig_a_i)
-      .addBody([kExprGetLocal, 0, kExprGetTable, t1])
+      .addBody([kExprLocalGet, 0, kExprTableGet, t1])
       .exportFunc();
   builder.addFunction('get_t2', kSig_a_i)
-      .addBody([kExprGetLocal, 0, kExprGetTable, t2])
+      .addBody([kExprLocalGet, 0, kExprTableGet, t2])
       .exportFunc();
 
   const offset1 = 3;
   const offset2 = 9;
-  builder.addElementSegment(t1, offset1, false, [f1.index, f2.index], false);
-  builder.addElementSegment(t2, offset2, false, [f3.index, f1.index], false);
+  builder.addElementSegment(t1, offset1, false, [f1.index, f2.index]);
+  builder.addElementSegment(t2, offset2, false, [f3.index, f1.index]);
 
   const instance = builder.instantiate();
 
@@ -126,4 +126,31 @@ const dummy_func = exports.set_table_func1;
   assertEquals(value2, instance.exports.get_t1(offset1 + 1)());
   assertEquals(value3, instance.exports.get_t2(offset2)());
   assertEquals(value1, instance.exports.get_t2(offset2 + 1)());
+})();
+
+(function testRefFuncInTableIsCallable() {
+  print(arguments.callee.name);
+  const expected = 54;
+  const index = 3;
+  const builder = new WasmModuleBuilder();
+  const table_index = builder.addTable(kWasmAnyFunc, 15, 15).index;
+  const sig_index = builder.addType(kSig_i_v);
+  const function_index = builder.addFunction('hidden', sig_index)
+                             .addBody([kExprI32Const, expected])
+                             .index;
+  builder.addDeclarativeElementSegment([function_index]);
+
+  builder.addFunction('main', kSig_i_v)
+      .addBody([
+        kExprI32Const, index,                      // entry index
+        kExprRefFunc, function_index,              // function reference
+        kExprTableSet, table_index,                // --
+        kExprI32Const, index,                      // entry index
+        kExprCallIndirect, sig_index, table_index  // --
+
+      ])
+      .exportFunc();
+
+  const instance = builder.instantiate();
+  assertEquals(expected, instance.exports.main());
 })();

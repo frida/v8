@@ -14,9 +14,9 @@ let cleanup = function(iter) {
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key = {"k": "this is the key"};
-// Create an object and register it in the FinalizationGroup. The object needs
+// Create an object and register it in the FinalizationRegistry. The object needs
 // to be inside a closure so that we can reliably kill them!
 
 (function() {
@@ -36,7 +36,8 @@ let timeout_func = function() {
   assertEquals(1, cleanup_holdings_count);
 
   // Unregister an already iterated over weak reference.
-  fg.unregister(key);
+  let success = fg.unregister(key);
+  assertFalse(success);
 
   // Assert that it didn't do anything.
   setTimeout(() => { assertEquals(1, cleanup_call_count); }, 0);

@@ -5,11 +5,11 @@
 #ifndef V8_TEST_CCTEST_INTERPRETER_INTERPRETER_TESTER_H_
 #define V8_TEST_CCTEST_INTERPRETER_INTERPRETER_TESTER_H_
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/api.h"
-#include "src/execution.h"
-#include "src/handles.h"
+#include "src/api/api.h"
+#include "src/execution/execution.h"
+#include "src/handles/handles.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/interpreter.h"
 #include "src/objects/feedback-cell.h"
@@ -20,34 +20,54 @@ namespace v8 {
 namespace internal {
 namespace interpreter {
 
-MaybeHandle<Object> CallInterpreter(Isolate* isolate,
-                                    Handle<JSFunction> function);
 template <class... A>
 static MaybeHandle<Object> CallInterpreter(Isolate* isolate,
                                            Handle<JSFunction> function,
-                                           A... args) {
-  Handle<Object> argv[] = {args...};
-  return Execution::Call(isolate, function,
-                         isolate->factory()->undefined_value(), sizeof...(args),
-                         argv);
+                                           Handle<Object> receiver, A... args) {
+  // Pad the array with an empty handle to ensure that argv size is at least 1.
+  // It avoids MSVC error C2466.
+  Handle<Object> argv[] = {args..., Handle<Object>()};
+  return Execution::Call(isolate, function, receiver, sizeof...(args), argv);
 }
 
 template <class... A>
 class InterpreterCallable {
  public:
-  InterpreterCallable(Isolate* isolate, Handle<JSFunction> function)
-      : isolate_(isolate), function_(function) {}
   virtual ~InterpreterCallable() = default;
-
-  MaybeHandle<Object> operator()(A... args) {
-    return CallInterpreter(isolate_, function_, args...);
-  }
 
   FeedbackVector vector() const { return function_->feedback_vector(); }
 
- private:
+ protected:
+  InterpreterCallable(Isolate* isolate, Handle<JSFunction> function)
+      : isolate_(isolate), function_(function) {}
+
   Isolate* isolate_;
   Handle<JSFunction> function_;
+};
+
+template <class... A>
+class InterpreterCallableUndefinedReceiver : public InterpreterCallable<A...> {
+ public:
+  InterpreterCallableUndefinedReceiver(Isolate* isolate,
+                                       Handle<JSFunction> function)
+      : InterpreterCallable<A...>(isolate, function) {}
+
+  MaybeHandle<Object> operator()(A... args) {
+    return CallInterpreter(this->isolate_, this->function_,
+                           this->isolate_->factory()->undefined_value(),
+                           args...);
+  }
+};
+
+template <class... A>
+class InterpreterCallableWithReceiver : public InterpreterCallable<A...> {
+ public:
+  InterpreterCallableWithReceiver(Isolate* isolate, Handle<JSFunction> function)
+      : InterpreterCallable<A...>(isolate, function) {}
+
+  MaybeHandle<Object> operator()(Handle<Object> receiver, A... args) {
+    return CallInterpreter(this->isolate_, this->function_, receiver, args...);
+  }
 };
 
 class InterpreterTester {
@@ -68,8 +88,15 @@ class InterpreterTester {
   virtual ~InterpreterTester();
 
   template <class... A>
-  InterpreterCallable<A...> GetCallable() {
-    return InterpreterCallable<A...>(isolate_, GetBytecodeFunction<A...>());
+  InterpreterCallableUndefinedReceiver<A...> GetCallable() {
+    return InterpreterCallableUndefinedReceiver<A...>(
+        isolate_, GetBytecodeFunction<A...>());
+  }
+
+  template <class... A>
+  InterpreterCallableWithReceiver<A...> GetCallableWithReceiver() {
+    return InterpreterCallableWithReceiver<A...>(isolate_,
+                                                 GetBytecodeFunction<A...>());
   }
 
   Local<Message> CheckThrowsReturnMessage();
@@ -122,13 +149,13 @@ class InterpreterTester {
     }
 
     if (!bytecode_.is_null()) {
-      function->shared()->set_function_data(*bytecode_.ToHandleChecked());
+      function->shared().set_function_data(*bytecode_.ToHandleChecked());
     }
     if (HasFeedbackMetadata()) {
       function->set_raw_feedback_cell(isolate_->heap()->many_closures_cell());
       // Set the raw feedback metadata to circumvent checks that we are not
       // overwriting existing metadata.
-      function->shared()->set_raw_outer_scope_info_or_feedback_metadata(
+      function->shared().set_raw_outer_scope_info_or_feedback_metadata(
           *feedback_metadata_.ToHandleChecked());
       JSFunction::EnsureFeedbackVector(function);
     }

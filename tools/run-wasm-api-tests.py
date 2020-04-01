@@ -38,7 +38,8 @@ CLANG_PATH = os.path.join(CHECKOUT_PATH, "third_party", "llvm-build",
                           "Release+Asserts", "bin")
 
 EXAMPLES = ["hello", "callback", "trap", "reflect", "global", "table",
-            "memory", "finalize", "serialize", "threads"]
+            "memory", "finalize", "serialize", "threads", "hostref", "multi",
+            "start"]
 
 CLANG = {
   "name": "Clang",
@@ -157,6 +158,10 @@ def Main(args):
       for language in languages:
         c = runner.CompileAndRun(compiler, language)
         if c: result = c
+  if result:
+    print("\nFinished with errors.")
+  else:
+    print("\nFinished successfully.")
   return result
 
 if __name__ == "__main__":

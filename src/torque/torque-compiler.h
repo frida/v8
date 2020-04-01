@@ -16,28 +16,34 @@ namespace internal {
 namespace torque {
 
 struct TorqueCompilerOptions {
-  std::string output_directory;
-  bool verbose;
-  bool collect_language_server_data;
+  std::string output_directory = "";
+  std::string v8_root = "";
+  bool collect_language_server_data = false;
+
+  // assert(...) are only generated for debug builds. The provide
+  // language server support for statements inside asserts, this flag
+  // can force generate them.
+  bool force_assert_statements = false;
+
+  // Forge (Google3) can only run 64-bit executables. As Torque runs as part
+  // of the build process, we need a "cross-compile" mode when we target 32-bit
+  // architectures. Note that this does not needed in Chromium/V8 land, since we
+  // always build with the same bit width as the target architecture.
+  bool force_32bit_output = false;
 };
 
 struct TorqueCompilerResult {
   // Map translating SourceIds to filenames. This field is
   // set on errors, so the SourcePosition of the error can be
   // resolved.
-  SourceFileMap source_file_map;
+  base::Optional<SourceFileMap> source_file_map;
 
   // Eagerly collected data needed for the LanguageServer.
   // Set the corresponding options flag to enable.
   LanguageServerData language_server_data;
 
-  // Lint errors collected during compilation. These are
-  // mainly naming convention violations.
-  std::vector<LintError> lint_errors;
-
-  // If any error occurred during either parsing or compilation,
-  // this field will be set.
-  base::Optional<TorqueError> error;
+  // Errors collected during compilation.
+  std::vector<TorqueMessage> messages;
 };
 
 V8_EXPORT_PRIVATE TorqueCompilerResult

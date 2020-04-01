@@ -6,7 +6,7 @@
 #define V8_COMPILER_COMPILATION_DEPENDENCIES_H_
 
 #include "src/compiler/js-heap-broker.h"
-#include "src/objects.h"
+#include "src/objects/objects.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -24,6 +24,8 @@ class SlackTrackingPrediction {
   int instance_size_;
   int inobject_property_count_;
 };
+
+class CompilationDependency;
 
 // Collects and installs dependencies of the code that is being generated.
 class V8_EXPORT_PRIVATE CompilationDependencies : public ZoneObject {
@@ -53,11 +55,11 @@ class V8_EXPORT_PRIVATE CompilationDependencies : public ZoneObject {
 
   // Record the assumption that the field representation of a field does not
   // change. The field is identified by the arguments.
-  void DependOnFieldRepresentation(const MapRef& map, int descriptor);
+  void DependOnFieldRepresentation(const MapRef& map, InternalIndex descriptor);
 
   // Record the assumption that the field type of a field does not change. The
   // field is identified by the arguments.
-  void DependOnFieldType(const MapRef& map, int descriptor);
+  void DependOnFieldType(const MapRef& map, InternalIndex descriptor);
 
   // Return a field's constness and, if kConst, record the assumption that it
   // remains kConst. The field is identified by the arguments.
@@ -66,7 +68,8 @@ class V8_EXPORT_PRIVATE CompilationDependencies : public ZoneObject {
   // kConst if the map is stable (and register stability dependency in that
   // case).  This is to ensure that fast elements kind transitions cannot be
   // used to mutate fields without deoptimization of the dependent code.
-  PropertyConstness DependOnFieldConstness(const MapRef& map, int descriptor);
+  PropertyConstness DependOnFieldConstness(const MapRef& map,
+                                           InternalIndex descriptor);
 
   // Record the assumption that neither {cell}'s {CellType} changes, nor the
   // {IsReadOnly()} flag of {cell}'s {PropertyDetails}.
@@ -107,16 +110,27 @@ class V8_EXPORT_PRIVATE CompilationDependencies : public ZoneObject {
   SlackTrackingPrediction DependOnInitialMapInstanceSizePrediction(
       const JSFunctionRef& function);
 
+  // The methods below allow for gathering dependencies without actually
+  // recording them. They can be recorded at a later time (or they can be
+  // ignored). For example,
+  //   DependOnTransition(map);
+  // is equivalent to:
+  //   RecordDependency(TransitionDependencyOffTheRecord(map));
+  void RecordDependency(CompilationDependency const* dependency);
+  CompilationDependency const* TransitionDependencyOffTheRecord(
+      const MapRef& target_map) const;
+  CompilationDependency const* FieldRepresentationDependencyOffTheRecord(
+      const MapRef& map, InternalIndex descriptor) const;
+  CompilationDependency const* FieldTypeDependencyOffTheRecord(
+      const MapRef& map, InternalIndex descriptor) const;
+
   // Exposed only for testing purposes.
   bool AreValid() const;
-
-  // Exposed only because C++.
-  class Dependency;
 
  private:
   Zone* const zone_;
   JSHeapBroker* const broker_;
-  ZoneForwardList<Dependency*> dependencies_;
+  ZoneForwardList<CompilationDependency const*> dependencies_;
 };
 
 }  // namespace compiler

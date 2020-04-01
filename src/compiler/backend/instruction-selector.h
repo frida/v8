@@ -7,18 +7,22 @@
 
 #include <map>
 
+#include "src/codegen/cpu-features.h"
+#include "src/common/globals.h"
 #include "src/compiler/backend/instruction-scheduler.h"
 #include "src/compiler/backend/instruction.h"
 #include "src/compiler/common-operator.h"
+#include "src/compiler/feedback-source.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node.h"
-#include "src/cpu-features.h"
-#include "src/globals.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
+
+class TickCounter;
+
 namespace compiler {
 
 // Forward declarations.
@@ -57,7 +61,7 @@ class FlagsContinuation final {
   static FlagsContinuation ForDeoptimize(FlagsCondition condition,
                                          DeoptimizeKind kind,
                                          DeoptimizeReason reason,
-                                         VectorSlotPair const& feedback,
+                                         FeedbackSource const& feedback,
                                          Node* frame_state) {
     return FlagsContinuation(kFlags_deoptimize, condition, kind, reason,
                              feedback, frame_state);
@@ -66,7 +70,7 @@ class FlagsContinuation final {
   // Creates a new flags continuation for an eager deoptimization exit.
   static FlagsContinuation ForDeoptimizeAndPoison(
       FlagsCondition condition, DeoptimizeKind kind, DeoptimizeReason reason,
-      VectorSlotPair const& feedback, Node* frame_state) {
+      FeedbackSource const& feedback, Node* frame_state) {
     return FlagsContinuation(kFlags_deoptimize_and_poison, condition, kind,
                              reason, feedback, frame_state);
   }
@@ -107,7 +111,7 @@ class FlagsContinuation final {
     DCHECK(IsDeoptimize());
     return reason_;
   }
-  VectorSlotPair const& feedback() const {
+  FeedbackSource const& feedback() const {
     DCHECK(IsDeoptimize());
     return feedback_;
   }
@@ -193,7 +197,7 @@ class FlagsContinuation final {
 
   FlagsContinuation(FlagsMode mode, FlagsCondition condition,
                     DeoptimizeKind kind, DeoptimizeReason reason,
-                    VectorSlotPair const& feedback, Node* frame_state)
+                    FeedbackSource const& feedback, Node* frame_state)
       : mode_(mode),
         condition_(condition),
         kind_(kind),
@@ -223,7 +227,7 @@ class FlagsContinuation final {
   FlagsCondition condition_;
   DeoptimizeKind kind_;          // Only valid if mode_ == kFlags_deoptimize*
   DeoptimizeReason reason_;      // Only valid if mode_ == kFlags_deoptimize*
-  VectorSlotPair feedback_;      // Only valid if mode_ == kFlags_deoptimize*
+  FeedbackSource feedback_;      // Only valid if mode_ == kFlags_deoptimize*
   Node* frame_state_or_result_;  // Only valid if mode_ == kFlags_deoptimize*
                                  // or mode_ == kFlags_set.
   BasicBlock* true_block_;       // Only valid if mode_ == kFlags_branch*.
@@ -266,7 +270,8 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
       Zone* zone, size_t node_count, Linkage* linkage,
       InstructionSequence* sequence, Schedule* schedule,
       SourcePositionTable* source_positions, Frame* frame,
-      EnableSwitchJumpTable enable_switch_jump_table,
+      EnableSwitchJumpTable enable_switch_jump_table, TickCounter* tick_counter,
+      size_t* max_unoptimized_frame_height, size_t* max_pushed_argument_count,
       SourcePositionMode source_position_mode = kCallSourcePositions,
       Features features = SupportedFeatures(),
       EnableScheduling enable_scheduling = FLAG_turbo_instruction_scheduling
@@ -341,16 +346,12 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
                                     size_t input_count,
                                     InstructionOperand* inputs,
                                     FlagsContinuation* cont);
+  Instruction* EmitWithContinuation(
+      InstructionCode opcode, size_t output_count, InstructionOperand* outputs,
+      size_t input_count, InstructionOperand* inputs, size_t temp_count,
+      InstructionOperand* temps, FlagsContinuation* cont);
 
-  // ===========================================================================
-  // ===== Architecture-independent deoptimization exit emission methods. ======
-  // ===========================================================================
-  Instruction* EmitDeoptimize(InstructionCode opcode, size_t output_count,
-                              InstructionOperand* outputs, size_t input_count,
-                              InstructionOperand* inputs, DeoptimizeKind kind,
-                              DeoptimizeReason reason,
-                              VectorSlotPair const& feedback,
-                              Node* frame_state);
+  void EmitIdentity(Node* node);
 
   // ===========================================================================
   // ============== Architecture-independent CPU feature methods. ==============
@@ -443,7 +444,8 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
 
   // Check if we can generate loads and stores of ExternalConstants relative
   // to the roots register.
-  bool CanAddressRelativeToRootsRegister() const;
+  bool CanAddressRelativeToRootsRegister(
+      const ExternalReference& reference) const;
   // Check if we can use the roots register to access GC roots.
   bool CanUseRootsRegister() const;
 
@@ -493,14 +495,13 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
 
   void AppendDeoptimizeArguments(InstructionOperandVector* args,
                                  DeoptimizeKind kind, DeoptimizeReason reason,
-                                 VectorSlotPair const& feedback,
+                                 FeedbackSource const& feedback,
                                  Node* frame_state);
 
-  void EmitTableSwitch(const SwitchInfo& sw, InstructionOperand& index_operand);
-  void EmitLookupSwitch(const SwitchInfo& sw,
-                        InstructionOperand& value_operand);
+  void EmitTableSwitch(const SwitchInfo& sw,
+                       InstructionOperand const& index_operand);
   void EmitBinarySearchSwitch(const SwitchInfo& sw,
-                              InstructionOperand& value_operand);
+                              InstructionOperand const& value_operand);
 
   void TryRename(InstructionOperand* op);
   int GetRename(int virtual_register);
@@ -536,7 +537,7 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   void MarkAsSimd128(Node* node) {
     MarkAsRepresentation(MachineRepresentation::kSimd128, node);
   }
-  void MarkAsReference(Node* node) {
+  void MarkAsTagged(Node* node) {
     MarkAsRepresentation(MachineRepresentation::kTagged, node);
   }
   void MarkAsCompressed(Node* node) {
@@ -552,8 +553,7 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
     kCallCodeImmediate = 1u << 0,
     kCallAddressImmediate = 1u << 1,
     kCallTail = 1u << 2,
-    kCallFixedTargetRegister = 1u << 3,
-    kAllowCallThroughSlot = 1u << 4
+    kCallFixedTargetRegister = 1u << 3
   };
   using CallBufferFlags = base::Flags<CallBufferFlag>;
 
@@ -568,12 +568,20 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   bool IsTailCallAddressImmediate();
   int GetTempsCountForTailCallFromJSFunction();
 
+  void UpdateMaxPushedArgumentCount(size_t count);
+
   FrameStateDescriptor* GetFrameStateDescriptor(Node* node);
   size_t AddInputsToFrameStateDescriptor(FrameStateDescriptor* descriptor,
                                          Node* state, OperandGenerator* g,
                                          StateObjectDeduplicator* deduplicator,
                                          InstructionOperandVector* inputs,
                                          FrameStateInputKind kind, Zone* zone);
+  size_t AddInputsToFrameStateDescriptor(StateValueList* values,
+                                         InstructionOperandVector* inputs,
+                                         OperandGenerator* g,
+                                         StateObjectDeduplicator* deduplicator,
+                                         Node* node, FrameStateInputKind kind,
+                                         Zone* zone);
   size_t AddOperandToStateValueDescriptor(StateValueList* values,
                                           InstructionOperandVector* inputs,
                                           OperandGenerator* g,
@@ -604,6 +612,9 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   MACHINE_SIMD_OP_LIST(DECLARE_GENERATOR)
 #undef DECLARE_GENERATOR
 
+  // Visit the load node with a value and opcode to replace with.
+  void VisitLoad(Node* node, Node* value, InstructionCode opcode);
+  void VisitLoadTransform(Node* node, Node* value, InstructionCode opcode);
   void VisitFinishRegion(Node* node);
   void VisitParameter(Node* node);
   void VisitIfException(Node* node);
@@ -612,8 +623,6 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   void VisitProjection(Node* node);
   void VisitConstant(Node* node);
   void VisitCall(Node* call, BasicBlock* handler = nullptr);
-  void VisitCallWithCallerSavedRegisters(Node* call,
-                                         BasicBlock* handler = nullptr);
   void VisitDeoptimizeIf(Node* node);
   void VisitDeoptimizeUnless(Node* node);
   void VisitTrapIf(Node* node, TrapId trap_id);
@@ -623,12 +632,15 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   void VisitBranch(Node* input, BasicBlock* tbranch, BasicBlock* fbranch);
   void VisitSwitch(Node* node, const SwitchInfo& sw);
   void VisitDeoptimize(DeoptimizeKind kind, DeoptimizeReason reason,
-                       VectorSlotPair const& feedback, Node* value);
+                       FeedbackSource const& feedback, Node* frame_state);
   void VisitReturn(Node* ret);
   void VisitThrow(Node* node);
   void VisitRetain(Node* node);
   void VisitUnreachable(Node* node);
+  void VisitStaticAssert(Node* node);
   void VisitDeadValue(Node* node);
+
+  void VisitStackPointerGreaterThan(Node* node, FlagsContinuation* cont);
 
   void VisitWordCompareZero(Node* user, Node* value, FlagsContinuation* cont);
 
@@ -639,7 +651,6 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   void EmitPrepareResults(ZoneVector<compiler::PushParameter>* results,
                           const CallDescriptor* call_descriptor, Node* node);
 
-  void EmitIdentity(Node* node);
   bool CanProduceSignalingNaN(Node* node);
 
   // ===========================================================================
@@ -756,6 +767,7 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   ZoneVector<Instruction*> instructions_;
   InstructionOperandVector continuation_inputs_;
   InstructionOperandVector continuation_outputs_;
+  InstructionOperandVector continuation_temps_;
   BoolVector defined_;
   BoolVector used_;
   IntVector effect_level_;
@@ -771,6 +783,12 @@ class V8_EXPORT_PRIVATE InstructionSelector final {
   bool instruction_selection_failed_;
   ZoneVector<std::pair<int, int>> instr_origins_;
   EnableTraceTurboJson trace_turbo_;
+  TickCounter* const tick_counter_;
+
+  // Store the maximal unoptimized frame height and an maximal number of pushed
+  // arguments (for calls). Later used to apply an offset to stack checks.
+  size_t* max_unoptimized_frame_height_;
+  size_t* max_pushed_argument_count_;
 };
 
 }  // namespace compiler

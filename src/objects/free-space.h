@@ -6,7 +6,7 @@
 #define V8_OBJECTS_FREE_SPACE_H_
 
 #include "src/objects/heap-object.h"
-#include "torque-generated/class-definitions-from-dsl.h"
+#include "torque-generated/field-offsets-tq.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -43,6 +43,9 @@ class FreeSpace : public HeapObject {
 
   DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
                                 TORQUE_GENERATED_FREE_SPACE_FIELDS)
+
+ private:
+  inline bool IsValid();
 
   OBJECT_CONSTRUCTORS(FreeSpace, HeapObject);
 };

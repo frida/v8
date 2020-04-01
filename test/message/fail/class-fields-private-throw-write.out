@@ -1,6 +1,6 @@
-*%(basename)s:9: TypeError: Write of private field #x to an object which did not contain the field
+*%(basename)s:7: TypeError: Cannot write private member #x to an object whose class did not declare it
   setX(o, val) { o.#x = val; }
                       ^
-TypeError: Write of private field #x to an object which did not contain the field
-    at X.setX (*%(basename)s:9:23)
-    at *%(basename)s:12:9
+TypeError: Cannot write private member #x to an object whose class did not declare it
+    at X.setX (*%(basename)s:7:23)
+    at *%(basename)s:10:9

@@ -7,12 +7,13 @@
 
 #include "src/base/flags.h"
 #include "src/builtins/builtins-definitions.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
 
 namespace v8 {
 namespace internal {
 
 class ByteArray;
+class CallInterfaceDescriptor;
 class Callable;
 template <typename T>
 class Handle;
@@ -47,7 +48,7 @@ class Builtins {
   enum Name : int32_t {
 #define DEF_ENUM(Name, ...) k##Name,
     BUILTIN_LIST(DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM, DEF_ENUM,
-                 DEF_ENUM, DEF_ENUM)
+                 DEF_ENUM)
 #undef DEF_ENUM
         builtin_count,
 
@@ -60,12 +61,20 @@ class Builtins {
 
   static const int32_t kNoBuiltinId = -1;
 
+  static constexpr int kFirstWideBytecodeHandler =
+      kFirstBytecodeHandler + kNumberOfBytecodeHandlers;
+  static constexpr int kFirstExtraWideBytecodeHandler =
+      kFirstWideBytecodeHandler + kNumberOfWideBytecodeHandlers;
+  static constexpr int kLastBytecodeHandlerPlusOne =
+      kFirstExtraWideBytecodeHandler + kNumberOfWideBytecodeHandlers;
+  STATIC_ASSERT(kLastBytecodeHandlerPlusOne == builtin_count);
+
   static constexpr bool IsBuiltinId(int maybe_id) {
     return 0 <= maybe_id && maybe_id < builtin_count;
   }
 
   // The different builtin kinds are documented in builtins-definitions.h.
-  enum Kind { CPP, API, TFJ, TFC, TFS, TFH, BCH, ASM };
+  enum Kind { CPP, TFJ, TFC, TFS, TFH, BCH, ASM };
 
   static BailoutId GetContinuationBailoutId(Name name);
   static Name GetBuiltinFromBailoutId(BailoutId);
@@ -84,7 +93,9 @@ class Builtins {
   V8_EXPORT_PRIVATE Code builtin(int index);
   V8_EXPORT_PRIVATE Handle<Code> builtin_handle(int index);
 
+  static CallInterfaceDescriptor CallInterfaceDescriptorFor(Name name);
   V8_EXPORT_PRIVATE static Callable CallableFor(Isolate* isolate, Name name);
+  static bool HasJSLinkage(int index);
 
   static int GetStackParameterCount(Name name);
 
@@ -102,7 +113,6 @@ class Builtins {
   static const char* KindNameOf(int index);
 
   static bool IsCpp(int index);
-  static bool HasCppImplementation(int index);
 
   // True, iff the given code object is a builtin. Note that this does not
   // necessarily mean that its kind is Code::BUILTIN.
@@ -115,14 +125,6 @@ class Builtins {
   // True, iff the given code object is a builtin with off-heap embedded code.
   static bool IsIsolateIndependentBuiltin(const Code code);
 
-  static constexpr int kFirstWideBytecodeHandler =
-      kFirstBytecodeHandler + kNumberOfBytecodeHandlers;
-  static constexpr int kFirstExtraWideBytecodeHandler =
-      kFirstWideBytecodeHandler + kNumberOfWideBytecodeHandlers;
-  STATIC_ASSERT(kFirstExtraWideBytecodeHandler +
-                    kNumberOfWideBytecodeHandlers ==
-                builtin_count);
-
   // True, iff the given builtin contains no isolate-specific code and can be
   // embedded into the binary.
   static constexpr bool kAllBuiltinsAreIsolateIndependent = true;
@@ -134,14 +136,12 @@ class Builtins {
     return kAllBuiltinsAreIsolateIndependent;
   }
 
-  // Wasm runtime stubs are treated specially by wasm. To guarantee reachability
-  // through near jumps, their code is completely copied into a fresh off-heap
-  // area.
-  static bool IsWasmRuntimeStub(int index);
+  // Initializes the table of builtin entry points based on the current contents
+  // of the builtins table.
+  static void InitializeBuiltinEntryTable(Isolate* isolate);
 
-  // Updates the table of builtin entry points based on the current contents of
-  // the builtins table.
-  static void UpdateBuiltinEntryTable(Isolate* isolate);
+  // Emits a CodeCreateEvent for every builtin.
+  static void EmitCodeCreateEvents(Isolate* isolate);
 
   bool is_initialized() const { return initialized_; }
 
@@ -156,10 +156,7 @@ class Builtins {
       Handle<Object> receiver, int argc, Handle<Object> args[],
       Handle<HeapObject> new_target);
 
-  enum ExitFrameType { EXIT, BUILTIN_EXIT };
-
-  static void Generate_Adaptor(MacroAssembler* masm, Address builtin_address,
-                               ExitFrameType exit_frame_type);
+  static void Generate_Adaptor(MacroAssembler* masm, Address builtin_address);
 
   static void Generate_CEntry(MacroAssembler* masm, int result_size,
                               SaveFPRegsMode save_doubles, ArgvMode argv_mode,
@@ -171,12 +168,20 @@ class Builtins {
   // Creates a trampoline code object that jumps to the given off-heap entry.
   // The result should not be used directly, but only from the related Factory
   // function.
-  static Handle<Code> GenerateOffHeapTrampolineFor(Isolate* isolate,
-                                                   Address off_heap_entry);
+  // TODO(delphick): Come up with a better name since it may not generate an
+  // executable trampoline.
+  static Handle<Code> GenerateOffHeapTrampolineFor(
+      Isolate* isolate, Address off_heap_entry, int32_t kind_specific_flags,
+      bool generate_jump_to_instruction_stream);
 
   // Generate the RelocInfo ByteArray that would be generated for an offheap
   // trampoline.
   static Handle<ByteArray> GenerateOffHeapTrampolineRelocInfo(Isolate* isolate);
+
+  // Only builtins with JS linkage should ever need to be called via their
+  // trampoline Code object. The remaining builtins have non-executable Code
+  // objects.
+  static bool CodeObjectIsExecutable(int builtin_index);
 
   static bool IsJSEntryVariant(int builtin_index) {
     switch (builtin_index) {
@@ -230,8 +235,8 @@ class Builtins {
 #define DECLARE_TF(Name, ...) \
   static void Generate_##Name(compiler::CodeAssemblerState* state);
 
-  BUILTIN_LIST(IGNORE_BUILTIN, IGNORE_BUILTIN, DECLARE_TF, DECLARE_TF,
-               DECLARE_TF, DECLARE_TF, IGNORE_BUILTIN, DECLARE_ASM)
+  BUILTIN_LIST(IGNORE_BUILTIN, DECLARE_TF, DECLARE_TF, DECLARE_TF, DECLARE_TF,
+               IGNORE_BUILTIN, DECLARE_ASM)
 
 #undef DECLARE_ASM
 #undef DECLARE_TF

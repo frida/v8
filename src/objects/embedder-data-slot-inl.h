@@ -7,11 +7,11 @@
 
 #include "src/objects/embedder-data-slot.h"
 
+#include "src/base/memory.h"
 #include "src/heap/heap-write-barrier-inl.h"
-#include "src/objects-inl.h"
 #include "src/objects/embedder-data-array.h"
 #include "src/objects/js-objects-inl.h"
-#include "src/v8memory.h"
+#include "src/objects/objects-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -25,7 +25,7 @@ EmbedderDataSlot::EmbedderDataSlot(EmbedderDataArray array, int entry_index)
 
 EmbedderDataSlot::EmbedderDataSlot(JSObject object, int embedder_field_index)
     : SlotBase(FIELD_ADDR(
-          object, object->GetEmbedderFieldOffset(embedder_field_index))) {}
+          object, object.GetEmbedderFieldOffset(embedder_field_index))) {}
 
 Object EmbedderDataSlot::load_tagged() const {
   return ObjectSlot(address() + kTaggedPayloadOffset).Relaxed_Load();
@@ -35,7 +35,7 @@ void EmbedderDataSlot::store_smi(Smi value) {
   ObjectSlot(address() + kTaggedPayloadOffset).Relaxed_Store(value);
 #ifdef V8_COMPRESS_POINTERS
   // See gc_safe_store() for the reasons behind two stores.
-  ObjectSlot(address() + kRawPayloadOffset).Relaxed_Store(Smi::kZero);
+  ObjectSlot(address() + kRawPayloadOffset).Relaxed_Store(Smi::zero());
 #endif
 }
 
@@ -49,21 +49,21 @@ void EmbedderDataSlot::store_tagged(EmbedderDataArray array, int entry_index,
 #ifdef V8_COMPRESS_POINTERS
   // See gc_safe_store() for the reasons behind two stores.
   ObjectSlot(FIELD_ADDR(array, slot_offset + kRawPayloadOffset))
-      .Relaxed_Store(Smi::kZero);
+      .Relaxed_Store(Smi::zero());
 #endif
 }
 
 // static
 void EmbedderDataSlot::store_tagged(JSObject object, int embedder_field_index,
                                     Object value) {
-  int slot_offset = object->GetEmbedderFieldOffset(embedder_field_index);
+  int slot_offset = object.GetEmbedderFieldOffset(embedder_field_index);
   ObjectSlot(FIELD_ADDR(object, slot_offset + kTaggedPayloadOffset))
       .Relaxed_Store(value);
   WRITE_BARRIER(object, slot_offset + kTaggedPayloadOffset, value);
 #ifdef V8_COMPRESS_POINTERS
   // See gc_safe_store() for the reasons behind two stores.
   ObjectSlot(FIELD_ADDR(object, slot_offset + kRawPayloadOffset))
-      .Relaxed_Store(Smi::kZero);
+      .Relaxed_Store(Smi::zero());
 #endif
 }
 
@@ -77,7 +77,7 @@ bool EmbedderDataSlot::ToAlignedPointer(void** out_pointer) const {
   // fields (external pointers, doubles and BigInt data) are only kTaggedSize
   // aligned so we have to use unaligned pointer friendly way of accessing them
   // in order to avoid undefined behavior in C++ code.
-  Address raw_value = ReadUnalignedValue<Address>(address());
+  Address raw_value = base::ReadUnalignedValue<Address>(address());
 #else
   Address raw_value = *location();
 #endif
@@ -103,7 +103,7 @@ EmbedderDataSlot::RawData EmbedderDataSlot::load_raw(
   // fields (external pointers, doubles and BigInt data) are only kTaggedSize
   // aligned so we have to use unaligned pointer friendly way of accessing them
   // in order to avoid undefined behavior in C++ code.
-  return ReadUnalignedValue<Address>(address());
+  return base::ReadUnalignedValue<Address>(address());
 #else
   return *location();
 #endif

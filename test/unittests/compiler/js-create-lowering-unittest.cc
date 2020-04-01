@@ -3,7 +3,8 @@
 // found in the LICENSE file.
 
 #include "src/compiler/js-create-lowering.h"
-#include "src/code-factory.h"
+#include "src/codegen/code-factory.h"
+#include "src/codegen/tick-counter.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/compilation-dependencies.h"
 #include "src/compiler/js-graph.h"
@@ -11,9 +12,9 @@
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/operator-properties.h"
-#include "src/feedback-vector.h"
-#include "src/isolate-inl.h"
+#include "src/execution/isolate-inl.h"
 #include "src/objects/arguments.h"
+#include "src/objects/feedback-vector.h"
 #include "test/unittests/compiler/compiler-test-utils.h"
 #include "test/unittests/compiler/graph-unittest.h"
 #include "test/unittests/compiler/node-test-utils.h"
@@ -43,7 +44,7 @@ class JSCreateLoweringTest : public TypedGraphTest {
     JSGraph jsgraph(isolate(), graph(), common(), javascript(), &simplified,
                     &machine);
     // TODO(titzer): mock the GraphReducer here for better unit testing.
-    GraphReducer graph_reducer(zone(), graph());
+    GraphReducer graph_reducer(zone(), graph(), tick_counter());
     JSCreateLowering reducer(&graph_reducer, &deps_, &jsgraph, broker(),
                              zone());
     return reducer.Reduce(node);
@@ -85,7 +86,7 @@ TEST_F(JSCreateLoweringTest, JSCreate) {
   EXPECT_THAT(
       r.replacement(),
       IsFinishRegion(
-          IsAllocate(IsNumberConstant(function->initial_map()->instance_size()),
+          IsAllocate(IsNumberConstant(function->initial_map().instance_size()),
                      IsBeginRegion(effect), control),
           _));
 }
@@ -143,9 +144,9 @@ TEST_F(JSCreateLoweringTest, JSCreateArgumentsInlinedRestArray) {
       javascript()->CreateArguments(CreateArgumentsType::kRestParameter),
       closure, context, frame_state_inner, effect));
   ASSERT_TRUE(r.Changed());
-  EXPECT_THAT(
-      r.replacement(),
-      IsFinishRegion(IsAllocate(IsNumberConstant(JSArray::kSize), _, _), _));
+  EXPECT_THAT(r.replacement(),
+              IsFinishRegion(
+                  IsAllocate(IsNumberConstant(JSArray::kHeaderSize), _, _), _));
 }
 
 // -----------------------------------------------------------------------------
@@ -171,7 +172,8 @@ TEST_F(JSCreateLoweringTest, JSCreateFunctionContextViaInlinedAllocation) {
 // JSCreateWithContext
 
 TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
-  Handle<ScopeInfo> scope_info = ScopeInfo::CreateForEmptyFunction(isolate());
+  Handle<ScopeInfo> scope_info =
+      ReadOnlyRoots(isolate()).empty_function_scope_info_handle();
   Node* const object = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();
@@ -180,18 +182,20 @@ TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
       Reduce(graph()->NewNode(javascript()->CreateWithContext(scope_info),
                               object, context, effect, control));
   ASSERT_TRUE(r.Changed());
-  EXPECT_THAT(r.replacement(),
-              IsFinishRegion(IsAllocate(IsNumberConstant(Context::SizeFor(
-                                            Context::MIN_CONTEXT_SLOTS)),
-                                        IsBeginRegion(_), control),
-                             _));
+  EXPECT_THAT(
+      r.replacement(),
+      IsFinishRegion(IsAllocate(IsNumberConstant(Context::SizeFor(
+                                    Context::MIN_CONTEXT_EXTENDED_SLOTS)),
+                                IsBeginRegion(_), control),
+                     _));
 }
 
 // -----------------------------------------------------------------------------
 // JSCreateCatchContext
 
 TEST_F(JSCreateLoweringTest, JSCreateCatchContext) {
-  Handle<ScopeInfo> scope_info = ScopeInfo::CreateForEmptyFunction(isolate());
+  Handle<ScopeInfo> scope_info =
+      ReadOnlyRoots(isolate()).empty_function_scope_info_handle();
   Node* const exception = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();

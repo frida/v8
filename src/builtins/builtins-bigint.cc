@@ -4,9 +4,9 @@
 
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
-#include "src/conversions.h"
-#include "src/counters.h"
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/numbers/conversions.h"
+#include "src/objects/objects-inl.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/intl-objects.h"
 #endif
@@ -80,18 +80,18 @@ MaybeHandle<BigInt> ThisBigIntValue(Isolate* isolate, Handle<Object> value,
   // 1. If Type(value) is BigInt, return value.
   if (value->IsBigInt()) return Handle<BigInt>::cast(value);
   // 2. If Type(value) is Object and value has a [[BigIntData]] internal slot:
-  if (value->IsJSValue()) {
+  if (value->IsJSPrimitiveWrapper()) {
     // 2a. Assert: value.[[BigIntData]] is a BigInt value.
     // 2b. Return value.[[BigIntData]].
-    Object data = JSValue::cast(*value)->value();
-    if (data->IsBigInt()) return handle(BigInt::cast(data), isolate);
+    Object data = JSPrimitiveWrapper::cast(*value).value();
+    if (data.IsBigInt()) return handle(BigInt::cast(data), isolate);
   }
   // 3. Throw a TypeError exception.
   THROW_NEW_ERROR(
       isolate,
       NewTypeError(MessageTemplate::kNotGeneric,
                    isolate->factory()->NewStringFromAsciiChecked(caller),
-                   isolate->factory()->NewStringFromStaticChars("BigInt")),
+                   isolate->factory()->BigInt_string()),
       BigInt);
 }
 
@@ -125,26 +125,21 @@ Object BigIntToStringImpl(Handle<Object> receiver, Handle<Object> radix,
 
 BUILTIN(BigIntPrototypeToLocaleString) {
   HandleScope scope(isolate);
+  const char* method = "BigInt.prototype.toLocaleString";
 #ifdef V8_INTL_SUPPORT
-  if (FLAG_harmony_intl_bigint) {
-    // 1. Let x be ? thisBigIntValue(this value).
-    Handle<BigInt> x;
-    ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
-        isolate, x,
-        ThisBigIntValue(isolate, args.receiver(),
-                        "BigInt.prototype.toLocaleString"));
+  // 1. Let x be ? thisBigIntValue(this value).
+  Handle<BigInt> x;
+  ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
+      isolate, x, ThisBigIntValue(isolate, args.receiver(), method));
 
-    RETURN_RESULT_OR_FAILURE(
-        isolate,
-        Intl::NumberToLocaleString(isolate, x, args.atOrUndefined(isolate, 1),
-                                   args.atOrUndefined(isolate, 2)));
-  }
-  // Fallbacks to old toString implemention if flag is off or no
-  // V8_INTL_SUPPORT
+  RETURN_RESULT_OR_FAILURE(
+      isolate,
+      Intl::NumberToLocaleString(isolate, x, args.atOrUndefined(isolate, 1),
+                                 args.atOrUndefined(isolate, 2), method));
+  // Fallbacks to old toString implemention if no V8_INTL_SUPPORT
 #endif  // V8_INTL_SUPPORT
   Handle<Object> radix = isolate->factory()->undefined_value();
-  return BigIntToStringImpl(args.receiver(), radix, isolate,
-                            "BigInt.prototype.toLocaleString");
+  return BigIntToStringImpl(args.receiver(), radix, isolate, method);
 }
 
 BUILTIN(BigIntPrototypeToString) {

@@ -13,7 +13,7 @@ let cleanup = function(iter) {
   ++cleanup_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key = {"k": "this is the key"};
 (function() {
   let o = {};
@@ -22,6 +22,9 @@ let key = {"k": "this is the key"};
   // cleanupSome won't do anything since there are no reclaimed targets.
   fg.cleanupSome();
   assertEquals(0, cleanup_count);
+  // Keep o alive to the end of the function, so that --stress-opt mode
+  // is robust towards --gc-interval timing.
+  return o;
 })();
 
 // GC will detect the WeakCell as dirty.

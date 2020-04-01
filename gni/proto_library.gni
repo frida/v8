@@ -13,6 +13,12 @@ template("proto_library") {
 
   set_sources_assignment_filter([])
 
+  if (host_os == "win") {
+    host_executable_suffix = ".exe"
+  } else {
+    host_executable_suffix = ""
+  }
+
   # All the proto imports should be relative to the project root.
   proto_in_dir = "//"
   if (defined(invoker.proto_in_dir)) {
@@ -42,8 +48,9 @@ template("proto_library") {
 
   if (defined(invoker.generator_plugin_label)) {
     plugin_host_label = invoker.generator_plugin_label + "($host_toolchain)"
-    plugin_path = get_label_info(plugin_host_label, "root_out_dir") + "/" +
-                  get_label_info(plugin_host_label, "name")
+    plugin_path =
+        get_label_info(plugin_host_label, "root_out_dir") + "/" +
+        get_label_info(plugin_host_label, "name") + host_executable_suffix
     generate_with_plugin = true
   } else if (defined(invoker.generator_plugin_script)) {
     plugin_path = invoker.generator_plugin_script
@@ -107,7 +114,8 @@ template("proto_library") {
     outputs = get_path_info(protogens, "abspath")
 
     protoc_label = "//:protoc($host_toolchain)"
-    protoc_path = get_label_info(protoc_label, "root_out_dir") + "/protoc"
+    protoc_path = get_label_info(protoc_label, "root_out_dir") + "/protoc" +
+                  host_executable_suffix
     args = [
       # Path should be rebased because |root_build_dir| for current toolchain
       # may be different from |root_out_dir| of protoc built on host toolchain.
@@ -116,9 +124,13 @@ template("proto_library") {
       rebase_path(proto_in_dir, root_build_dir),
     ]
     if (generate_cc) {
+      cc_generator_options_ = ""
+      if (defined(invoker.cc_generator_options)) {
+        cc_generator_options_ = invoker.cc_generator_options
+      }
       args += [
         "--cpp_out",
-        rel_cc_out_dir,
+        cc_generator_options_ + rel_cc_out_dir,
       ]
     }
     if (generate_descriptor != "") {
@@ -145,13 +157,9 @@ template("proto_library") {
 
     args += rebase_path(proto_sources, root_build_dir)
 
-    inputs = [
-      protoc_path,
-    ]
+    inputs = [ protoc_path ]
 
-    deps = [
-      protoc_label,
-    ]
+    deps = [ protoc_label ]
     if (generate_with_plugin) {
       inputs += [ plugin_path ]
       if (defined(plugin_host_label)) {
@@ -179,7 +187,10 @@ template("proto_library") {
                              "visibility",
                            ])
 
+    # Exclude the config.descriptor file which is an output for some reason.
+    set_sources_assignment_filter([ "*.descriptor" ])
     sources = get_target_outputs(":$action_name")
+    set_sources_assignment_filter(sources_assignment_filter)
 
     # configs -= [ "//gn/standalone:extra_warnings" ]
     if (defined(invoker.extra_configs)) {
@@ -190,21 +201,23 @@ template("proto_library") {
       public_configs = []
     }
 
-    public_configs += [
-      "//:protobuf_gen_config",
-      ":$config_name",
-    ]
+    public_configs += [ "//:protobuf_gen_config" ]
+
+    propagate_imports_configs = !defined(invoker.propagate_imports_configs) ||
+                                invoker.propagate_imports_configs
+    if (propagate_imports_configs) {
+      public_configs += [ ":$config_name" ]
+    } else {
+      # Embedder handles include directory propagation to dependents.
+      configs += [ ":$config_name" ]
+    }
 
     # Use protobuf_full only for tests.
     if (defined(invoker.use_protobuf_full) &&
         invoker.use_protobuf_full == true) {
-      deps = [
-        "//:protobuf_full",
-      ]
+      deps = [ "//:protobuf_full" ]
     } else {
-      deps = [
-        "//:protobuf_lite",
-      ]
+      deps = [ "//:protobuf_lite" ]
     }
 
     deps += [ ":$action_name" ]

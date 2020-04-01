@@ -496,11 +496,11 @@ void V8Console::valuesCallback(const v8::FunctionCallbackInfo<v8::Value>& info,
   info.GetReturnValue().Set(values);
 }
 
-static void setFunctionBreakpoint(ConsoleHelper& helper, int sessionId,
-                                  v8::Local<v8::Function> function,
-                                  V8DebuggerAgentImpl::BreakpointSource source,
-                                  v8::Local<v8::String> condition,
-                                  bool enable) {
+static void setFunctionBreakpoint(
+    ConsoleHelper& helper,  // NOLINT(runtime/references)
+    int sessionId, v8::Local<v8::Function> function,
+    V8DebuggerAgentImpl::BreakpointSource source,
+    v8::Local<v8::String> condition, bool enable) {
   V8InspectorSessionImpl* session = helper.session(sessionId);
   if (session == nullptr) return;
   if (!session->debuggerAgent()->enabled()) return;
@@ -595,7 +595,7 @@ static void inspectImpl(const v8::FunctionCallbackInfo<v8::Value>& info,
   std::unique_ptr<protocol::Runtime::RemoteObject> wrappedObject;
   protocol::Response response = injectedScript->wrapObject(
       value, "", WrapMode::kNoPreview, &wrappedObject);
-  if (!response.isSuccess()) return;
+  if (!response.IsSuccess()) return;
 
   std::unique_ptr<protocol::DictionaryValue> hints =
       protocol::DictionaryValue::create();
@@ -691,7 +691,7 @@ v8::Local<v8::Object> V8Console::createCommandLineAPI(
 
   v8::Local<v8::ArrayBuffer> data =
       v8::ArrayBuffer::New(isolate, sizeof(CommandLineAPIData));
-  *static_cast<CommandLineAPIData*>(data->GetContents().Data()) =
+  *static_cast<CommandLineAPIData*>(data->GetBackingStore()->Data()) =
       CommandLineAPIData(this, sessionId);
   createBoundFunctionProperty(context, commandLineAPI, data, "dir",
                               &V8Console::call<&V8Console::Dir>,

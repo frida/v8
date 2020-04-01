@@ -14,10 +14,10 @@ let cleanup = function(iter) {
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key1 = {"k": "key1"};
 let key2 = {"k": "key2"};
-// Create three objects and register them in the FinalizationGroup. The objects
+// Create three objects and register them in the FinalizationRegistry. The objects
 // need to be inside a closure so that we can reliably kill them!
 
 (function() {
@@ -31,7 +31,8 @@ let key2 = {"k": "key2"};
   fg.register(object2, "holdings2", key2);
 
   // Unregister before the GC has a chance to discover the objects.
-  fg.unregister(key1);
+  let success = fg.unregister(key1);
+  assertTrue(success);
 
   // objects go out of scope.
 })();

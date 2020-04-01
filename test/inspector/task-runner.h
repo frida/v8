@@ -6,14 +6,15 @@
 #define V8_TEST_INSPECTOR_PROTOCOL_TASK_RUNNER_H_
 
 #include <map>
+#include <memory>
 
 #include "include/v8-inspector.h"
 #include "include/v8-platform.h"
 #include "include/v8.h"
 #include "src/base/macros.h"
 #include "src/base/platform/platform.h"
-#include "src/locked-queue-inl.h"
-#include "src/vector.h"
+#include "src/utils/locked-queue-inl.h"
+#include "src/utils/vector.h"
 #include "test/inspector/isolate-data.h"
 
 class TaskRunner : public v8::base::Thread {

@@ -8,7 +8,7 @@
 #include "src/base/flags.h"
 #include "src/compiler/opcodes.h"
 #include "src/compiler/types.h"
-#include "src/objects.h"
+#include "src/objects/objects.h"
 
 namespace v8 {
 namespace internal {
@@ -43,14 +43,18 @@ class V8_EXPORT_PRIVATE OperationTyper {
 // Unary operators.
 #define DECLARE_METHOD(Name) Type Name(Type type);
   SIMPLIFIED_NUMBER_UNOP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_BIGINT_UNOP_LIST(DECLARE_METHOD)
   SIMPLIFIED_SPECULATIVE_NUMBER_UNOP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_SPECULATIVE_BIGINT_UNOP_LIST(DECLARE_METHOD)
   DECLARE_METHOD(ConvertReceiver)
 #undef DECLARE_METHOD
 
-// Number binary operators.
+// Numeric binary operators.
 #define DECLARE_METHOD(Name) Type Name(Type lhs, Type rhs);
   SIMPLIFIED_NUMBER_BINOP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_BIGINT_BINOP_LIST(DECLARE_METHOD)
   SIMPLIFIED_SPECULATIVE_NUMBER_BINOP_LIST(DECLARE_METHOD)
+  SIMPLIFIED_SPECULATIVE_BIGINT_BINOP_LIST(DECLARE_METHOD)
 #undef DECLARE_METHOD
 
   // Comparison operators.

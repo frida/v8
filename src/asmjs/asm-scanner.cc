@@ -4,10 +4,12 @@
 
 #include "src/asmjs/asm-scanner.h"
 
-#include "src/char-predicates-inl.h"
-#include "src/conversions.h"
-#include "src/flags.h"
+#include <cinttypes>
+
+#include "src/flags/flags.h"
+#include "src/numbers/conversions.h"
 #include "src/parsing/scanner.h"
+#include "src/strings/char-predicates-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -327,7 +329,7 @@ void AsmJsScanner::ConsumeNumber(uc32 ch) {
     token_ = kParseError;
     return;
   }
-  if (has_dot) {
+  if (has_dot || trunc(double_value_) != double_value_) {
     token_ = kDouble;
   } else {
     // Exceeding safe integer range is an error.
@@ -422,7 +424,8 @@ void AsmJsScanner::ConsumeCompareOrShift(uc32 ch) {
 }
 
 bool AsmJsScanner::IsIdentifierStart(uc32 ch) {
-  return IsInRange(AsciiAlphaToLower(ch), 'a', 'z') || ch == '_' || ch == '$';
+  return base::IsInRange(AsciiAlphaToLower(ch), 'a', 'z') || ch == '_' ||
+         ch == '$';
 }
 
 bool AsmJsScanner::IsIdentifierPart(uc32 ch) { return IsAsciiIdentifier(ch); }

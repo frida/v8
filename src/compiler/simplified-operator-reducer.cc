@@ -10,7 +10,7 @@
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/type-cache.h"
-#include "src/conversions-inl.h"
+#include "src/numbers/conversions-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -143,6 +143,7 @@ Reduction SimplifiedOperatorReducer::Reduce(Node* node) {
       }
       break;
     }
+    case IrOpcode::kCheckedTaggedToArrayIndex:
     case IrOpcode::kCheckedTaggedToInt32:
     case IrOpcode::kCheckedTaggedSignedToInt32: {
       NodeMatcher m(node->InputAt(0));
@@ -265,6 +266,10 @@ Graph* SimplifiedOperatorReducer::graph() const { return jsgraph()->graph(); }
 
 MachineOperatorBuilder* SimplifiedOperatorReducer::machine() const {
   return jsgraph()->machine();
+}
+
+SimplifiedOperatorBuilder* SimplifiedOperatorReducer::simplified() const {
+  return jsgraph()->simplified();
 }
 
 }  // namespace compiler

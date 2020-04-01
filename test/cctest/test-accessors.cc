@@ -27,11 +27,11 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/api-inl.h"
-#include "src/frames-inl.h"
-#include "src/string-stream.h"
+#include "src/api/api-inl.h"
+#include "src/execution/frames-inl.h"
+#include "src/strings/string-stream.h"
 #include "test/cctest/cctest.h"
 
 using ::v8::ObjectTemplate;
@@ -298,13 +298,10 @@ static void HandleAllocatingGetter(
     const v8::PropertyCallbackInfo<v8::Value>& info) {
   ApiTestFuzzer::Fuzz();
   for (int i = 0; i < C; i++) {
-    v8::String::NewFromUtf8(info.GetIsolate(), "foo",
-                            v8::NewStringType::kNormal)
-        .ToLocalChecked();
+    USE(v8::String::NewFromUtf8Literal(info.GetIsolate(), "foo"));
   }
-  info.GetReturnValue().Set(v8::String::NewFromUtf8(info.GetIsolate(), "foo",
-                                                    v8::NewStringType::kNormal)
-                                .ToLocalChecked());
+  info.GetReturnValue().Set(
+      v8::String::NewFromUtf8Literal(info.GetIsolate(), "foo"));
 }
 
 
@@ -539,8 +536,8 @@ static void StackCheck(Local<String> name,
     i::StackFrame* frame = iter.frame();
     CHECK(i != 0 || (frame->type() == i::StackFrame::EXIT));
     i::Code code = frame->LookupCode();
-    CHECK(code->IsCode());
-    CHECK(code->contains(frame->pc()));
+    CHECK(code.IsCode());
+    CHECK(code.contains(frame->pc()));
     iter.Advance();
   }
 }
@@ -801,7 +798,8 @@ TEST(PrototypeGetterAccessCheck) {
       "    x = obj.foo;"
       "  }"
       "  return x;"
-      "}");
+      "};"
+      "%PrepareFunctionForOptimization(f);");
 
   security_check_value = true;
   ExpectInt32("f()", 907);

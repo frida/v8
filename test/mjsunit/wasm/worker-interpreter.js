@@ -2,15 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --no-wasm-disable-structured-cloning
+// Flags: --allow-natives-syntax --expose-gc
 
 load("test/mjsunit/wasm/wasm-module-builder.js");
 
 (function TestPostInterpretedModule() {
   let builder = new WasmModuleBuilder();
   let add = builder.addFunction("add", kSig_i_ii)
-    .addBody([kExprGetLocal, 0, kExprGetLocal, 1, kExprI32Add])
+    .addBody([kExprLocalGet, 0, kExprLocalGet, 1, kExprI32Add])
     .exportFunc();
+
+  // Trigger a GC to ensure that the underlying native module is not a cached
+  // one from a previous run, with functions already redirected to the
+  // interpreter. This is not observable from pure JavaScript, but this is
+  // observable with the internal runtime functions used in this test.
+  gc();
 
   let module = builder.toModule();
   let instance = new WebAssembly.Instance(module);

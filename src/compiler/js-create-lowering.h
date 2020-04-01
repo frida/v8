@@ -6,8 +6,8 @@
 #define V8_COMPILER_JS_CREATE_LOWERING_H_
 
 #include "src/base/compiler-specific.h"
+#include "src/common/globals.h"
 #include "src/compiler/graph-reducer.h"
-#include "src/globals.h"
 
 namespace v8 {
 namespace internal {
@@ -67,6 +67,7 @@ class V8_EXPORT_PRIVATE JSCreateLowering final
   Reduction ReduceJSCreateCatchContext(Node* node);
   Reduction ReduceJSCreateBlockContext(Node* node);
   Reduction ReduceJSCreateGeneratorObject(Node* node);
+  Reduction ReduceJSGetTemplateObject(Node* node);
   Reduction ReduceNewArray(
       Node* node, Node* length, MapRef initial_map, ElementsKind elements_kind,
       AllocationType allocation,

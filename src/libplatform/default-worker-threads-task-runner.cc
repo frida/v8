@@ -13,7 +13,7 @@ DefaultWorkerThreadsTaskRunner::DefaultWorkerThreadsTaskRunner(
     uint32_t thread_pool_size, TimeFunction time_function)
     : queue_(time_function), time_function_(time_function) {
   for (uint32_t i = 0; i < thread_pool_size; ++i) {
-    thread_pool_.push_back(base::make_unique<WorkerThread>(this));
+    thread_pool_.push_back(std::make_unique<WorkerThread>(this));
   }
 }
 
@@ -63,7 +63,7 @@ DefaultWorkerThreadsTaskRunner::WorkerThread::WorkerThread(
     DefaultWorkerThreadsTaskRunner* runner)
     : Thread(Options("V8 DefaultWorkerThreadsTaskRunner WorkerThread")),
       runner_(runner) {
-  Start();
+  CHECK(Start());
 }
 
 DefaultWorkerThreadsTaskRunner::WorkerThread::~WorkerThread() { Join(); }

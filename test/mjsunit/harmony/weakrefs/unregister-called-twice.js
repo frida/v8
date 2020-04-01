@@ -9,9 +9,9 @@ let cleanup = function(iter) {
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key = {"k": "this is the key"};
-// Create an object and register it in the FinalizationGroup. The object needs
+// Create an object and register it in the FinalizationRegistry. The object needs
 // to be inside a closure so that we can reliably kill them!
 
 (function() {
@@ -19,10 +19,12 @@ let key = {"k": "this is the key"};
   fg.register(object, "holdings", key);
 
   // Unregister before the GC has a chance to discover the object.
-  fg.unregister(key);
+  let success = fg.unregister(key);
+  assertTrue(success);
 
   // Call unregister again (just to assert we handle this gracefully).
-  fg.unregister(key);
+  success = fg.unregister(key);
+  assertFalse(success);
 
   // object goes out of scope.
 })();

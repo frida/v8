@@ -44,26 +44,29 @@ from testrunner.outproc import test262
 
 # TODO(littledan): move the flag mapping into the status file
 FEATURE_FLAGS = {
-  'class-fields-public': '--harmony-public-fields',
-  'class-static-fields-public': '--harmony-class-fields',
-  'class-fields-private': '--harmony-private-fields',
-  'class-static-fields-private': '--harmony-private-fields',
-  'numeric-separator-literal': '--harmony-numeric-separator',
-  'Intl.DateTimeFormat-datetimestyle': '--harmony-intl-datetime-style',
-  'Intl.Locale': '--harmony-locale',
   'Intl.Segmenter': '--harmony-intl-segmenter',
+  'Intl.DateTimeFormat-dayPeriod': '--harmony-intl-dateformat-day-period',
+  'Intl.DateTimeFormat-quarter': '--harmony-intl-dateformat-quarter',
+  'Intl.DateTimeFormat-fractionalSecondDigits': '--harmony-intl-dateformat-fractional-second-digits',
+  'Intl.DisplayNames': '--harmony-intl-displaynames',
+  'String.prototype.replaceAll': '--harmony_string_replaceall',
   'Symbol.prototype.description': '--harmony-symbol-description',
-  'globalThis': '--harmony-global',
   'export-star-as-namespace-from-module': '--harmony-namespace-exports',
-  'Object.fromEntries': '--harmony-object-from-entries',
-  'hashbang': '--harmony-hashbang',
-  'BigInt': '--harmony-intl-bigint',
   'Promise.allSettled': '--harmony-promise-all-settled',
+  'FinalizationRegistry': '--harmony-weak-refs',
+  'WeakRef': '--harmony-weak-refs',
+  'host-gc-required': '--expose-gc-as=v8GC',
+  'optional-chaining': '--harmony-optional-chaining',
+  'top-level-await': '--harmony-top-level-await',
+  'regexp-match-indices': '--harmony-regexp-match-indices',
+  # https://github.com/tc39/test262/pull/2395
+  'regexp-named-groups': '--harmony-regexp-match-indices',
+  'class-methods-private': '--harmony-private-methods',
+  'class-static-methods-private': '--harmony-private-methods',
+  'coalesce-expression': '--harmony-nullish',
 }
 
-SKIPPED_FEATURES = set(['class-methods-private',
-                        'class-static-methods-private',
-                        'Intl.NumberFormat-unified'])
+SKIPPED_FEATURES = set([])
 
 DATA = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 

@@ -5,15 +5,16 @@
 #ifndef V8_WASM_DECODER_H_
 #define V8_WASM_DECODER_H_
 
+#include <cinttypes>
 #include <cstdarg>
 #include <memory>
 
 #include "src/base/compiler-specific.h"
-#include "src/flags.h"
-#include "src/signature.h"
-#include "src/utils.h"
-#include "src/v8memory.h"
-#include "src/vector.h"
+#include "src/base/memory.h"
+#include "src/codegen/signature.h"
+#include "src/flags/flags.h"
+#include "src/utils/utils.h"
+#include "src/utils/vector.h"
 #include "src/wasm/wasm-result.h"
 #include "src/zone/zone-containers.h"
 
@@ -46,7 +47,7 @@ class Decoder {
   Decoder(const byte* start, const byte* end, uint32_t buffer_offset = 0)
       : Decoder(start, start, end, buffer_offset) {}
   explicit Decoder(const Vector<const byte> bytes, uint32_t buffer_offset = 0)
-      : Decoder(bytes.start(), bytes.start() + bytes.length(), buffer_offset) {}
+      : Decoder(bytes.begin(), bytes.begin() + bytes.length(), buffer_offset) {}
   Decoder(const byte* start, const byte* pc, const byte* end,
           uint32_t buffer_offset = 0)
       : start_(start), pc_(pc), end_(end), buffer_offset_(buffer_offset) {
@@ -265,6 +266,13 @@ class Decoder {
     return offset - buffer_offset_;
   }
   const byte* end() const { return end_; }
+  void set_end(const byte* end) { end_ = end; }
+
+  // Check if the byte at {offset} from the current pc equals {expected}.
+  bool lookahead(int offset, byte expected) {
+    DCHECK_LE(pc_, end_);
+    return end_ - pc_ > offset && pc_[offset] == expected;
+  }
 
  protected:
   const byte* start_;
@@ -278,16 +286,11 @@ class Decoder {
   void verrorf(uint32_t offset, const char* format, va_list args) {
     // Only report the first error.
     if (!ok()) return;
-#if DEBUG
-    if (FLAG_wasm_break_on_decoder_error) {
-      base::OS::DebugBreak();
-    }
-#endif
     constexpr int kMaxErrorMsg = 256;
     EmbeddedVector<char, kMaxErrorMsg> buffer;
     int len = VSNPrintF(buffer, format, args);
     CHECK_LT(0, len);
-    error_ = {offset, {buffer.start(), static_cast<size_t>(len)}};
+    error_ = {offset, {buffer.begin(), static_cast<size_t>(len)}};
     onFirstError();
   }
 
@@ -298,7 +301,7 @@ class Decoder {
     } else if (!validate_size(pc, sizeof(IntType), msg)) {
       return IntType{0};
     }
-    return ReadLittleEndianValue<IntType>(reinterpret_cast<Address>(pc));
+    return base::ReadLittleEndianValue<IntType>(reinterpret_cast<Address>(pc));
   }
 
   template <typename IntType>

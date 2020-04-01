@@ -31,18 +31,19 @@
 #include <cmath>
 #include <limits>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/arm64/assembler-arm64-inl.h"
-#include "src/arm64/decoder-arm64-inl.h"
-#include "src/arm64/disasm-arm64.h"
-#include "src/arm64/macro-assembler-arm64-inl.h"
-#include "src/arm64/simulator-arm64.h"
-#include "src/arm64/utils-arm64.h"
 #include "src/base/platform/platform.h"
 #include "src/base/utils/random-number-generator.h"
+#include "src/codegen/arm64/assembler-arm64-inl.h"
+#include "src/codegen/arm64/decoder-arm64-inl.h"
+#include "src/codegen/arm64/macro-assembler-arm64-inl.h"
+#include "src/codegen/arm64/utils-arm64.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/diagnostics/arm64/disasm-arm64.h"
+#include "src/execution/arm64/simulator-arm64.h"
+#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/macro-assembler.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/test-utils-arm64.h"
 #include "test/common/assembler-tester.h"
@@ -117,22 +118,23 @@ static void InitializeVM() {
 #ifdef USE_SIMULATOR
 
 // Run tests with the simulator.
-#define SETUP_SIZE(buf_size)                                           \
-  Isolate* isolate = CcTest::i_isolate();                              \
-  HandleScope scope(isolate);                                          \
-  CHECK_NOT_NULL(isolate);                                             \
-  std::unique_ptr<byte[]> owned_buf{new byte[buf_size]};               \
-  byte* buf = owned_buf.get();                                         \
-  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes, \
-                      ExternalAssemblerBuffer(buf, buf_size));         \
-  Decoder<DispatchingDecoderVisitor>* decoder =                        \
-      new Decoder<DispatchingDecoderVisitor>();                        \
-  Simulator simulator(decoder);                                        \
-  std::unique_ptr<PrintDisassembler> pdis;                             \
-  RegisterDump core;                                                   \
-  if (i::FLAG_trace_sim) {                                             \
-    pdis.reset(new PrintDisassembler(stdout));                         \
-    decoder->PrependVisitor(pdis.get());                               \
+#define SETUP_SIZE(buf_size)                                               \
+  Isolate* isolate = CcTest::i_isolate();                                  \
+  HandleScope scope(isolate);                                              \
+  CHECK_NOT_NULL(isolate);                                                 \
+  std::unique_ptr<byte[]> owned_buf{new byte[buf_size]};                   \
+  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes,     \
+                      ExternalAssemblerBuffer(owned_buf.get(), buf_size)); \
+  Decoder<DispatchingDecoderVisitor>* decoder =                            \
+      new Decoder<DispatchingDecoderVisitor>();                            \
+  Simulator simulator(decoder);                                            \
+  std::unique_ptr<PrintDisassembler> pdis;                                 \
+  RegisterDump core;                                                       \
+  HandleScope handle_scope(isolate);                                       \
+  Handle<Code> code;                                                       \
+  if (i::FLAG_trace_sim) {                                                 \
+    pdis.reset(new PrintDisassembler(stdout));                             \
+    decoder->PrependVisitor(pdis.get());                                   \
   }
 
 // Reset the assembler and simulator, so that instructions can be generated,
@@ -154,17 +156,18 @@ static void InitializeVM() {
   RESET();                                                                     \
   START_AFTER_RESET();
 
-#define RUN()                                                                  \
-  simulator.RunFrom(reinterpret_cast<Instruction*>(buf))
+#define RUN() simulator.RunFrom(reinterpret_cast<Instruction*>(code->entry()))
 
-#define END()                                               \
-  __ Debug("End test.", __LINE__, TRACE_DISABLE | LOG_ALL); \
-  core.Dump(&masm);                                         \
-  __ PopCalleeSavedRegisters();                             \
-  __ Ret();                                                 \
-  {                                                         \
-    CodeDesc desc;                                          \
-    __ GetCode(masm.isolate(), &desc);                      \
+#define END()                                                       \
+  __ Debug("End test.", __LINE__, TRACE_DISABLE | LOG_ALL);         \
+  core.Dump(&masm);                                                 \
+  __ PopCalleeSavedRegisters();                                     \
+  __ Ret();                                                         \
+  {                                                                 \
+    CodeDesc desc;                                                  \
+    __ GetCode(masm.isolate(), &desc);                              \
+    code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build(); \
+    if (FLAG_print_code) code->Print();                             \
   }
 
 #else  // ifdef USE_SIMULATOR.
@@ -176,13 +179,14 @@ static void InitializeVM() {
   auto owned_buf = AllocateAssemblerBuffer(buf_size);                  \
   MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes, \
                       owned_buf->CreateView());                        \
-  uint8_t* buf = owned_buf->start();                                   \
-  USE(buf);                                                            \
+  HandleScope handle_scope(isolate);                                   \
+  Handle<Code> code;                                                   \
   RegisterDump core;
 
 #define RESET()                                                \
   owned_buf->MakeWritable();                                   \
   __ Reset();                                                  \
+  __ CodeEntry();                                              \
   /* Reset the machine state (like simulator.ResetState()). */ \
   __ Msr(NZCV, xzr);                                           \
   __ Msr(FPCR, xzr);
@@ -190,24 +194,25 @@ static void InitializeVM() {
 #define START_AFTER_RESET()                                                    \
   __ PushCalleeSavedRegisters();
 
-#define START()                                                                \
-  RESET();                                                                     \
+#define START() \
+  RESET();      \
   START_AFTER_RESET();
 
-#define RUN()                                        \
-  owned_buf->MakeExecutable();                       \
-  {                                                  \
-    auto* test_function = bit_cast<void (*)()>(buf); \
-    test_function();                                 \
+#define RUN()                                      \
+  {                                                \
+    auto f = GeneratedCode<void>::FromCode(*code); \
+    f.Call();                                      \
   }
 
-#define END()                          \
-  core.Dump(&masm);                    \
-  __ PopCalleeSavedRegisters();        \
-  __ Ret();                            \
-  {                                    \
-    CodeDesc desc;                     \
-    __ GetCode(masm.isolate(), &desc); \
+#define END()                                                       \
+  core.Dump(&masm);                                                 \
+  __ PopCalleeSavedRegisters();                                     \
+  __ Ret();                                                         \
+  {                                                                 \
+    CodeDesc desc;                                                  \
+    __ GetCode(masm.isolate(), &desc);                              \
+    code = Factory::CodeBuilder(isolate, desc, Code::STUB).Build(); \
+    if (FLAG_print_code) code->Print();                             \
   }
 
 #endif  // ifdef USE_SIMULATOR.
@@ -215,8 +220,8 @@ static void InitializeVM() {
 #define CHECK_EQUAL_NZCV(expected)                                            \
   CHECK(EqualNzcv(expected, core.flags_nzcv()))
 
-#define CHECK_EQUAL_REGISTERS(expected)                                       \
-  CHECK(EqualRegisters(&expected, &core))
+#define CHECK_EQUAL_REGISTERS(expected) \
+  CHECK(EqualV8Registers(&expected, &core))
 
 #define CHECK_EQUAL_32(expected, result)                                      \
   CHECK(Equal32(static_cast<uint32_t>(expected), &core, result))
@@ -226,6 +231,18 @@ static void InitializeVM() {
 
 #define CHECK_EQUAL_64(expected, result)                                      \
   CHECK(Equal64(expected, &core, result))
+
+#define CHECK_FULL_HEAP_OBJECT_IN_REGISTER(expected, result) \
+  CHECK(Equal64(expected->ptr(), &core, result))
+
+#define CHECK_NOT_ZERO_AND_NOT_EQUAL_64(reg0, reg1) \
+  {                                                 \
+    int64_t value0 = core.xreg(reg0.code());        \
+    int64_t value1 = core.xreg(reg1.code());        \
+    CHECK_NE(0, value0);                            \
+    CHECK_NE(0, value1);                            \
+    CHECK_NE(value0, value1);                       \
+  }
 
 #define CHECK_EQUAL_FP64(expected, result)                                    \
   CHECK(EqualFP64(expected, &core, result))
@@ -370,7 +387,7 @@ TEST(mov) {
   __ Mov(w13, Operand(w11, LSL, 1));
   __ Mov(x14, Operand(x12, LSL, 2));
   __ Mov(w15, Operand(w11, LSR, 3));
-  __ Mov(x18, Operand(x12, LSR, 4));
+  __ Mov(x28, Operand(x12, LSR, 4));
   __ Mov(w19, Operand(w11, ASR, 11));
   __ Mov(x20, Operand(x12, ASR, 12));
   __ Mov(w21, Operand(w11, ROR, 13));
@@ -399,7 +416,7 @@ TEST(mov) {
   CHECK_EQUAL_64(0x00001FFE, x13);
   CHECK_EQUAL_64(0x0000000000003FFCUL, x14);
   CHECK_EQUAL_64(0x000001FF, x15);
-  CHECK_EQUAL_64(0x00000000000000FFUL, x18);
+  CHECK_EQUAL_64(0x00000000000000FFUL, x28);
   CHECK_EQUAL_64(0x00000001, x19);
   CHECK_EQUAL_64(0x0, x20);
   CHECK_EQUAL_64(0x7FF80000, x21);
@@ -517,7 +534,7 @@ TEST(mov_imm_x) {
   __ Mov(x13, 0x0000000000001234L);
   __ Mov(x14, 0x0000000012345678L);
   __ Mov(x15, 0x0000123400005678L);
-  __ Mov(x18, 0x1234000000005678L);
+  __ Mov(x30, 0x1234000000005678L);
   __ Mov(x19, 0x1234000056780000L);
   __ Mov(x20, 0x1234567800000000L);
   __ Mov(x21, 0x1234000000000000L);
@@ -547,7 +564,7 @@ TEST(mov_imm_x) {
   CHECK_EQUAL_64(0x0000000000001234L, x13);
   CHECK_EQUAL_64(0x0000000012345678L, x14);
   CHECK_EQUAL_64(0x0000123400005678L, x15);
-  CHECK_EQUAL_64(0x1234000000005678L, x18);
+  CHECK_EQUAL_64(0x1234000000005678L, x30);
   CHECK_EQUAL_64(0x1234000056780000L, x19);
   CHECK_EQUAL_64(0x1234567800000000L, x20);
   CHECK_EQUAL_64(0x1234000000000000L, x21);
@@ -1095,27 +1112,27 @@ TEST(mul) {
   START();
   __ Mov(x16, 0);
   __ Mov(x17, 1);
-  __ Mov(x18, 0xFFFFFFFF);
+  __ Mov(x15, 0xFFFFFFFF);
   __ Mov(x19, 0xFFFFFFFFFFFFFFFFUL);
 
   __ Mul(w0, w16, w16);
   __ Mul(w1, w16, w17);
-  __ Mul(w2, w17, w18);
-  __ Mul(w3, w18, w19);
+  __ Mul(w2, w17, w15);
+  __ Mul(w3, w15, w19);
   __ Mul(x4, x16, x16);
-  __ Mul(x5, x17, x18);
-  __ Mul(x6, x18, x19);
+  __ Mul(x5, x17, x15);
+  __ Mul(x6, x15, x19);
   __ Mul(x7, x19, x19);
-  __ Smull(x8, w17, w18);
-  __ Smull(x9, w18, w18);
+  __ Smull(x8, w17, w15);
+  __ Smull(x9, w15, w15);
   __ Smull(x10, w19, w19);
   __ Mneg(w11, w16, w16);
   __ Mneg(w12, w16, w17);
-  __ Mneg(w13, w17, w18);
-  __ Mneg(w14, w18, w19);
+  __ Mneg(w13, w17, w15);
+  __ Mneg(w14, w15, w19);
   __ Mneg(x20, x16, x16);
-  __ Mneg(x21, x17, x18);
-  __ Mneg(x22, x18, x19);
+  __ Mneg(x21, x17, x15);
+  __ Mneg(x22, x15, x19);
   __ Mneg(x23, x19, x19);
   END();
 
@@ -1170,33 +1187,33 @@ TEST(madd) {
   START();
   __ Mov(x16, 0);
   __ Mov(x17, 1);
-  __ Mov(x18, 0xFFFFFFFF);
+  __ Mov(x28, 0xFFFFFFFF);
   __ Mov(x19, 0xFFFFFFFFFFFFFFFFUL);
 
   __ Madd(w0, w16, w16, w16);
   __ Madd(w1, w16, w16, w17);
-  __ Madd(w2, w16, w16, w18);
+  __ Madd(w2, w16, w16, w28);
   __ Madd(w3, w16, w16, w19);
   __ Madd(w4, w16, w17, w17);
-  __ Madd(w5, w17, w17, w18);
+  __ Madd(w5, w17, w17, w28);
   __ Madd(w6, w17, w17, w19);
-  __ Madd(w7, w17, w18, w16);
-  __ Madd(w8, w17, w18, w18);
-  __ Madd(w9, w18, w18, w17);
-  __ Madd(w10, w18, w19, w18);
+  __ Madd(w7, w17, w28, w16);
+  __ Madd(w8, w17, w28, w28);
+  __ Madd(w9, w28, w28, w17);
+  __ Madd(w10, w28, w19, w28);
   __ Madd(w11, w19, w19, w19);
 
   __ Madd(x12, x16, x16, x16);
   __ Madd(x13, x16, x16, x17);
-  __ Madd(x14, x16, x16, x18);
+  __ Madd(x14, x16, x16, x28);
   __ Madd(x15, x16, x16, x19);
   __ Madd(x20, x16, x17, x17);
-  __ Madd(x21, x17, x17, x18);
+  __ Madd(x21, x17, x17, x28);
   __ Madd(x22, x17, x17, x19);
-  __ Madd(x23, x17, x18, x16);
-  __ Madd(x24, x17, x18, x18);
-  __ Madd(x25, x18, x18, x17);
-  __ Madd(x26, x18, x19, x18);
+  __ Madd(x23, x17, x28, x16);
+  __ Madd(x24, x17, x28, x28);
+  __ Madd(x25, x28, x28, x17);
+  __ Madd(x26, x28, x19, x28);
   __ Madd(x27, x19, x19, x19);
 
   END();
@@ -1237,33 +1254,33 @@ TEST(msub) {
   START();
   __ Mov(x16, 0);
   __ Mov(x17, 1);
-  __ Mov(x18, 0xFFFFFFFF);
+  __ Mov(x28, 0xFFFFFFFF);
   __ Mov(x19, 0xFFFFFFFFFFFFFFFFUL);
 
   __ Msub(w0, w16, w16, w16);
   __ Msub(w1, w16, w16, w17);
-  __ Msub(w2, w16, w16, w18);
+  __ Msub(w2, w16, w16, w28);
   __ Msub(w3, w16, w16, w19);
   __ Msub(w4, w16, w17, w17);
-  __ Msub(w5, w17, w17, w18);
+  __ Msub(w5, w17, w17, w28);
   __ Msub(w6, w17, w17, w19);
-  __ Msub(w7, w17, w18, w16);
-  __ Msub(w8, w17, w18, w18);
-  __ Msub(w9, w18, w18, w17);
-  __ Msub(w10, w18, w19, w18);
+  __ Msub(w7, w17, w28, w16);
+  __ Msub(w8, w17, w28, w28);
+  __ Msub(w9, w28, w28, w17);
+  __ Msub(w10, w28, w19, w28);
   __ Msub(w11, w19, w19, w19);
 
   __ Msub(x12, x16, x16, x16);
   __ Msub(x13, x16, x16, x17);
-  __ Msub(x14, x16, x16, x18);
+  __ Msub(x14, x16, x16, x28);
   __ Msub(x15, x16, x16, x19);
   __ Msub(x20, x16, x17, x17);
-  __ Msub(x21, x17, x17, x18);
+  __ Msub(x21, x17, x17, x28);
   __ Msub(x22, x17, x17, x19);
-  __ Msub(x23, x17, x18, x16);
-  __ Msub(x24, x17, x18, x18);
-  __ Msub(x25, x18, x18, x17);
-  __ Msub(x26, x18, x19, x18);
+  __ Msub(x23, x17, x28, x16);
+  __ Msub(x24, x17, x28, x28);
+  __ Msub(x25, x28, x28, x17);
+  __ Msub(x26, x28, x19, x28);
   __ Msub(x27, x19, x19, x19);
 
   END();
@@ -1349,17 +1366,17 @@ TEST(smaddl_umaddl) {
 
   START();
   __ Mov(x17, 1);
-  __ Mov(x18, 0xFFFFFFFF);
+  __ Mov(x28, 0xFFFFFFFF);
   __ Mov(x19, 0xFFFFFFFFFFFFFFFFUL);
   __ Mov(x20, 4);
   __ Mov(x21, 0x200000000UL);
 
-  __ Smaddl(x9, w17, w18, x20);
-  __ Smaddl(x10, w18, w18, x20);
+  __ Smaddl(x9, w17, w28, x20);
+  __ Smaddl(x10, w28, w28, x20);
   __ Smaddl(x11, w19, w19, x20);
   __ Smaddl(x12, w19, w19, x21);
-  __ Umaddl(x13, w17, w18, x20);
-  __ Umaddl(x14, w18, w18, x20);
+  __ Umaddl(x13, w17, w28, x20);
+  __ Umaddl(x14, w28, w28, x20);
   __ Umaddl(x15, w19, w19, x20);
   __ Umaddl(x22, w19, w19, x21);
   END();
@@ -1382,17 +1399,17 @@ TEST(smsubl_umsubl) {
 
   START();
   __ Mov(x17, 1);
-  __ Mov(x18, 0xFFFFFFFF);
+  __ Mov(x28, 0xFFFFFFFF);
   __ Mov(x19, 0xFFFFFFFFFFFFFFFFUL);
   __ Mov(x20, 4);
   __ Mov(x21, 0x200000000UL);
 
-  __ Smsubl(x9, w17, w18, x20);
-  __ Smsubl(x10, w18, w18, x20);
+  __ Smsubl(x9, w17, w28, x20);
+  __ Smsubl(x10, w28, w28, x20);
   __ Smsubl(x11, w19, w19, x20);
   __ Smsubl(x12, w19, w19, x21);
-  __ Umsubl(x13, w17, w18, x20);
-  __ Umsubl(x14, w18, w18, x20);
+  __ Umsubl(x13, w17, w28, x20);
+  __ Umsubl(x14, w28, w28, x20);
   __ Umsubl(x15, w19, w19, x20);
   __ Umsubl(x22, w19, w19, x21);
   END();
@@ -1416,7 +1433,7 @@ TEST(div) {
   START();
   __ Mov(x16, 1);
   __ Mov(x17, 0xFFFFFFFF);
-  __ Mov(x18, 0xFFFFFFFFFFFFFFFFUL);
+  __ Mov(x30, 0xFFFFFFFFFFFFFFFFUL);
   __ Mov(x19, 0x80000000);
   __ Mov(x20, 0x8000000000000000UL);
   __ Mov(x21, 2);
@@ -1425,13 +1442,13 @@ TEST(div) {
   __ Udiv(w1, w17, w16);
   __ Sdiv(w2, w16, w16);
   __ Sdiv(w3, w16, w17);
-  __ Sdiv(w4, w17, w18);
+  __ Sdiv(w4, w17, w30);
 
   __ Udiv(x5, x16, x16);
-  __ Udiv(x6, x17, x18);
+  __ Udiv(x6, x17, x30);
   __ Sdiv(x7, x16, x16);
   __ Sdiv(x8, x16, x17);
-  __ Sdiv(x9, x17, x18);
+  __ Sdiv(x9, x17, x30);
 
   __ Udiv(w10, w19, w21);
   __ Sdiv(w11, w19, w21);
@@ -1442,16 +1459,16 @@ TEST(div) {
 
   __ Udiv(w22, w19, w17);
   __ Sdiv(w23, w19, w17);
-  __ Udiv(x24, x20, x18);
-  __ Sdiv(x25, x20, x18);
+  __ Udiv(x24, x20, x30);
+  __ Sdiv(x25, x20, x30);
 
   __ Udiv(x26, x16, x21);
   __ Sdiv(x27, x16, x21);
-  __ Udiv(x28, x18, x21);
-  __ Sdiv(x29, x18, x21);
+  __ Udiv(x28, x30, x21);
+  __ Sdiv(x29, x30, x21);
 
   __ Mov(x17, 0);
-  __ Udiv(w18, w16, w17);
+  __ Udiv(w30, w16, w17);
   __ Sdiv(w19, w16, w17);
   __ Udiv(x20, x16, x17);
   __ Sdiv(x21, x16, x17);
@@ -1483,7 +1500,7 @@ TEST(div) {
   CHECK_EQUAL_64(0, x27);
   CHECK_EQUAL_64(0x7FFFFFFFFFFFFFFFUL, x28);
   CHECK_EQUAL_64(0, x29);
-  CHECK_EQUAL_64(0, x18);
+  CHECK_EQUAL_64(0, x30);
   CHECK_EQUAL_64(0, x19);
   CHECK_EQUAL_64(0, x20);
   CHECK_EQUAL_64(0, x21);
@@ -1633,27 +1650,27 @@ TEST(adr) {
   __ Adr(x3, &label_1);
   __ Adr(x4, &label_1);
 
-  __ Bind(&label_2);
+  __ Bind(&label_2, BranchTargetIdentifier::kBtiJump);
   __ Eor(x5, x2, Operand(x3));  // Ensure that x2,x3 and x4 are identical.
   __ Eor(x6, x2, Operand(x4));
   __ Orr(x0, x0, Operand(x5));
   __ Orr(x0, x0, Operand(x6));
   __ Br(x2);  // label_1, label_3
 
-  __ Bind(&label_3);
+  __ Bind(&label_3, BranchTargetIdentifier::kBtiJump);
   __ Adr(x2, &label_3);   // Self-reference (offset 0).
   __ Eor(x1, x1, Operand(x2));
   __ Adr(x2, &label_4);   // Simple forward reference.
   __ Br(x2);  // label_4
 
-  __ Bind(&label_1);
+  __ Bind(&label_1, BranchTargetIdentifier::kBtiJump);
   __ Adr(x2, &label_3);   // Multiple reverse references to the same label.
   __ Adr(x3, &label_3);
   __ Adr(x4, &label_3);
   __ Adr(x5, &label_2);   // Simple reverse reference.
   __ Br(x5);  // label_2
 
-  __ Bind(&label_4);
+  __ Bind(&label_4, BranchTargetIdentifier::kBtiJump);
   END();
 
   RUN();
@@ -1679,11 +1696,11 @@ TEST(adr_far) {
   __ Adr(x10, &near_forward, MacroAssembler::kAdrFar);
   __ Br(x10);
   __ B(&fail);
-  __ Bind(&near_backward);
+  __ Bind(&near_backward, BranchTargetIdentifier::kBtiJump);
   __ Orr(x0, x0, 1 << 1);
   __ B(&test_far);
 
-  __ Bind(&near_forward);
+  __ Bind(&near_forward, BranchTargetIdentifier::kBtiJump);
   __ Orr(x0, x0, 1 << 0);
   __ Adr(x10, &near_backward, MacroAssembler::kAdrFar);
   __ Br(x10);
@@ -1692,7 +1709,7 @@ TEST(adr_far) {
   __ Adr(x10, &far_forward, MacroAssembler::kAdrFar);
   __ Br(x10);
   __ B(&fail);
-  __ Bind(&far_backward);
+  __ Bind(&far_backward, BranchTargetIdentifier::kBtiJump);
   __ Orr(x0, x0, 1 << 3);
   __ B(&done);
 
@@ -1706,8 +1723,7 @@ TEST(adr_far) {
     }
   }
 
-
-  __ Bind(&far_forward);
+  __ Bind(&far_forward, BranchTargetIdentifier::kBtiJump);
   __ Orr(x0, x0, 1 << 2);
   __ Adr(x10, &far_backward, MacroAssembler::kAdrFar);
   __ Br(x10);
@@ -1816,7 +1832,7 @@ TEST(branch_to_reg) {
   SETUP();
 
   // Test br.
-  Label fn1, after_fn1;
+  Label fn1, after_fn1, after_bl1;
 
   START();
   __ Mov(x29, lr);
@@ -1831,9 +1847,10 @@ TEST(branch_to_reg) {
 
   __ Bind(&after_fn1);
   __ Bl(&fn1);
+  __ Bind(&after_bl1, BranchTargetIdentifier::kBtiJump);  // For Br(x0) in fn1.
 
   // Test blr.
-  Label fn2, after_fn2;
+  Label fn2, after_fn2, after_bl2;
 
   __ Mov(x2, 0);
   __ B(&after_fn2);
@@ -1845,6 +1862,7 @@ TEST(branch_to_reg) {
 
   __ Bind(&after_fn2);
   __ Bl(&fn2);
+  __ Bind(&after_bl2, BranchTargetIdentifier::kBtiCall);  // For Blr(x0) in fn2.
   __ Mov(x3, lr);
 
   __ Mov(lr, x29);
@@ -1855,6 +1873,76 @@ TEST(branch_to_reg) {
   CHECK_EQUAL_64(core.xreg(3) + kInstrSize, x0);
   CHECK_EQUAL_64(42, x1);
   CHECK_EQUAL_64(84, x2);
+}
+
+static void BtiHelper(Register ipreg) {
+  SETUP();
+
+  Label jump_target, jump_call_target, call_target, done;
+  START();
+  UseScratchRegisterScope temps(&masm);
+  temps.Exclude(ipreg);
+  __ Adr(x0, &jump_target);
+  __ Br(x0);
+  __ Nop();
+  __ Bind(&jump_target, BranchTargetIdentifier::kBtiJump);
+  __ Adr(x0, &call_target);
+  __ Blr(x0);
+  __ Adr(ipreg, &jump_call_target);
+  __ Blr(ipreg);
+  __ Adr(lr, &done);  // Make Ret return to done label.
+  __ Br(ipreg);
+  __ Bind(&call_target, BranchTargetIdentifier::kBtiCall);
+  __ Ret();
+  __ Bind(&jump_call_target, BranchTargetIdentifier::kBtiJumpCall);
+  __ Ret();
+  __ Bind(&done);
+  END();
+
+#ifdef USE_SIMULATOR
+  simulator.SetGuardedPages(true);
+  RUN();
+#endif  // USE_SIMULATOR
+}
+
+TEST(bti) {
+  BtiHelper(x16);
+  BtiHelper(x17);
+}
+
+TEST(unguarded_bti_is_nop) {
+  SETUP();
+
+  Label start, none, c, j, jc;
+  START();
+  __ B(&start);
+  __ Bind(&none, BranchTargetIdentifier::kBti);
+  __ Bind(&c, BranchTargetIdentifier::kBtiCall);
+  __ Bind(&j, BranchTargetIdentifier::kBtiJump);
+  __ Bind(&jc, BranchTargetIdentifier::kBtiJumpCall);
+  CHECK(__ SizeOfCodeGeneratedSince(&none) == 4 * kInstrSize);
+  __ Ret();
+
+  Label jump_to_c, call_to_j;
+  __ Bind(&start);
+  __ Adr(x0, &none);
+  __ Adr(lr, &jump_to_c);
+  __ Br(x0);
+
+  __ Bind(&jump_to_c);
+  __ Adr(x0, &c);
+  __ Adr(lr, &call_to_j);
+  __ Br(x0);
+
+  __ Bind(&call_to_j);
+  __ Adr(x0, &j);
+  __ Blr(x0);
+  END();
+
+#ifdef USE_SIMULATOR
+  simulator.SetGuardedPages(false);
+  RUN();
+#endif  // USE_SIMULATOR
 }
 
 TEST(compare_branch) {
@@ -1899,17 +1987,17 @@ TEST(compare_branch) {
   __ Mov(x3, 1);
   __ Bind(&nzf_end);
 
-  __ Mov(x18, 0xFFFFFFFF00000000UL);
+  __ Mov(x19, 0xFFFFFFFF00000000UL);
 
   Label a, a_end;
-  __ Cbz(w18, &a);
+  __ Cbz(w19, &a);
   __ B(&a_end);
   __ Bind(&a);
   __ Mov(x4, 1);
   __ Bind(&a_end);
 
   Label b, b_end;
-  __ Cbnz(w18, &b);
+  __ Cbnz(w19, &b);
   __ B(&b_end);
   __ Bind(&b);
   __ Mov(x5, 1);
@@ -1975,75 +2063,144 @@ TEST(test_branch) {
   CHECK_EQUAL_64(0, x3);
 }
 
+namespace {
+// Generate a block of code that, when hit, always jumps to `landing_pad`.
+void GenerateLandingNops(MacroAssembler* masm, int n, Label* landing_pad) {
+  for (int i = 0; i < (n - 1); i++) {
+    if (i % 100 == 0) {
+      masm->B(landing_pad);
+    } else {
+      masm->Nop();
+    }
+  }
+  masm->B(landing_pad);
+}
+}  // namespace
+
 TEST(far_branch_backward) {
   INIT_V8();
 
-  // Test that the MacroAssembler correctly resolves backward branches to labels
-  // that are outside the immediate range of branch instructions.
-  int max_range =
-    std::max(Instruction::ImmBranchRange(TestBranchType),
-             std::max(Instruction::ImmBranchRange(CompareBranchType),
-                      Instruction::ImmBranchRange(CondBranchType)));
+  ImmBranchType branch_types[] = {TestBranchType, CompareBranchType,
+                                  CondBranchType};
 
-  SETUP_SIZE(max_range + 1000 * kInstrSize);
+  for (ImmBranchType type : branch_types) {
+    int range = Instruction::ImmBranchRange(type);
 
-  START();
+    SETUP_SIZE(range + 1000 * kInstrSize);
 
-  Label done, fail;
-  Label test_tbz, test_cbz, test_bcond;
-  Label success_tbz, success_cbz, success_bcond;
+    START();
 
-  __ Mov(x0, 0);
-  __ Mov(x1, 1);
-  __ Mov(x10, 0);
+    Label done, fail;
+    // Avoid using near and far as variable name because both are defined as
+    // macro in minwindef.h from Windows SDK.
+    Label near_label, far_label, in_range, out_of_range;
 
-  __ B(&test_tbz);
-  __ Bind(&success_tbz);
-  __ Orr(x0, x0, 1 << 0);
-  __ B(&test_cbz);
-  __ Bind(&success_cbz);
-  __ Orr(x0, x0, 1 << 1);
-  __ B(&test_bcond);
-  __ Bind(&success_bcond);
-  __ Orr(x0, x0, 1 << 2);
+    __ Mov(x0, 0);
+    __ Mov(x1, 1);
+    __ Mov(x10, 0);
 
-  __ B(&done);
+    __ B(&near_label);
+    __ Bind(&in_range);
+    __ Orr(x0, x0, 1 << 0);
 
-  // Generate enough code to overflow the immediate range of the three types of
-  // branches below.
-  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
-    if (i % 100 == 0) {
-      // If we do land in this code, we do not want to execute so many nops
-      // before reaching the end of test (especially if tracing is activated).
-      __ B(&fail);
-    } else {
-      __ Nop();
+    __ B(&far_label);
+    __ Bind(&out_of_range);
+    __ Orr(x0, x0, 1 << 1);
+
+    __ B(&done);
+
+    // We use a slack and an approximate budget instead of checking precisely
+    // when the branch limit is hit, since veneers and literal pool can mess
+    // with our calculation of where the limit is.
+    // In this test, we want to make sure we support backwards branches and the
+    // range is more-or-less correct. It's not a big deal if the macro-assembler
+    // got the range a little wrong, as long as it's not far off which could
+    // affect performance.
+
+    int budget =
+        (range - static_cast<int>(__ SizeOfCodeGeneratedSince(&in_range))) /
+        kInstrSize;
+
+    const int kSlack = 100;
+
+    // Generate enough code so that the next branch will be in range but we are
+    // close to the limit.
+    GenerateLandingNops(&masm, budget - kSlack, &fail);
+
+    __ Bind(&near_label);
+    switch (type) {
+      case TestBranchType:
+        __ Tbz(x10, 3, &in_range);
+        // This should be:
+        //     TBZ <in_range>
+        CHECK_EQ(1 * kInstrSize, __ SizeOfCodeGeneratedSince(&near_label));
+        break;
+      case CompareBranchType:
+        __ Cbz(x10, &in_range);
+        // This should be:
+        //     CBZ <in_range>
+        CHECK_EQ(1 * kInstrSize, __ SizeOfCodeGeneratedSince(&near_label));
+        break;
+      case CondBranchType:
+        __ Cmp(x10, 0);
+        __ B(eq, &in_range);
+        // This should be:
+        //     CMP
+        //     B.EQ <in_range>
+        CHECK_EQ(2 * kInstrSize, __ SizeOfCodeGeneratedSince(&near_label));
+        break;
+      default:
+        UNREACHABLE();
+        break;
     }
+
+    // Now go past the limit so that branches are now out of range.
+    GenerateLandingNops(&masm, kSlack * 2, &fail);
+
+    __ Bind(&far_label);
+    switch (type) {
+      case TestBranchType:
+        __ Tbz(x10, 5, &out_of_range);
+        // This should be:
+        //     TBNZ <skip>
+        //     B <out_of_range>
+        //   skip:
+        CHECK_EQ(2 * kInstrSize, __ SizeOfCodeGeneratedSince(&far_label));
+        break;
+      case CompareBranchType:
+        __ Cbz(x10, &out_of_range);
+        // This should be:
+        //     CBNZ <skip>
+        //     B <out_of_range>
+        //   skip:
+        CHECK_EQ(2 * kInstrSize, __ SizeOfCodeGeneratedSince(&far_label));
+        break;
+      case CondBranchType:
+        __ Cmp(x10, 0);
+        __ B(eq, &out_of_range);
+        // This should be:
+        //     CMP
+        //     B.NE <skip>
+        //     B <out_of_range>
+        //  skip:
+        CHECK_EQ(3 * kInstrSize, __ SizeOfCodeGeneratedSince(&far_label));
+        break;
+      default:
+        UNREACHABLE();
+        break;
+    }
+
+    __ Bind(&fail);
+    __ Mov(x1, 0);
+    __ Bind(&done);
+
+    END();
+
+    RUN();
+
+    CHECK_EQUAL_64(0x3, x0);
+    CHECK_EQUAL_64(1, x1);
   }
-  __ B(&fail);
-
-  __ Bind(&test_tbz);
-  __ Tbz(x10, 7, &success_tbz);
-  __ Bind(&test_cbz);
-  __ Cbz(x10, &success_cbz);
-  __ Bind(&test_bcond);
-  __ Cmp(x10, 0);
-  __ B(eq, &success_bcond);
-
-  // For each out-of-range branch instructions, at least two instructions should
-  // have been generated.
-  CHECK_GE(7 * kInstrSize, __ SizeOfCodeGeneratedSince(&test_tbz));
-
-  __ Bind(&fail);
-  __ Mov(x1, 0);
-  __ Bind(&done);
-
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_64(0x7, x0);
-  CHECK_EQUAL_64(0x1, x1);
 }
 
 TEST(far_branch_simple_veneer) {
@@ -2170,18 +2327,7 @@ TEST(far_branch_veneer_link_chain) {
 
   // Generate enough code to overflow the immediate range of the three types of
   // branches below.
-  for (int i = 0; i < max_range / kInstrSize + 1; ++i) {
-    if (i % 100 == 0) {
-      // If we do land in this code, we do not want to execute so many nops
-      // before reaching the end of test (especially if tracing is activated).
-      // Also, the branches give the MacroAssembler the opportunity to emit the
-      // veneers.
-      __ B(&fail);
-    } else {
-      __ Nop();
-    }
-  }
-  __ B(&fail);
+  GenerateLandingNops(&masm, (max_range / kInstrSize) + 1, &fail);
 
   __ Bind(&success_tbz);
   __ Orr(x0, x0, 1 << 0);
@@ -2212,7 +2358,58 @@ TEST(far_branch_veneer_broken_link_chain) {
   // a branch from the link chain of a label and the two links on each side of
   // the removed branch cannot be linked together (out of range).
   //
-  // We test with tbz because it has a small range.
+  // We want to generate the following code, we test with tbz because it has a
+  // small range:
+  //
+  // ~~~
+  // 1: B <far>
+  //          :
+  //          :
+  //          :
+  // 2: TBZ <far> -------.
+  //          :          |
+  //          :          | out of range
+  //          :          |
+  // 3: TBZ <far>        |
+  //          |          |
+  //          | in range |
+  //          V          |
+  // far:              <-'
+  // ~~~
+  //
+  // If we say that the range of TBZ is 3 lines on this graph, then we can get
+  // into a situation where the link chain gets broken. When emitting the two
+  // TBZ instructions, we are in range of the previous branch in the chain so
+  // we'll generate a TBZ and not a TBNZ+B sequence that can encode a bigger
+  // range.
+  //
+  // However, the first TBZ (2), is out of range of the far label so a veneer
+  // will be generated after the second TBZ (3). And this will result in a
+  // broken chain because we can no longer link from (3) back to (1).
+  //
+  // ~~~
+  // 1: B <far>     <-.
+  //                  :
+  //                  : out of range
+  //                  :
+  // 2: TBZ <veneer>  :
+  //                  :
+  //                  :
+  //                  :
+  // 3: TBZ <far> ----'
+  //
+  //    B <skip>
+  // veneer:
+  //    B <far>
+  // skip:
+  //
+  // far:
+  // ~~~
+  //
+  // This test makes sure the MacroAssembler is able to resolve this case by,
+  // for instance, resolving (1) early and making it jump to <veneer> instead of
+  // <far>.
+
   int max_range = Instruction::ImmBranchRange(TestBranchType);
   int inter_range = max_range / 2 + max_range / 10;
 
@@ -2233,43 +2430,41 @@ TEST(far_branch_veneer_broken_link_chain) {
   __ Mov(x0, 1);
   __ B(&far_target);
 
-  for (int i = 0; i < inter_range / kInstrSize; ++i) {
-    if (i % 100 == 0) {
-      // Do not allow generating veneers. They should not be needed.
-      __ b(&fail);
-    } else {
-      __ Nop();
-    }
-  }
+  GenerateLandingNops(&masm, inter_range / kInstrSize, &fail);
 
   // Will need a veneer to point to reach the target.
   __ Bind(&test_2);
   __ Mov(x0, 2);
-  __ Tbz(x10, 7, &far_target);
-
-  for (int i = 0; i < inter_range / kInstrSize; ++i) {
-    if (i % 100 == 0) {
-      // Do not allow generating veneers. They should not be needed.
-      __ b(&fail);
-    } else {
-      __ Nop();
-    }
+  {
+    Label tbz;
+    __ Bind(&tbz);
+    __ Tbz(x10, 7, &far_target);
+    // This should be a single TBZ since the previous link is in range at this
+    // point.
+    CHECK_EQ(1 * kInstrSize, __ SizeOfCodeGeneratedSince(&tbz));
   }
+
+  GenerateLandingNops(&masm, inter_range / kInstrSize, &fail);
 
   // Does not need a veneer to reach the target, but the initial branch
   // instruction is out of range.
   __ Bind(&test_3);
   __ Mov(x0, 3);
-  __ Tbz(x10, 7, &far_target);
-
-  for (int i = 0; i < inter_range / kInstrSize; ++i) {
-    if (i % 100 == 0) {
-      // Allow generating veneers.
-      __ B(&fail);
-    } else {
-      __ Nop();
-    }
+  {
+    Label tbz;
+    __ Bind(&tbz);
+    __ Tbz(x10, 7, &far_target);
+    // This should be a single TBZ since the previous link is in range at this
+    // point.
+    CHECK_EQ(1 * kInstrSize, __ SizeOfCodeGeneratedSince(&tbz));
   }
+
+  // A veneer will be generated for the first TBZ, which will then remove the
+  // label from the chain and break it because the second TBZ is out of range of
+  // the first branch.
+  // The MacroAssembler should be able to cope with this.
+
+  GenerateLandingNops(&masm, inter_range / kInstrSize, &fail);
 
   __ B(&fail);
 
@@ -2357,17 +2552,17 @@ TEST(ldr_str_offset) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x19, dst_base);
   __ Ldr(w0, MemOperand(x17));
-  __ Str(w0, MemOperand(x18));
+  __ Str(w0, MemOperand(x19));
   __ Ldr(w1, MemOperand(x17, 4));
-  __ Str(w1, MemOperand(x18, 12));
+  __ Str(w1, MemOperand(x19, 12));
   __ Ldr(x2, MemOperand(x17, 8));
-  __ Str(x2, MemOperand(x18, 16));
+  __ Str(x2, MemOperand(x19, 16));
   __ Ldrb(w3, MemOperand(x17, 1));
-  __ Strb(w3, MemOperand(x18, 25));
+  __ Strb(w3, MemOperand(x19, 25));
   __ Ldrh(w4, MemOperand(x17, 2));
-  __ Strh(w4, MemOperand(x18, 33));
+  __ Strh(w4, MemOperand(x19, 33));
   END();
 
   RUN();
@@ -2383,7 +2578,7 @@ TEST(ldr_str_offset) {
   CHECK_EQUAL_64(0x7654, x4);
   CHECK_EQUAL_64(0x765400, dst[4]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base, x18);
+  CHECK_EQUAL_64(dst_base, x19);
 }
 
 TEST(ldr_str_wide) {
@@ -2443,7 +2638,7 @@ TEST(ldr_str_preindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base + 16);
@@ -2453,7 +2648,7 @@ TEST(ldr_str_preindex) {
   __ Mov(x25, src_base);
   __ Mov(x26, dst_base);
   __ Ldr(w0, MemOperand(x17, 4, PreIndex));
-  __ Str(w0, MemOperand(x18, 12, PreIndex));
+  __ Str(w0, MemOperand(x28, 12, PreIndex));
   __ Ldr(x1, MemOperand(x19, 8, PreIndex));
   __ Str(x1, MemOperand(x20, 16, PreIndex));
   __ Ldr(w2, MemOperand(x21, -4, PreIndex));
@@ -2477,7 +2672,7 @@ TEST(ldr_str_preindex) {
   CHECK_EQUAL_64(0x9876, x4);
   CHECK_EQUAL_64(0x987600, dst[5]);
   CHECK_EQUAL_64(src_base + 4, x17);
-  CHECK_EQUAL_64(dst_base + 12, x18);
+  CHECK_EQUAL_64(dst_base + 12, x28);
   CHECK_EQUAL_64(src_base + 8, x19);
   CHECK_EQUAL_64(dst_base + 16, x20);
   CHECK_EQUAL_64(src_base + 12, x21);
@@ -2499,7 +2694,7 @@ TEST(ldr_str_postindex) {
 
   START();
   __ Mov(x17, src_base + 4);
-  __ Mov(x18, dst_base + 12);
+  __ Mov(x28, dst_base + 12);
   __ Mov(x19, src_base + 8);
   __ Mov(x20, dst_base + 16);
   __ Mov(x21, src_base + 8);
@@ -2509,7 +2704,7 @@ TEST(ldr_str_postindex) {
   __ Mov(x25, src_base + 3);
   __ Mov(x26, dst_base + 41);
   __ Ldr(w0, MemOperand(x17, 4, PostIndex));
-  __ Str(w0, MemOperand(x18, 12, PostIndex));
+  __ Str(w0, MemOperand(x28, 12, PostIndex));
   __ Ldr(x1, MemOperand(x19, 8, PostIndex));
   __ Str(x1, MemOperand(x20, 16, PostIndex));
   __ Ldr(x2, MemOperand(x21, -8, PostIndex));
@@ -2533,7 +2728,7 @@ TEST(ldr_str_postindex) {
   CHECK_EQUAL_64(0x9876, x4);
   CHECK_EQUAL_64(0x987600, dst[5]);
   CHECK_EQUAL_64(src_base + 8, x17);
-  CHECK_EQUAL_64(dst_base + 24, x18);
+  CHECK_EQUAL_64(dst_base + 24, x28);
   CHECK_EQUAL_64(src_base + 16, x19);
   CHECK_EQUAL_64(dst_base + 32, x20);
   CHECK_EQUAL_64(src_base, x21);
@@ -2591,7 +2786,7 @@ TEST(load_store_regoffset) {
   START();
   __ Mov(x16, src_base);
   __ Mov(x17, dst_base);
-  __ Mov(x18, src_base + 3 * sizeof(src[0]));
+  __ Mov(x21, src_base + 3 * sizeof(src[0]));
   __ Mov(x19, dst_base + 3 * sizeof(dst[0]));
   __ Mov(x20, dst_base + 4 * sizeof(dst[0]));
   __ Mov(x24, 0);
@@ -2603,9 +2798,9 @@ TEST(load_store_regoffset) {
 
   __ Ldr(w0, MemOperand(x16, x24));
   __ Ldr(x1, MemOperand(x16, x25));
-  __ Ldr(w2, MemOperand(x18, x26));
-  __ Ldr(w3, MemOperand(x18, x27, SXTW));
-  __ Ldr(w4, MemOperand(x18, x28, SXTW, 2));
+  __ Ldr(w2, MemOperand(x21, x26));
+  __ Ldr(w3, MemOperand(x21, x27, SXTW));
+  __ Ldr(w4, MemOperand(x21, x28, SXTW, 2));
   __ Str(w0, MemOperand(x17, x24));
   __ Str(x1, MemOperand(x17, x25));
   __ Str(w2, MemOperand(x20, x29, SXTW, 2));
@@ -2635,13 +2830,13 @@ TEST(load_store_float) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base);
   __ Mov(x22, dst_base);
   __ Ldr(s0, MemOperand(x17, sizeof(src[0])));
-  __ Str(s0, MemOperand(x18, sizeof(dst[0]), PostIndex));
+  __ Str(s0, MemOperand(x28, sizeof(dst[0]), PostIndex));
   __ Ldr(s1, MemOperand(x19, sizeof(src[0]), PostIndex));
   __ Str(s1, MemOperand(x20, 2 * sizeof(dst[0]), PreIndex));
   __ Ldr(s2, MemOperand(x21, 2 * sizeof(src[0]), PreIndex));
@@ -2657,7 +2852,7 @@ TEST(load_store_float) {
   CHECK_EQUAL_FP32(3.0, s2);
   CHECK_EQUAL_FP32(3.0, dst[1]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x18);
+  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x28);
   CHECK_EQUAL_64(src_base + sizeof(src[0]), x19);
   CHECK_EQUAL_64(dst_base + 2 * sizeof(dst[0]), x20);
   CHECK_EQUAL_64(src_base + 2 * sizeof(src[0]), x21);
@@ -2675,13 +2870,13 @@ TEST(load_store_double) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base);
   __ Mov(x22, dst_base);
   __ Ldr(d0, MemOperand(x17, sizeof(src[0])));
-  __ Str(d0, MemOperand(x18, sizeof(dst[0]), PostIndex));
+  __ Str(d0, MemOperand(x28, sizeof(dst[0]), PostIndex));
   __ Ldr(d1, MemOperand(x19, sizeof(src[0]), PostIndex));
   __ Str(d1, MemOperand(x20, 2 * sizeof(dst[0]), PreIndex));
   __ Ldr(d2, MemOperand(x21, 2 * sizeof(src[0]), PreIndex));
@@ -2697,7 +2892,7 @@ TEST(load_store_double) {
   CHECK_EQUAL_FP64(3.0, d2);
   CHECK_EQUAL_FP64(3.0, dst[1]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x18);
+  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x28);
   CHECK_EQUAL_64(src_base + sizeof(src[0]), x19);
   CHECK_EQUAL_64(dst_base + 2 * sizeof(dst[0]), x20);
   CHECK_EQUAL_64(src_base + 2 * sizeof(src[0]), x21);
@@ -2715,13 +2910,13 @@ TEST(load_store_b) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base);
   __ Mov(x22, dst_base);
   __ Ldr(b0, MemOperand(x17, sizeof(src[0])));
-  __ Str(b0, MemOperand(x18, sizeof(dst[0]), PostIndex));
+  __ Str(b0, MemOperand(x28, sizeof(dst[0]), PostIndex));
   __ Ldr(b1, MemOperand(x19, sizeof(src[0]), PostIndex));
   __ Str(b1, MemOperand(x20, 2 * sizeof(dst[0]), PreIndex));
   __ Ldr(b2, MemOperand(x21, 2 * sizeof(src[0]), PreIndex));
@@ -2737,7 +2932,7 @@ TEST(load_store_b) {
   CHECK_EQUAL_128(0, 0x34, q2);
   CHECK_EQUAL_64(0x34, dst[1]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x18);
+  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x28);
   CHECK_EQUAL_64(src_base + sizeof(src[0]), x19);
   CHECK_EQUAL_64(dst_base + 2 * sizeof(dst[0]), x20);
   CHECK_EQUAL_64(src_base + 2 * sizeof(src[0]), x21);
@@ -2755,13 +2950,13 @@ TEST(load_store_h) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base);
   __ Mov(x22, dst_base);
   __ Ldr(h0, MemOperand(x17, sizeof(src[0])));
-  __ Str(h0, MemOperand(x18, sizeof(dst[0]), PostIndex));
+  __ Str(h0, MemOperand(x28, sizeof(dst[0]), PostIndex));
   __ Ldr(h1, MemOperand(x19, sizeof(src[0]), PostIndex));
   __ Str(h1, MemOperand(x20, 2 * sizeof(dst[0]), PreIndex));
   __ Ldr(h2, MemOperand(x21, 2 * sizeof(src[0]), PreIndex));
@@ -2777,7 +2972,7 @@ TEST(load_store_h) {
   CHECK_EQUAL_128(0, 0x3456, q2);
   CHECK_EQUAL_64(0x3456, dst[1]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x18);
+  CHECK_EQUAL_64(dst_base + sizeof(dst[0]), x28);
   CHECK_EQUAL_64(src_base + sizeof(src[0]), x19);
   CHECK_EQUAL_64(dst_base + 2 * sizeof(dst[0]), x20);
   CHECK_EQUAL_64(src_base + 2 * sizeof(src[0]), x21);
@@ -2800,13 +2995,13 @@ TEST(load_store_q) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base);
   __ Mov(x20, dst_base);
   __ Mov(x21, src_base);
   __ Mov(x22, dst_base);
   __ Ldr(q0, MemOperand(x17, 16));
-  __ Str(q0, MemOperand(x18, 16, PostIndex));
+  __ Str(q0, MemOperand(x28, 16, PostIndex));
   __ Ldr(q1, MemOperand(x19, 16, PostIndex));
   __ Str(q1, MemOperand(x20, 32, PreIndex));
   __ Ldr(q2, MemOperand(x21, 32, PreIndex));
@@ -2825,7 +3020,7 @@ TEST(load_store_q) {
   CHECK_EQUAL_64(0x02E0CEAC8A684624, dst[2]);
   CHECK_EQUAL_64(0x200EECCAA8866442, dst[3]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base + 16, x18);
+  CHECK_EQUAL_64(dst_base + 16, x28);
   CHECK_EQUAL_64(src_base + 16, x19);
   CHECK_EQUAL_64(dst_base + 32, x20);
   CHECK_EQUAL_64(src_base + 32, x21);
@@ -2892,7 +3087,7 @@ TEST(neon_ld1_d_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
@@ -2900,7 +3095,7 @@ TEST(neon_ld1_d_postindex) {
   __ Mov(x23, 1);
   __ Ldr(q2, MemOperand(x17));  // Initialise top 64-bits of Q register.
   __ Ld1(v2.V8B(), MemOperand(x17, x23, PostIndex));
-  __ Ld1(v3.V8B(), v4.V8B(), MemOperand(x18, 16, PostIndex));
+  __ Ld1(v3.V8B(), v4.V8B(), MemOperand(x28, 16, PostIndex));
   __ Ld1(v5.V4H(), v6.V4H(), v7.V4H(), MemOperand(x19, 24, PostIndex));
   __ Ld1(v16.V2S(), v17.V2S(), v18.V2S(), v19.V2S(),
          MemOperand(x20, 32, PostIndex));
@@ -2931,7 +3126,7 @@ TEST(neon_ld1_d_postindex) {
   CHECK_EQUAL_128(0, 0x1C1B1A1918171615, q22);
   CHECK_EQUAL_128(0, 0x24232221201F1E1D, q23);
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 16, x18);
+  CHECK_EQUAL_64(src_base + 1 + 16, x28);
   CHECK_EQUAL_64(src_base + 2 + 24, x19);
   CHECK_EQUAL_64(src_base + 3 + 32, x20);
   CHECK_EQUAL_64(src_base + 4 + 32, x21);
@@ -2991,13 +3186,13 @@ TEST(neon_ld1_q_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
   __ Mov(x22, 1);
   __ Ld1(v2.V16B(), MemOperand(x17, x22, PostIndex));
-  __ Ld1(v3.V16B(), v4.V16B(), MemOperand(x18, 32, PostIndex));
+  __ Ld1(v3.V16B(), v4.V16B(), MemOperand(x28, 32, PostIndex));
   __ Ld1(v5.V8H(), v6.V8H(), v7.V8H(), MemOperand(x19, 48, PostIndex));
   __ Ld1(v16.V4S(), v17.V4S(), v18.V4S(), v19.V4S(),
          MemOperand(x20, 64, PostIndex));
@@ -3022,7 +3217,7 @@ TEST(neon_ld1_q_postindex) {
   CHECK_EQUAL_128(0x333231302F2E2D2C, 0x2B2A292827262524, q0);
   CHECK_EQUAL_128(0x434241403F3E3D3C, 0x3B3A393837363534, q1);
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 32, x18);
+  CHECK_EQUAL_64(src_base + 1 + 32, x28);
   CHECK_EQUAL_64(src_base + 2 + 48, x19);
   CHECK_EQUAL_64(src_base + 3 + 64, x20);
   CHECK_EQUAL_64(src_base + 4 + 64, x21);
@@ -3135,13 +3330,13 @@ TEST(neon_ld2_d_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
   __ Mov(x22, 1);
   __ Ld2(v2.V8B(), v3.V8B(), MemOperand(x17, x22, PostIndex));
-  __ Ld2(v4.V8B(), v5.V8B(), MemOperand(x18, 16, PostIndex));
+  __ Ld2(v4.V8B(), v5.V8B(), MemOperand(x28, 16, PostIndex));
   __ Ld2(v5.V4H(), v6.V4H(), MemOperand(x19, 16, PostIndex));
   __ Ld2(v16.V2S(), v17.V2S(), MemOperand(x20, 16, PostIndex));
   __ Ld2(v31.V2S(), v0.V2S(), MemOperand(x21, 16, PostIndex));
@@ -3160,7 +3355,7 @@ TEST(neon_ld2_d_postindex) {
   CHECK_EQUAL_128(0, 0x131211100B0A0908, q0);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 16, x18);
+  CHECK_EQUAL_64(src_base + 1 + 16, x28);
   CHECK_EQUAL_64(src_base + 2 + 16, x19);
   CHECK_EQUAL_64(src_base + 3 + 16, x20);
   CHECK_EQUAL_64(src_base + 4 + 16, x21);
@@ -3215,13 +3410,13 @@ TEST(neon_ld2_q_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
   __ Mov(x22, 1);
   __ Ld2(v2.V16B(), v3.V16B(), MemOperand(x17, x22, PostIndex));
-  __ Ld2(v4.V16B(), v5.V16B(), MemOperand(x18, 32, PostIndex));
+  __ Ld2(v4.V16B(), v5.V16B(), MemOperand(x28, 32, PostIndex));
   __ Ld2(v6.V8H(), v7.V8H(), MemOperand(x19, 32, PostIndex));
   __ Ld2(v16.V4S(), v17.V4S(), MemOperand(x20, 32, PostIndex));
   __ Ld2(v31.V2D(), v0.V2D(), MemOperand(x21, 32, PostIndex));
@@ -3241,7 +3436,7 @@ TEST(neon_ld2_q_postindex) {
   CHECK_EQUAL_128(0x232221201F1E1D1C, 0x131211100F0E0D0C, q0);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 32, x18);
+  CHECK_EQUAL_64(src_base + 1 + 32, x28);
   CHECK_EQUAL_64(src_base + 2 + 32, x19);
   CHECK_EQUAL_64(src_base + 3 + 32, x20);
   CHECK_EQUAL_64(src_base + 4 + 32, x21);
@@ -3337,7 +3532,7 @@ TEST(neon_ld2_lane_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Mov(x19, src_base);
   __ Mov(x20, src_base);
   __ Mov(x21, src_base);
@@ -3351,7 +3546,7 @@ TEST(neon_ld2_lane_postindex) {
   }
 
   for (int i = 7; i >= 0; i--) {
-    __ Ld2(v2.H(), v3.H(), i, MemOperand(x18, 4, PostIndex));
+    __ Ld2(v2.H(), v3.H(), i, MemOperand(x28, 4, PostIndex));
   }
 
   for (int i = 3; i >= 0; i--) {
@@ -3409,7 +3604,7 @@ TEST(neon_ld2_lane_postindex) {
   CHECK_EQUAL_128(0x0F0E0D0C0B0A0908, 0x1716151413121110, q15);
 
   CHECK_EQUAL_64(src_base + 32, x17);
-  CHECK_EQUAL_64(src_base + 32, x18);
+  CHECK_EQUAL_64(src_base + 32, x28);
   CHECK_EQUAL_64(src_base + 32, x19);
   CHECK_EQUAL_64(src_base + 32, x20);
   CHECK_EQUAL_64(src_base + 1, x21);
@@ -3430,7 +3625,6 @@ TEST(neon_ld2_alllanes) {
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
   __ Ld2r(v0.V8B(), v1.V8B(), MemOperand(x17));
   __ Add(x17, x17, 2);
   __ Ld2r(v2.V16B(), v3.V16B(), MemOperand(x17));
@@ -3476,12 +3670,12 @@ TEST(neon_ld2_alllanes_postindex) {
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
+  __ Mov(x19, 1);
   __ Ld2r(v0.V8B(), v1.V8B(), MemOperand(x17, 2, PostIndex));
-  __ Ld2r(v2.V16B(), v3.V16B(), MemOperand(x17, x18, PostIndex));
-  __ Ld2r(v4.V4H(), v5.V4H(), MemOperand(x17, x18, PostIndex));
+  __ Ld2r(v2.V16B(), v3.V16B(), MemOperand(x17, x19, PostIndex));
+  __ Ld2r(v4.V4H(), v5.V4H(), MemOperand(x17, x19, PostIndex));
   __ Ld2r(v6.V8H(), v7.V8H(), MemOperand(x17, 4, PostIndex));
-  __ Ld2r(v8_.V2S(), v9.V2S(), MemOperand(x17, x18, PostIndex));
+  __ Ld2r(v8_.V2S(), v9.V2S(), MemOperand(x17, x19, PostIndex));
   __ Ld2r(v10.V4S(), v11.V4S(), MemOperand(x17, 8, PostIndex));
   __ Ld2r(v12.V2D(), v13.V2D(), MemOperand(x17, 16, PostIndex));
   END();
@@ -3554,13 +3748,13 @@ TEST(neon_ld3_d_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
   __ Mov(x22, 1);
   __ Ld3(v2.V8B(), v3.V8B(), v4.V8B(), MemOperand(x17, x22, PostIndex));
-  __ Ld3(v5.V8B(), v6.V8B(), v7.V8B(), MemOperand(x18, 24, PostIndex));
+  __ Ld3(v5.V8B(), v6.V8B(), v7.V8B(), MemOperand(x28, 24, PostIndex));
   __ Ld3(v8_.V4H(), v9.V4H(), v10.V4H(), MemOperand(x19, 24, PostIndex));
   __ Ld3(v11.V2S(), v12.V2S(), v13.V2S(), MemOperand(x20, 24, PostIndex));
   __ Ld3(v31.V2S(), v0.V2S(), v1.V2S(), MemOperand(x21, 24, PostIndex));
@@ -3585,7 +3779,7 @@ TEST(neon_ld3_d_postindex) {
   CHECK_EQUAL_128(0, 0x1B1A19180F0E0D0C, q1);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 24, x18);
+  CHECK_EQUAL_64(src_base + 1 + 24, x28);
   CHECK_EQUAL_64(src_base + 2 + 24, x19);
   CHECK_EQUAL_64(src_base + 3 + 24, x20);
   CHECK_EQUAL_64(src_base + 4 + 24, x21);
@@ -3645,14 +3839,14 @@ TEST(neon_ld3_q_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
   __ Mov(x22, 1);
 
   __ Ld3(v2.V16B(), v3.V16B(), v4.V16B(), MemOperand(x17, x22, PostIndex));
-  __ Ld3(v5.V16B(), v6.V16B(), v7.V16B(), MemOperand(x18, 48, PostIndex));
+  __ Ld3(v5.V16B(), v6.V16B(), v7.V16B(), MemOperand(x28, 48, PostIndex));
   __ Ld3(v8_.V8H(), v9.V8H(), v10.V8H(), MemOperand(x19, 48, PostIndex));
   __ Ld3(v11.V4S(), v12.V4S(), v13.V4S(), MemOperand(x20, 48, PostIndex));
   __ Ld3(v31.V2D(), v0.V2D(), v1.V2D(), MemOperand(x21, 48, PostIndex));
@@ -3677,7 +3871,7 @@ TEST(neon_ld3_q_postindex) {
   CHECK_EQUAL_128(0x333231302F2E2D2C, 0x1B1A191817161514, q1);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 48, x18);
+  CHECK_EQUAL_64(src_base + 1 + 48, x28);
   CHECK_EQUAL_64(src_base + 2 + 48, x19);
   CHECK_EQUAL_64(src_base + 3 + 48, x20);
   CHECK_EQUAL_64(src_base + 4 + 48, x21);
@@ -3781,7 +3975,7 @@ TEST(neon_ld3_lane_postindex) {
 
   // Test loading whole register by element.
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Mov(x19, src_base);
   __ Mov(x20, src_base);
   __ Mov(x21, src_base);
@@ -3793,7 +3987,7 @@ TEST(neon_ld3_lane_postindex) {
   }
 
   for (int i = 7; i >= 0; i--) {
-    __ Ld3(v3.H(), v4.H(), v5.H(), i, MemOperand(x18, 6, PostIndex));
+    __ Ld3(v3.H(), v4.H(), v5.H(), i, MemOperand(x28, 6, PostIndex));
   }
 
   for (int i = 3; i >= 0; i--) {
@@ -3863,7 +4057,7 @@ TEST(neon_ld3_lane_postindex) {
   CHECK_EQUAL_128(0x1716151413121110, 0x2726252423222120, q23);
 
   CHECK_EQUAL_64(src_base + 48, x17);
-  CHECK_EQUAL_64(src_base + 48, x18);
+  CHECK_EQUAL_64(src_base + 48, x28);
   CHECK_EQUAL_64(src_base + 48, x19);
   CHECK_EQUAL_64(src_base + 48, x20);
   CHECK_EQUAL_64(src_base + 1, x21);
@@ -3884,7 +4078,6 @@ TEST(neon_ld3_alllanes) {
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
   __ Ld3r(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x17));
   __ Add(x17, x17, 3);
   __ Ld3r(v3.V16B(), v4.V16B(), v5.V16B(), MemOperand(x17));
@@ -3934,17 +4127,15 @@ TEST(neon_ld3_alllanes_postindex) {
     src[i] = i;
   }
   uintptr_t src_base = reinterpret_cast<uintptr_t>(src);
-  __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
+  __ Mov(x19, 1);
   __ Ld3r(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x17, 3, PostIndex));
-  __ Ld3r(v3.V16B(), v4.V16B(), v5.V16B(), MemOperand(x17, x18, PostIndex));
-  __ Ld3r(v6.V4H(), v7.V4H(), v8_.V4H(), MemOperand(x17, x18, PostIndex));
+  __ Ld3r(v3.V16B(), v4.V16B(), v5.V16B(), MemOperand(x17, x19, PostIndex));
+  __ Ld3r(v6.V4H(), v7.V4H(), v8_.V4H(), MemOperand(x17, x19, PostIndex));
   __ Ld3r(v9.V8H(), v10.V8H(), v11.V8H(), MemOperand(x17, 6, PostIndex));
-  __ Ld3r(v12.V2S(), v13.V2S(), v14.V2S(), MemOperand(x17, x18, PostIndex));
+  __ Ld3r(v12.V2S(), v13.V2S(), v14.V2S(), MemOperand(x17, x19, PostIndex));
   __ Ld3r(v15.V4S(), v16.V4S(), v17.V4S(), MemOperand(x17, 12, PostIndex));
   __ Ld3r(v18.V2D(), v19.V2D(), v20.V2D(), MemOperand(x17, 24, PostIndex));
   END();
@@ -4027,7 +4218,7 @@ TEST(neon_ld4_d_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
@@ -4035,7 +4226,7 @@ TEST(neon_ld4_d_postindex) {
   __ Ld4(v2.V8B(), v3.V8B(), v4.V8B(), v5.V8B(),
          MemOperand(x17, x22, PostIndex));
   __ Ld4(v6.V8B(), v7.V8B(), v8_.V8B(), v9.V8B(),
-         MemOperand(x18, 32, PostIndex));
+         MemOperand(x28, 32, PostIndex));
   __ Ld4(v10.V4H(), v11.V4H(), v12.V4H(), v13.V4H(),
          MemOperand(x19, 32, PostIndex));
   __ Ld4(v14.V2S(), v15.V2S(), v16.V2S(), v17.V2S(),
@@ -4068,7 +4259,7 @@ TEST(neon_ld4_d_postindex) {
   CHECK_EQUAL_128(0, 0x2322212013121110, q1);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 32, x18);
+  CHECK_EQUAL_64(src_base + 1 + 32, x28);
   CHECK_EQUAL_64(src_base + 2 + 32, x19);
   CHECK_EQUAL_64(src_base + 3 + 32, x20);
   CHECK_EQUAL_64(src_base + 4 + 32, x21);
@@ -4133,7 +4324,7 @@ TEST(neon_ld4_q_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base + 1);
+  __ Mov(x28, src_base + 1);
   __ Mov(x19, src_base + 2);
   __ Mov(x20, src_base + 3);
   __ Mov(x21, src_base + 4);
@@ -4142,7 +4333,7 @@ TEST(neon_ld4_q_postindex) {
   __ Ld4(v2.V16B(), v3.V16B(), v4.V16B(), v5.V16B(),
          MemOperand(x17, x22, PostIndex));
   __ Ld4(v6.V16B(), v7.V16B(), v8_.V16B(), v9.V16B(),
-         MemOperand(x18, 64, PostIndex));
+         MemOperand(x28, 64, PostIndex));
   __ Ld4(v10.V8H(), v11.V8H(), v12.V8H(), v13.V8H(),
          MemOperand(x19, 64, PostIndex));
   __ Ld4(v14.V4S(), v15.V4S(), v16.V4S(), v17.V4S(),
@@ -4175,7 +4366,7 @@ TEST(neon_ld4_q_postindex) {
   CHECK_EQUAL_128(0x434241403F3E3D3C, 0x232221201F1E1D1C, q1);
 
   CHECK_EQUAL_64(src_base + 1, x17);
-  CHECK_EQUAL_64(src_base + 1 + 64, x18);
+  CHECK_EQUAL_64(src_base + 1 + 64, x28);
   CHECK_EQUAL_64(src_base + 2 + 64, x19);
   CHECK_EQUAL_64(src_base + 3 + 64, x20);
   CHECK_EQUAL_64(src_base + 4 + 64, x21);
@@ -4304,9 +4495,9 @@ TEST(neon_ld4_lane_postindex) {
     __ Ld4(v0.B(), v1.B(), v2.B(), v3.B(), i, MemOperand(x17, 4, PostIndex));
   }
 
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   for (int i = 7; i >= 0; i--) {
-    __ Ld4(v4.H(), v5.H(), v6.H(), v7.H(), i, MemOperand(x18, 8, PostIndex));
+    __ Ld4(v4.H(), v5.H(), v6.H(), v7.H(), i, MemOperand(x28, 8, PostIndex));
   }
 
   __ Mov(x19, src_base);
@@ -4401,7 +4592,7 @@ TEST(neon_ld4_lane_postindex) {
   CHECK_EQUAL_128(0x1F1E1D1C1B1A1918, 0x3736353433323130, q31);
 
   CHECK_EQUAL_64(src_base + 64, x17);
-  CHECK_EQUAL_64(src_base + 64, x18);
+  CHECK_EQUAL_64(src_base + 64, x28);
   CHECK_EQUAL_64(src_base + 64, x19);
   CHECK_EQUAL_64(src_base + 64, x20);
   CHECK_EQUAL_64(src_base + 1, x21);
@@ -4422,7 +4613,6 @@ TEST(neon_ld4_alllanes) {
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
   __ Ld4r(v0.V8B(), v1.V8B(), v2.V8B(), v3.V8B(), MemOperand(x17));
   __ Add(x17, x17, 4);
   __ Ld4r(v4.V16B(), v5.V16B(), v6.V16B(), v7.V16B(), MemOperand(x17));
@@ -4480,22 +4670,20 @@ TEST(neon_ld4_alllanes_postindex) {
     src[i] = i;
   }
   uintptr_t src_base = reinterpret_cast<uintptr_t>(src);
-  __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
+  __ Mov(x19, 1);
   __ Ld4r(v0.V8B(), v1.V8B(), v2.V8B(), v3.V8B(),
           MemOperand(x17, 4, PostIndex));
   __ Ld4r(v4.V16B(), v5.V16B(), v6.V16B(), v7.V16B(),
-          MemOperand(x17, x18, PostIndex));
+          MemOperand(x17, x19, PostIndex));
   __ Ld4r(v8_.V4H(), v9.V4H(), v10.V4H(), v11.V4H(),
-          MemOperand(x17, x18, PostIndex));
+          MemOperand(x17, x19, PostIndex));
   __ Ld4r(v12.V8H(), v13.V8H(), v14.V8H(), v15.V8H(),
           MemOperand(x17, 8, PostIndex));
   __ Ld4r(v16.V2S(), v17.V2S(), v18.V2S(), v19.V2S(),
-          MemOperand(x17, x18, PostIndex));
+          MemOperand(x17, x19, PostIndex));
   __ Ld4r(v20.V4S(), v21.V4S(), v22.V4S(), v23.V4S(),
           MemOperand(x17, 16, PostIndex));
   __ Ld4r(v24.V2D(), v25.V2D(), v26.V2D(), v27.V2D(),
@@ -4547,32 +4735,32 @@ TEST(neon_st1_lane) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, -16);
+  __ Mov(x19, -16);
   __ Ldr(q0, MemOperand(x17));
 
   for (int i = 15; i >= 0; i--) {
     __ St1(v0.B(), i, MemOperand(x17));
     __ Add(x17, x17, 1);
   }
-  __ Ldr(q1, MemOperand(x17, x18));
+  __ Ldr(q1, MemOperand(x17, x19));
 
   for (int i = 7; i >= 0; i--) {
     __ St1(v0.H(), i, MemOperand(x17));
     __ Add(x17, x17, 2);
   }
-  __ Ldr(q2, MemOperand(x17, x18));
+  __ Ldr(q2, MemOperand(x17, x19));
 
   for (int i = 3; i >= 0; i--) {
     __ St1(v0.S(), i, MemOperand(x17));
     __ Add(x17, x17, 4);
   }
-  __ Ldr(q3, MemOperand(x17, x18));
+  __ Ldr(q3, MemOperand(x17, x19));
 
   for (int i = 1; i >= 0; i--) {
     __ St1(v0.D(), i, MemOperand(x17));
     __ Add(x17, x17, 8);
   }
-  __ Ldr(q4, MemOperand(x17, x18));
+  __ Ldr(q4, MemOperand(x17, x19));
 
   END();
 
@@ -4595,17 +4783,17 @@ TEST(neon_st2_lane) {
 
   START();
   __ Mov(x17, dst_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x19, dst_base);
   __ Movi(v0.V2D(), 0x0001020304050607, 0x08090A0B0C0D0E0F);
   __ Movi(v1.V2D(), 0x1011121314151617, 0x18191A1B1C1D1E1F);
 
   // Test B stores with and without post index.
   for (int i = 15; i >= 0; i--) {
-    __ St2(v0.B(), v1.B(), i, MemOperand(x18));
-    __ Add(x18, x18, 2);
+    __ St2(v0.B(), v1.B(), i, MemOperand(x19));
+    __ Add(x19, x19, 2);
   }
   for (int i = 15; i >= 0; i--) {
-    __ St2(v0.B(), v1.B(), i, MemOperand(x18, 2, PostIndex));
+    __ St2(v0.B(), v1.B(), i, MemOperand(x19, 2, PostIndex));
   }
   __ Ldr(q2, MemOperand(x17, 0 * 16));
   __ Ldr(q3, MemOperand(x17, 1 * 16));
@@ -4615,11 +4803,11 @@ TEST(neon_st2_lane) {
   // Test H stores with and without post index.
   __ Mov(x0, 4);
   for (int i = 7; i >= 0; i--) {
-    __ St2(v0.H(), v1.H(), i, MemOperand(x18));
-    __ Add(x18, x18, 4);
+    __ St2(v0.H(), v1.H(), i, MemOperand(x19));
+    __ Add(x19, x19, 4);
   }
   for (int i = 7; i >= 0; i--) {
-    __ St2(v0.H(), v1.H(), i, MemOperand(x18, x0, PostIndex));
+    __ St2(v0.H(), v1.H(), i, MemOperand(x19, x0, PostIndex));
   }
   __ Ldr(q6, MemOperand(x17, 4 * 16));
   __ Ldr(q7, MemOperand(x17, 5 * 16));
@@ -4628,11 +4816,11 @@ TEST(neon_st2_lane) {
 
   // Test S stores with and without post index.
   for (int i = 3; i >= 0; i--) {
-    __ St2(v0.S(), v1.S(), i, MemOperand(x18));
-    __ Add(x18, x18, 8);
+    __ St2(v0.S(), v1.S(), i, MemOperand(x19));
+    __ Add(x19, x19, 8);
   }
   for (int i = 3; i >= 0; i--) {
-    __ St2(v0.S(), v1.S(), i, MemOperand(x18, 8, PostIndex));
+    __ St2(v0.S(), v1.S(), i, MemOperand(x19, 8, PostIndex));
   }
   __ Ldr(q18, MemOperand(x17, 8 * 16));
   __ Ldr(q19, MemOperand(x17, 9 * 16));
@@ -4641,11 +4829,11 @@ TEST(neon_st2_lane) {
 
   // Test D stores with and without post index.
   __ Mov(x0, 16);
-  __ St2(v0.D(), v1.D(), 1, MemOperand(x18));
-  __ Add(x18, x18, 16);
-  __ St2(v0.D(), v1.D(), 0, MemOperand(x18, 16, PostIndex));
-  __ St2(v0.D(), v1.D(), 1, MemOperand(x18, x0, PostIndex));
-  __ St2(v0.D(), v1.D(), 0, MemOperand(x18, x0, PostIndex));
+  __ St2(v0.D(), v1.D(), 1, MemOperand(x19));
+  __ Add(x19, x19, 16);
+  __ St2(v0.D(), v1.D(), 0, MemOperand(x19, 16, PostIndex));
+  __ St2(v0.D(), v1.D(), 1, MemOperand(x19, x0, PostIndex));
+  __ St2(v0.D(), v1.D(), 0, MemOperand(x19, x0, PostIndex));
   __ Ldr(q22, MemOperand(x17, 12 * 16));
   __ Ldr(q23, MemOperand(x17, 13 * 16));
   __ Ldr(q24, MemOperand(x17, 14 * 16));
@@ -4686,18 +4874,18 @@ TEST(neon_st3_lane) {
 
   START();
   __ Mov(x17, dst_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x19, dst_base);
   __ Movi(v0.V2D(), 0x0001020304050607, 0x08090A0B0C0D0E0F);
   __ Movi(v1.V2D(), 0x1011121314151617, 0x18191A1B1C1D1E1F);
   __ Movi(v2.V2D(), 0x2021222324252627, 0x28292A2B2C2D2E2F);
 
   // Test B stores with and without post index.
   for (int i = 15; i >= 0; i--) {
-    __ St3(v0.B(), v1.B(), v2.B(), i, MemOperand(x18));
-    __ Add(x18, x18, 3);
+    __ St3(v0.B(), v1.B(), v2.B(), i, MemOperand(x19));
+    __ Add(x19, x19, 3);
   }
   for (int i = 15; i >= 0; i--) {
-    __ St3(v0.B(), v1.B(), v2.B(), i, MemOperand(x18, 3, PostIndex));
+    __ St3(v0.B(), v1.B(), v2.B(), i, MemOperand(x19, 3, PostIndex));
   }
   __ Ldr(q3, MemOperand(x17, 0 * 16));
   __ Ldr(q4, MemOperand(x17, 1 * 16));
@@ -4709,11 +4897,11 @@ TEST(neon_st3_lane) {
   // Test H stores with and without post index.
   __ Mov(x0, 6);
   for (int i = 7; i >= 0; i--) {
-    __ St3(v0.H(), v1.H(), v2.H(), i, MemOperand(x18));
-    __ Add(x18, x18, 6);
+    __ St3(v0.H(), v1.H(), v2.H(), i, MemOperand(x19));
+    __ Add(x19, x19, 6);
   }
   for (int i = 7; i >= 0; i--) {
-    __ St3(v0.H(), v1.H(), v2.H(), i, MemOperand(x18, x0, PostIndex));
+    __ St3(v0.H(), v1.H(), v2.H(), i, MemOperand(x19, x0, PostIndex));
   }
   __ Ldr(q17, MemOperand(x17, 6 * 16));
   __ Ldr(q18, MemOperand(x17, 7 * 16));
@@ -4724,11 +4912,11 @@ TEST(neon_st3_lane) {
 
   // Test S stores with and without post index.
   for (int i = 3; i >= 0; i--) {
-    __ St3(v0.S(), v1.S(), v2.S(), i, MemOperand(x18));
-    __ Add(x18, x18, 12);
+    __ St3(v0.S(), v1.S(), v2.S(), i, MemOperand(x19));
+    __ Add(x19, x19, 12);
   }
   for (int i = 3; i >= 0; i--) {
-    __ St3(v0.S(), v1.S(), v2.S(), i, MemOperand(x18, 12, PostIndex));
+    __ St3(v0.S(), v1.S(), v2.S(), i, MemOperand(x19, 12, PostIndex));
   }
   __ Ldr(q23, MemOperand(x17, 12 * 16));
   __ Ldr(q24, MemOperand(x17, 13 * 16));
@@ -4739,10 +4927,10 @@ TEST(neon_st3_lane) {
 
   // Test D stores with and without post index.
   __ Mov(x0, 24);
-  __ St3(v0.D(), v1.D(), v2.D(), 1, MemOperand(x18));
-  __ Add(x18, x18, 24);
-  __ St3(v0.D(), v1.D(), v2.D(), 0, MemOperand(x18, 24, PostIndex));
-  __ St3(v0.D(), v1.D(), v2.D(), 1, MemOperand(x18, x0, PostIndex));
+  __ St3(v0.D(), v1.D(), v2.D(), 1, MemOperand(x19));
+  __ Add(x19, x19, 24);
+  __ St3(v0.D(), v1.D(), v2.D(), 0, MemOperand(x19, 24, PostIndex));
+  __ St3(v0.D(), v1.D(), v2.D(), 1, MemOperand(x19, x0, PostIndex));
   __ Ldr(q29, MemOperand(x17, 18 * 16));
   __ Ldr(q30, MemOperand(x17, 19 * 16));
   __ Ldr(q31, MemOperand(x17, 20 * 16));
@@ -4783,7 +4971,7 @@ TEST(neon_st4_lane) {
 
   START();
   __ Mov(x17, dst_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x19, dst_base);
   __ Movi(v0.V2D(), 0x0001020304050607, 0x08090A0B0C0D0E0F);
   __ Movi(v1.V2D(), 0x1011121314151617, 0x18191A1B1C1D1E1F);
   __ Movi(v2.V2D(), 0x2021222324252627, 0x28292A2B2C2D2E2F);
@@ -4791,8 +4979,8 @@ TEST(neon_st4_lane) {
 
   // Test B stores without post index.
   for (int i = 15; i >= 0; i--) {
-    __ St4(v0.B(), v1.B(), v2.B(), v3.B(), i, MemOperand(x18));
-    __ Add(x18, x18, 4);
+    __ St4(v0.B(), v1.B(), v2.B(), v3.B(), i, MemOperand(x19));
+    __ Add(x19, x19, 4);
   }
   __ Ldr(q4, MemOperand(x17, 0 * 16));
   __ Ldr(q5, MemOperand(x17, 1 * 16));
@@ -4802,7 +4990,7 @@ TEST(neon_st4_lane) {
   // Test H stores with post index.
   __ Mov(x0, 8);
   for (int i = 7; i >= 0; i--) {
-    __ St4(v0.H(), v1.H(), v2.H(), v3.H(), i, MemOperand(x18, x0, PostIndex));
+    __ St4(v0.H(), v1.H(), v2.H(), v3.H(), i, MemOperand(x19, x0, PostIndex));
   }
   __ Ldr(q16, MemOperand(x17, 4 * 16));
   __ Ldr(q17, MemOperand(x17, 5 * 16));
@@ -4811,8 +4999,8 @@ TEST(neon_st4_lane) {
 
   // Test S stores without post index.
   for (int i = 3; i >= 0; i--) {
-    __ St4(v0.S(), v1.S(), v2.S(), v3.S(), i, MemOperand(x18));
-    __ Add(x18, x18, 16);
+    __ St4(v0.S(), v1.S(), v2.S(), v3.S(), i, MemOperand(x19));
+    __ Add(x19, x19, 16);
   }
   __ Ldr(q20, MemOperand(x17, 8 * 16));
   __ Ldr(q21, MemOperand(x17, 9 * 16));
@@ -4821,8 +5009,8 @@ TEST(neon_st4_lane) {
 
   // Test D stores with post index.
   __ Mov(x0, 32);
-  __ St4(v0.D(), v1.D(), v2.D(), v3.D(), 0, MemOperand(x18, 32, PostIndex));
-  __ St4(v0.D(), v1.D(), v2.D(), v3.D(), 1, MemOperand(x18, x0, PostIndex));
+  __ St4(v0.D(), v1.D(), v2.D(), v3.D(), 0, MemOperand(x19, 32, PostIndex));
+  __ St4(v0.D(), v1.D(), v2.D(), v3.D(), 1, MemOperand(x19, x0, PostIndex));
 
   __ Ldr(q24, MemOperand(x17, 12 * 16));
   __ Ldr(q25, MemOperand(x17, 13 * 16));
@@ -4865,7 +5053,7 @@ TEST(neon_ld1_lane_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Mov(x19, src_base);
   __ Mov(x20, src_base);
   __ Mov(x21, src_base);
@@ -4879,7 +5067,7 @@ TEST(neon_ld1_lane_postindex) {
   }
 
   for (int i = 7; i >= 0; i--) {
-    __ Ld1(v1.H(), i, MemOperand(x18, 2, PostIndex));
+    __ Ld1(v1.H(), i, MemOperand(x28, 2, PostIndex));
   }
 
   for (int i = 3; i >= 0; i--) {
@@ -4920,7 +5108,7 @@ TEST(neon_ld1_lane_postindex) {
   CHECK_EQUAL_128(0x0F0E0D0C03020100, 0x0706050403020100, q6);
   CHECK_EQUAL_128(0x0706050403020100, 0x0706050403020100, q7);
   CHECK_EQUAL_64(src_base + 16, x17);
-  CHECK_EQUAL_64(src_base + 16, x18);
+  CHECK_EQUAL_64(src_base + 16, x28);
   CHECK_EQUAL_64(src_base + 16, x19);
   CHECK_EQUAL_64(src_base + 16, x20);
   CHECK_EQUAL_64(src_base + 1, x21);
@@ -4941,28 +5129,28 @@ TEST(neon_st1_lane_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, -16);
+  __ Mov(x19, -16);
   __ Ldr(q0, MemOperand(x17));
 
   for (int i = 15; i >= 0; i--) {
     __ St1(v0.B(), i, MemOperand(x17, 1, PostIndex));
   }
-  __ Ldr(q1, MemOperand(x17, x18));
+  __ Ldr(q1, MemOperand(x17, x19));
 
   for (int i = 7; i >= 0; i--) {
     __ St1(v0.H(), i, MemOperand(x17, 2, PostIndex));
   }
-  __ Ldr(q2, MemOperand(x17, x18));
+  __ Ldr(q2, MemOperand(x17, x19));
 
   for (int i = 3; i >= 0; i--) {
     __ St1(v0.S(), i, MemOperand(x17, 4, PostIndex));
   }
-  __ Ldr(q3, MemOperand(x17, x18));
+  __ Ldr(q3, MemOperand(x17, x19));
 
   for (int i = 1; i >= 0; i--) {
     __ St1(v0.D(), i, MemOperand(x17, 8, PostIndex));
   }
-  __ Ldr(q4, MemOperand(x17, x18));
+  __ Ldr(q4, MemOperand(x17, x19));
 
   END();
 
@@ -5027,12 +5215,12 @@ TEST(neon_ld1_alllanes_postindex) {
 
   START();
   __ Mov(x17, src_base + 1);
-  __ Mov(x18, 1);
+  __ Mov(x19, 1);
   __ Ld1r(v0.V8B(), MemOperand(x17, 1, PostIndex));
-  __ Ld1r(v1.V16B(), MemOperand(x17, x18, PostIndex));
-  __ Ld1r(v2.V4H(), MemOperand(x17, x18, PostIndex));
+  __ Ld1r(v1.V16B(), MemOperand(x17, x19, PostIndex));
+  __ Ld1r(v2.V4H(), MemOperand(x17, x19, PostIndex));
   __ Ld1r(v3.V8H(), MemOperand(x17, 2, PostIndex));
-  __ Ld1r(v4.V2S(), MemOperand(x17, x18, PostIndex));
+  __ Ld1r(v4.V2S(), MemOperand(x17, x19, PostIndex));
   __ Ld1r(v5.V4S(), MemOperand(x17, 4, PostIndex));
   __ Ld1r(v6.V2D(), MemOperand(x17, 8, PostIndex));
   END();
@@ -5116,7 +5304,7 @@ TEST(neon_st1_d_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, -8);
+  __ Mov(x28, -8);
   __ Mov(x19, -16);
   __ Mov(x20, -24);
   __ Mov(x21, -32);
@@ -5127,7 +5315,7 @@ TEST(neon_st1_d_postindex) {
   __ Mov(x17, src_base);
 
   __ St1(v0.V8B(), MemOperand(x17, 8, PostIndex));
-  __ Ldr(d16, MemOperand(x17, x18));
+  __ Ldr(d16, MemOperand(x17, x28));
 
   __ St1(v0.V8B(), v1.V8B(), MemOperand(x17, 16, PostIndex));
   __ Ldr(q17, MemOperand(x17, x19));
@@ -5135,7 +5323,7 @@ TEST(neon_st1_d_postindex) {
   __ St1(v0.V4H(), v1.V4H(), v2.V4H(), MemOperand(x17, 24, PostIndex));
   __ Ldr(d18, MemOperand(x17, x20));
   __ Ldr(d19, MemOperand(x17, x19));
-  __ Ldr(d20, MemOperand(x17, x18));
+  __ Ldr(d20, MemOperand(x17, x28));
 
   __ St1(v0.V2S(), v1.V2S(), v2.V2S(), v3.V2S(),
          MemOperand(x17, 32, PostIndex));
@@ -5223,7 +5411,7 @@ TEST(neon_st1_q_postindex) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, -16);
+  __ Mov(x28, -16);
   __ Mov(x19, -32);
   __ Mov(x20, -48);
   __ Mov(x21, -64);
@@ -5233,23 +5421,23 @@ TEST(neon_st1_q_postindex) {
   __ Ldr(q3, MemOperand(x17, 16, PostIndex));
 
   __ St1(v0.V16B(), MemOperand(x17, 16, PostIndex));
-  __ Ldr(q16, MemOperand(x17, x18));
+  __ Ldr(q16, MemOperand(x17, x28));
 
   __ St1(v0.V8H(), v1.V8H(), MemOperand(x17, 32, PostIndex));
   __ Ldr(q17, MemOperand(x17, x19));
-  __ Ldr(q18, MemOperand(x17, x18));
+  __ Ldr(q18, MemOperand(x17, x28));
 
   __ St1(v0.V4S(), v1.V4S(), v2.V4S(), MemOperand(x17, 48, PostIndex));
   __ Ldr(q19, MemOperand(x17, x20));
   __ Ldr(q20, MemOperand(x17, x19));
-  __ Ldr(q21, MemOperand(x17, x18));
+  __ Ldr(q21, MemOperand(x17, x28));
 
   __ St1(v0.V2D(), v1.V2D(), v2.V2D(), v3.V2D(),
          MemOperand(x17, 64, PostIndex));
   __ Ldr(q22, MemOperand(x17, x21));
   __ Ldr(q23, MemOperand(x17, x20));
   __ Ldr(q24, MemOperand(x17, x19));
-  __ Ldr(q25, MemOperand(x17, x18));
+  __ Ldr(q25, MemOperand(x17, x28));
 
   END();
 
@@ -5279,15 +5467,15 @@ TEST(neon_st2_d) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
 
-  __ St2(v0.V8B(), v1.V8B(), MemOperand(x18));
-  __ Add(x18, x18, 22);
-  __ St2(v0.V4H(), v1.V4H(), MemOperand(x18));
-  __ Add(x18, x18, 11);
-  __ St2(v0.V2S(), v1.V2S(), MemOperand(x18));
+  __ St2(v0.V8B(), v1.V8B(), MemOperand(x19));
+  __ Add(x19, x19, 22);
+  __ St2(v0.V4H(), v1.V4H(), MemOperand(x19));
+  __ Add(x19, x19, 11);
+  __ St2(v0.V2S(), v1.V2S(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5318,13 +5506,13 @@ TEST(neon_st2_d_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
 
-  __ St2(v0.V8B(), v1.V8B(), MemOperand(x18, x22, PostIndex));
-  __ St2(v0.V4H(), v1.V4H(), MemOperand(x18, 16, PostIndex));
-  __ St2(v0.V2S(), v1.V2S(), MemOperand(x18));
+  __ St2(v0.V8B(), v1.V8B(), MemOperand(x19, x22, PostIndex));
+  __ St2(v0.V4H(), v1.V4H(), MemOperand(x19, 16, PostIndex));
+  __ St2(v0.V2S(), v1.V2S(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5352,17 +5540,17 @@ TEST(neon_st2_q) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
 
-  __ St2(v0.V16B(), v1.V16B(), MemOperand(x18));
-  __ Add(x18, x18, 8);
-  __ St2(v0.V8H(), v1.V8H(), MemOperand(x18));
-  __ Add(x18, x18, 22);
-  __ St2(v0.V4S(), v1.V4S(), MemOperand(x18));
-  __ Add(x18, x18, 2);
-  __ St2(v0.V2D(), v1.V2D(), MemOperand(x18));
+  __ St2(v0.V16B(), v1.V16B(), MemOperand(x19));
+  __ Add(x19, x19, 8);
+  __ St2(v0.V8H(), v1.V8H(), MemOperand(x19));
+  __ Add(x19, x19, 22);
+  __ St2(v0.V4S(), v1.V4S(), MemOperand(x19));
+  __ Add(x19, x19, 2);
+  __ St2(v0.V2D(), v1.V2D(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5393,14 +5581,14 @@ TEST(neon_st2_q_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
 
-  __ St2(v0.V16B(), v1.V16B(), MemOperand(x18, x22, PostIndex));
-  __ St2(v0.V8H(), v1.V8H(), MemOperand(x18, 32, PostIndex));
-  __ St2(v0.V4S(), v1.V4S(), MemOperand(x18, x22, PostIndex));
-  __ St2(v0.V2D(), v1.V2D(), MemOperand(x18));
+  __ St2(v0.V16B(), v1.V16B(), MemOperand(x19, x22, PostIndex));
+  __ St2(v0.V8H(), v1.V8H(), MemOperand(x19, 32, PostIndex));
+  __ St2(v0.V4S(), v1.V4S(), MemOperand(x19, x22, PostIndex));
+  __ St2(v0.V2D(), v1.V2D(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5432,16 +5620,16 @@ TEST(neon_st3_d) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
 
-  __ St3(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x18));
-  __ Add(x18, x18, 3);
-  __ St3(v0.V4H(), v1.V4H(), v2.V4H(), MemOperand(x18));
-  __ Add(x18, x18, 2);
-  __ St3(v0.V2S(), v1.V2S(), v2.V2S(), MemOperand(x18));
+  __ St3(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x19));
+  __ Add(x19, x19, 3);
+  __ St3(v0.V4H(), v1.V4H(), v2.V4H(), MemOperand(x19));
+  __ Add(x19, x19, 2);
+  __ St3(v0.V2S(), v1.V2S(), v2.V2S(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5468,14 +5656,14 @@ TEST(neon_st3_d_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
 
-  __ St3(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x18, x22, PostIndex));
-  __ St3(v0.V4H(), v1.V4H(), v2.V4H(), MemOperand(x18, 24, PostIndex));
-  __ St3(v0.V2S(), v1.V2S(), v2.V2S(), MemOperand(x18));
+  __ St3(v0.V8B(), v1.V8B(), v2.V8B(), MemOperand(x19, x22, PostIndex));
+  __ St3(v0.V4H(), v1.V4H(), v2.V4H(), MemOperand(x19, 24, PostIndex));
+  __ St3(v0.V2S(), v1.V2S(), v2.V2S(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5505,18 +5693,18 @@ TEST(neon_st3_q) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
 
-  __ St3(v0.V16B(), v1.V16B(), v2.V16B(), MemOperand(x18));
-  __ Add(x18, x18, 5);
-  __ St3(v0.V8H(), v1.V8H(), v2.V8H(), MemOperand(x18));
-  __ Add(x18, x18, 12);
-  __ St3(v0.V4S(), v1.V4S(), v2.V4S(), MemOperand(x18));
-  __ Add(x18, x18, 22);
-  __ St3(v0.V2D(), v1.V2D(), v2.V2D(), MemOperand(x18));
+  __ St3(v0.V16B(), v1.V16B(), v2.V16B(), MemOperand(x19));
+  __ Add(x19, x19, 5);
+  __ St3(v0.V8H(), v1.V8H(), v2.V8H(), MemOperand(x19));
+  __ Add(x19, x19, 12);
+  __ St3(v0.V4S(), v1.V4S(), v2.V4S(), MemOperand(x19));
+  __ Add(x19, x19, 22);
+  __ St3(v0.V2D(), v1.V2D(), v2.V2D(), MemOperand(x19));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5551,15 +5739,15 @@ TEST(neon_st3_q_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
 
-  __ St3(v0.V16B(), v1.V16B(), v2.V16B(), MemOperand(x18, x22, PostIndex));
-  __ St3(v0.V8H(), v1.V8H(), v2.V8H(), MemOperand(x18, 48, PostIndex));
-  __ St3(v0.V4S(), v1.V4S(), v2.V4S(), MemOperand(x18, x22, PostIndex));
-  __ St3(v0.V2D(), v1.V2D(), v2.V2D(), MemOperand(x18));
+  __ St3(v0.V16B(), v1.V16B(), v2.V16B(), MemOperand(x28, x22, PostIndex));
+  __ St3(v0.V8H(), v1.V8H(), v2.V8H(), MemOperand(x28, 48, PostIndex));
+  __ St3(v0.V4S(), v1.V4S(), v2.V4S(), MemOperand(x28, x22, PostIndex));
+  __ St3(v0.V2D(), v1.V2D(), v2.V2D(), MemOperand(x28));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5595,17 +5783,17 @@ TEST(neon_st4_d) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
   __ Ldr(q3, MemOperand(x17, 16, PostIndex));
 
-  __ St4(v0.V8B(), v1.V8B(), v2.V8B(), v3.V8B(), MemOperand(x18));
-  __ Add(x18, x18, 12);
-  __ St4(v0.V4H(), v1.V4H(), v2.V4H(), v3.V4H(), MemOperand(x18));
-  __ Add(x18, x18, 15);
-  __ St4(v0.V2S(), v1.V2S(), v2.V2S(), v3.V2S(), MemOperand(x18));
+  __ St4(v0.V8B(), v1.V8B(), v2.V8B(), v3.V8B(), MemOperand(x28));
+  __ Add(x28, x28, 12);
+  __ St4(v0.V4H(), v1.V4H(), v2.V4H(), v3.V4H(), MemOperand(x28));
+  __ Add(x28, x28, 15);
+  __ St4(v0.V2S(), v1.V2S(), v2.V2S(), v3.V2S(), MemOperand(x28));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5636,17 +5824,17 @@ TEST(neon_st4_d_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
   __ Ldr(q3, MemOperand(x17, 16, PostIndex));
 
   __ St4(v0.V8B(), v1.V8B(), v2.V8B(), v3.V8B(),
-         MemOperand(x18, x22, PostIndex));
+         MemOperand(x28, x22, PostIndex));
   __ St4(v0.V4H(), v1.V4H(), v2.V4H(), v3.V4H(),
-         MemOperand(x18, 32, PostIndex));
-  __ St4(v0.V2S(), v1.V2S(), v2.V2S(), v3.V2S(), MemOperand(x18));
+         MemOperand(x28, 32, PostIndex));
+  __ St4(v0.V2S(), v1.V2S(), v2.V2S(), v3.V2S(), MemOperand(x28));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5678,20 +5866,20 @@ TEST(neon_st4_q) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
   __ Ldr(q3, MemOperand(x17, 16, PostIndex));
 
-  __ St4(v0.V16B(), v1.V16B(), v2.V16B(), v3.V16B(), MemOperand(x18));
-  __ Add(x18, x18, 5);
-  __ St4(v0.V8H(), v1.V8H(), v2.V8H(), v3.V8H(), MemOperand(x18));
-  __ Add(x18, x18, 12);
-  __ St4(v0.V4S(), v1.V4S(), v2.V4S(), v3.V4S(), MemOperand(x18));
-  __ Add(x18, x18, 22);
-  __ St4(v0.V2D(), v1.V2D(), v2.V2D(), v3.V2D(), MemOperand(x18));
-  __ Add(x18, x18, 10);
+  __ St4(v0.V16B(), v1.V16B(), v2.V16B(), v3.V16B(), MemOperand(x28));
+  __ Add(x28, x28, 5);
+  __ St4(v0.V8H(), v1.V8H(), v2.V8H(), v3.V8H(), MemOperand(x28));
+  __ Add(x28, x28, 12);
+  __ St4(v0.V4S(), v1.V4S(), v2.V4S(), v3.V4S(), MemOperand(x28));
+  __ Add(x28, x28, 22);
+  __ St4(v0.V2D(), v1.V2D(), v2.V2D(), v3.V2D(), MemOperand(x28));
+  __ Add(x28, x28, 10);
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -5728,19 +5916,19 @@ TEST(neon_st4_q_postindex) {
   START();
   __ Mov(x22, 5);
   __ Mov(x17, src_base);
-  __ Mov(x18, src_base);
+  __ Mov(x28, src_base);
   __ Ldr(q0, MemOperand(x17, 16, PostIndex));
   __ Ldr(q1, MemOperand(x17, 16, PostIndex));
   __ Ldr(q2, MemOperand(x17, 16, PostIndex));
   __ Ldr(q3, MemOperand(x17, 16, PostIndex));
 
   __ St4(v0.V16B(), v1.V16B(), v2.V16B(), v3.V16B(),
-         MemOperand(x18, x22, PostIndex));
+         MemOperand(x28, x22, PostIndex));
   __ St4(v0.V8H(), v1.V8H(), v2.V8H(), v3.V8H(),
-         MemOperand(x18, 64, PostIndex));
+         MemOperand(x28, 64, PostIndex));
   __ St4(v0.V4S(), v1.V4S(), v2.V4S(), v3.V4S(),
-         MemOperand(x18, x22, PostIndex));
-  __ St4(v0.V2D(), v1.V2D(), v2.V2D(), v3.V2D(), MemOperand(x18));
+         MemOperand(x28, x22, PostIndex));
+  __ St4(v0.V2D(), v1.V2D(), v2.V2D(), v3.V2D(), MemOperand(x28));
 
   __ Mov(x19, src_base);
   __ Ldr(q0, MemOperand(x19, 16, PostIndex));
@@ -6065,13 +6253,13 @@ TEST(ldp_stp_offset) {
   START();
   __ Mov(x16, src_base);
   __ Mov(x17, dst_base);
-  __ Mov(x18, src_base + 24);
+  __ Mov(x28, src_base + 24);
   __ Mov(x19, dst_base + 56);
   __ Ldp(w0, w1, MemOperand(x16));
   __ Ldp(w2, w3, MemOperand(x16, 4));
   __ Ldp(x4, x5, MemOperand(x16, 8));
-  __ Ldp(w6, w7, MemOperand(x18, -12));
-  __ Ldp(x8, x9, MemOperand(x18, -16));
+  __ Ldp(w6, w7, MemOperand(x28, -12));
+  __ Ldp(x8, x9, MemOperand(x28, -16));
   __ Stp(w0, w1, MemOperand(x17));
   __ Stp(w2, w3, MemOperand(x17, 8));
   __ Stp(x4, x5, MemOperand(x17, 16));
@@ -6100,7 +6288,7 @@ TEST(ldp_stp_offset) {
   CHECK_EQUAL_64(0xFFEEDDCCBBAA9988UL, dst[6]);
   CHECK_EQUAL_64(src_base, x16);
   CHECK_EQUAL_64(dst_base, x17);
-  CHECK_EQUAL_64(src_base + 24, x18);
+  CHECK_EQUAL_64(src_base + 24, x28);
   CHECK_EQUAL_64(dst_base + 56, x19);
 }
 
@@ -6120,13 +6308,13 @@ TEST(ldp_stp_offset_wide) {
   START();
   __ Mov(x20, src_base - base_offset);
   __ Mov(x21, dst_base - base_offset);
-  __ Mov(x18, src_base + base_offset + 24);
+  __ Mov(x28, src_base + base_offset + 24);
   __ Mov(x19, dst_base + base_offset + 56);
   __ Ldp(w0, w1, MemOperand(x20, base_offset));
   __ Ldp(w2, w3, MemOperand(x20, base_offset + 4));
   __ Ldp(x4, x5, MemOperand(x20, base_offset + 8));
-  __ Ldp(w6, w7, MemOperand(x18, -12 - base_offset));
-  __ Ldp(x8, x9, MemOperand(x18, -16 - base_offset));
+  __ Ldp(w6, w7, MemOperand(x28, -12 - base_offset));
+  __ Ldp(x8, x9, MemOperand(x28, -16 - base_offset));
   __ Stp(w0, w1, MemOperand(x21, base_offset));
   __ Stp(w2, w3, MemOperand(x21, base_offset + 8));
   __ Stp(x4, x5, MemOperand(x21, base_offset + 16));
@@ -6155,7 +6343,7 @@ TEST(ldp_stp_offset_wide) {
   CHECK_EQUAL_64(0xFFEEDDCCBBAA9988UL, dst[6]);
   CHECK_EQUAL_64(src_base - base_offset, x20);
   CHECK_EQUAL_64(dst_base - base_offset, x21);
-  CHECK_EQUAL_64(src_base + base_offset + 24, x18);
+  CHECK_EQUAL_64(src_base + base_offset + 24, x28);
   CHECK_EQUAL_64(dst_base + base_offset + 56, x19);
 }
 
@@ -6172,7 +6360,7 @@ TEST(ldp_stp_preindex) {
   START();
   __ Mov(x16, src_base);
   __ Mov(x17, dst_base);
-  __ Mov(x18, dst_base + 16);
+  __ Mov(x28, dst_base + 16);
   __ Ldp(w0, w1, MemOperand(x16, 4, PreIndex));
   __ Mov(x19, x16);
   __ Ldp(w2, w3, MemOperand(x16, -4, PreIndex));
@@ -6182,9 +6370,9 @@ TEST(ldp_stp_preindex) {
   __ Ldp(x4, x5, MemOperand(x16, 8, PreIndex));
   __ Mov(x21, x16);
   __ Ldp(x6, x7, MemOperand(x16, -8, PreIndex));
-  __ Stp(x7, x6, MemOperand(x18, 8, PreIndex));
-  __ Mov(x22, x18);
-  __ Stp(x5, x4, MemOperand(x18, -8, PreIndex));
+  __ Stp(x7, x6, MemOperand(x28, 8, PreIndex));
+  __ Mov(x22, x28);
+  __ Stp(x5, x4, MemOperand(x28, -8, PreIndex));
   END();
 
   RUN();
@@ -6204,7 +6392,7 @@ TEST(ldp_stp_preindex) {
   CHECK_EQUAL_64(0x0011223344556677UL, dst[4]);
   CHECK_EQUAL_64(src_base, x16);
   CHECK_EQUAL_64(dst_base, x17);
-  CHECK_EQUAL_64(dst_base + 16, x18);
+  CHECK_EQUAL_64(dst_base + 16, x28);
   CHECK_EQUAL_64(src_base + 4, x19);
   CHECK_EQUAL_64(dst_base + 4, x20);
   CHECK_EQUAL_64(src_base + 8, x21);
@@ -6227,7 +6415,7 @@ TEST(ldp_stp_preindex_wide) {
   START();
   __ Mov(x24, src_base - base_offset);
   __ Mov(x25, dst_base + base_offset);
-  __ Mov(x18, dst_base + base_offset + 16);
+  __ Mov(x28, dst_base + base_offset + 16);
   __ Ldp(w0, w1, MemOperand(x24, base_offset + 4, PreIndex));
   __ Mov(x19, x24);
   __ Mov(x24, src_base - base_offset + 4);
@@ -6241,10 +6429,10 @@ TEST(ldp_stp_preindex_wide) {
   __ Mov(x21, x24);
   __ Mov(x24, src_base - base_offset + 8);
   __ Ldp(x6, x7, MemOperand(x24, base_offset - 8, PreIndex));
-  __ Stp(x7, x6, MemOperand(x18, 8 - base_offset, PreIndex));
-  __ Mov(x22, x18);
-  __ Mov(x18, dst_base + base_offset + 16 + 8);
-  __ Stp(x5, x4, MemOperand(x18, -8 - base_offset, PreIndex));
+  __ Stp(x7, x6, MemOperand(x28, 8 - base_offset, PreIndex));
+  __ Mov(x22, x28);
+  __ Mov(x28, dst_base + base_offset + 16 + 8);
+  __ Stp(x5, x4, MemOperand(x28, -8 - base_offset, PreIndex));
   END();
 
   RUN();
@@ -6264,7 +6452,7 @@ TEST(ldp_stp_preindex_wide) {
   CHECK_EQUAL_64(0x0011223344556677UL, dst[4]);
   CHECK_EQUAL_64(src_base, x24);
   CHECK_EQUAL_64(dst_base, x25);
-  CHECK_EQUAL_64(dst_base + 16, x18);
+  CHECK_EQUAL_64(dst_base + 16, x28);
   CHECK_EQUAL_64(src_base + 4, x19);
   CHECK_EQUAL_64(dst_base + 4, x20);
   CHECK_EQUAL_64(src_base + 8, x21);
@@ -6284,7 +6472,7 @@ TEST(ldp_stp_postindex) {
   START();
   __ Mov(x16, src_base);
   __ Mov(x17, dst_base);
-  __ Mov(x18, dst_base + 16);
+  __ Mov(x28, dst_base + 16);
   __ Ldp(w0, w1, MemOperand(x16, 4, PostIndex));
   __ Mov(x19, x16);
   __ Ldp(w2, w3, MemOperand(x16, -4, PostIndex));
@@ -6294,9 +6482,9 @@ TEST(ldp_stp_postindex) {
   __ Ldp(x4, x5, MemOperand(x16, 8, PostIndex));
   __ Mov(x21, x16);
   __ Ldp(x6, x7, MemOperand(x16, -8, PostIndex));
-  __ Stp(x7, x6, MemOperand(x18, 8, PostIndex));
-  __ Mov(x22, x18);
-  __ Stp(x5, x4, MemOperand(x18, -8, PostIndex));
+  __ Stp(x7, x6, MemOperand(x28, 8, PostIndex));
+  __ Mov(x22, x28);
+  __ Stp(x5, x4, MemOperand(x28, -8, PostIndex));
   END();
 
   RUN();
@@ -6316,7 +6504,7 @@ TEST(ldp_stp_postindex) {
   CHECK_EQUAL_64(0x0011223344556677UL, dst[4]);
   CHECK_EQUAL_64(src_base, x16);
   CHECK_EQUAL_64(dst_base, x17);
-  CHECK_EQUAL_64(dst_base + 16, x18);
+  CHECK_EQUAL_64(dst_base + 16, x28);
   CHECK_EQUAL_64(src_base + 4, x19);
   CHECK_EQUAL_64(dst_base + 4, x20);
   CHECK_EQUAL_64(src_base + 8, x21);
@@ -6339,7 +6527,7 @@ TEST(ldp_stp_postindex_wide) {
   START();
   __ Mov(x24, src_base);
   __ Mov(x25, dst_base);
-  __ Mov(x18, dst_base + 16);
+  __ Mov(x28, dst_base + 16);
   __ Ldp(w0, w1, MemOperand(x24, base_offset + 4, PostIndex));
   __ Mov(x19, x24);
   __ Sub(x24, x24, base_offset);
@@ -6353,10 +6541,10 @@ TEST(ldp_stp_postindex_wide) {
   __ Mov(x21, x24);
   __ Sub(x24, x24, base_offset);
   __ Ldp(x6, x7, MemOperand(x24, base_offset - 8, PostIndex));
-  __ Stp(x7, x6, MemOperand(x18, 8 - base_offset, PostIndex));
-  __ Mov(x22, x18);
-  __ Add(x18, x18, base_offset);
-  __ Stp(x5, x4, MemOperand(x18, -8 - base_offset, PostIndex));
+  __ Stp(x7, x6, MemOperand(x28, 8 - base_offset, PostIndex));
+  __ Mov(x22, x28);
+  __ Add(x28, x28, base_offset);
+  __ Stp(x5, x4, MemOperand(x28, -8 - base_offset, PostIndex));
   END();
 
   RUN();
@@ -6376,7 +6564,7 @@ TEST(ldp_stp_postindex_wide) {
   CHECK_EQUAL_64(0x0011223344556677UL, dst[4]);
   CHECK_EQUAL_64(src_base + base_offset, x24);
   CHECK_EQUAL_64(dst_base - base_offset, x25);
-  CHECK_EQUAL_64(dst_base - base_offset + 16, x18);
+  CHECK_EQUAL_64(dst_base - base_offset + 16, x28);
   CHECK_EQUAL_64(src_base + base_offset + 4, x19);
   CHECK_EQUAL_64(dst_base - base_offset + 4, x20);
   CHECK_EQUAL_64(src_base + base_offset + 8, x21);
@@ -6412,14 +6600,14 @@ TEST(ldur_stur) {
 
   START();
   __ Mov(x17, src_base);
-  __ Mov(x18, dst_base);
+  __ Mov(x28, dst_base);
   __ Mov(x19, src_base + 16);
   __ Mov(x20, dst_base + 32);
   __ Mov(x21, dst_base + 40);
   __ Ldr(w0, MemOperand(x17, 1));
-  __ Str(w0, MemOperand(x18, 2));
+  __ Str(w0, MemOperand(x28, 2));
   __ Ldr(x1, MemOperand(x17, 3));
-  __ Str(x1, MemOperand(x18, 9));
+  __ Str(x1, MemOperand(x28, 9));
   __ Ldr(w2, MemOperand(x19, -9));
   __ Str(w2, MemOperand(x20, -5));
   __ Ldrb(w3, MemOperand(x19, -1));
@@ -6438,20 +6626,10 @@ TEST(ldur_stur) {
   CHECK_EQUAL_64(0x00000001, x3);
   CHECK_EQUAL_64(0x0100000000000000L, dst[4]);
   CHECK_EQUAL_64(src_base, x17);
-  CHECK_EQUAL_64(dst_base, x18);
+  CHECK_EQUAL_64(dst_base, x28);
   CHECK_EQUAL_64(src_base + 16, x19);
   CHECK_EQUAL_64(dst_base + 32, x20);
 }
-
-namespace {
-
-void LoadLiteral(MacroAssembler* masm, Register reg, uint64_t imm) {
-  // Since we do not allow non-relocatable entries in the literal pool, we need
-  // to fake a relocation mode that is not NONE here.
-  masm->Ldr(reg, Immediate(imm, RelocInfo::EMBEDDED_OBJECT));
-}
-
-}  // namespace
 
 TEST(ldr_pcrel_large_offset) {
   INIT_V8();
@@ -6459,7 +6637,7 @@ TEST(ldr_pcrel_large_offset) {
 
   START();
 
-  LoadLiteral(&masm, x1, 0x1234567890ABCDEFUL);
+  __ Ldr(x1, isolate->factory()->undefined_value());
 
   {
     v8::internal::PatchingAssembler::BlockPoolsScope scope(&masm);
@@ -6469,14 +6647,14 @@ TEST(ldr_pcrel_large_offset) {
     }
   }
 
-  LoadLiteral(&masm, x2, 0x1234567890ABCDEFUL);
+  __ Ldr(x2, isolate->factory()->undefined_value());
 
   END();
 
   RUN();
 
-  CHECK_EQUAL_64(0x1234567890ABCDEFUL, x1);
-  CHECK_EQUAL_64(0x1234567890ABCDEFUL, x2);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->undefined_value(), x1);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->undefined_value(), x2);
 }
 
 TEST(ldr_literal) {
@@ -6484,132 +6662,155 @@ TEST(ldr_literal) {
   SETUP();
 
   START();
-  LoadLiteral(&masm, x2, 0x1234567890ABCDEFUL);
+  __ Ldr(x2, isolate->factory()->undefined_value());
 
   END();
 
   RUN();
 
-  CHECK_EQUAL_64(0x1234567890ABCDEFUL, x2);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->undefined_value(), x2);
 }
 
 #ifdef DEBUG
 // These tests rely on functions available in debug mode.
 enum LiteralPoolEmitOutcome { EmitExpected, NoEmitExpected };
+enum LiteralPoolEmissionAlignment { EmitAtUnaligned, EmitAtAligned };
 
-static void LdrLiteralRangeHelper(size_t range, LiteralPoolEmitOutcome outcome,
-                                  size_t prepadding = 0) {
+static void LdrLiteralRangeHelper(
+    size_t range, LiteralPoolEmitOutcome outcome,
+    LiteralPoolEmissionAlignment unaligned_emission) {
   SETUP_SIZE(static_cast<int>(range + 1024));
 
-  size_t code_size = 0;
-  const size_t pool_entries = 2;
-  const size_t kEntrySize = 8;
+  const size_t first_pool_entries = 2;
+  const size_t first_pool_size_bytes = first_pool_entries * kInt64Size;
 
   START();
   // Force a pool dump so the pool starts off empty.
-  __ CheckConstPool(true, true);
+  __ ForceConstantPoolEmissionWithJump();
   CHECK_CONSTANT_POOL_SIZE(0);
 
-  // Emit prepadding to influence alignment of the pool; we don't count this
-  // into code size.
-  for (size_t i = 0; i < prepadding; ++i) __ Nop();
+  // Emit prepadding to influence alignment of the pool.
+  bool currently_aligned = IsAligned(__ pc_offset(), kInt64Size);
+  if ((unaligned_emission == EmitAtUnaligned && currently_aligned) ||
+      (unaligned_emission == EmitAtAligned && !currently_aligned)) {
+    __ Nop();
+  }
 
-  LoadLiteral(&masm, x0, 0x1234567890ABCDEFUL);
-  LoadLiteral(&masm, x1, 0xABCDEF1234567890UL);
-  code_size += 2 * kInstrSize;
-  CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
+  int initial_pc_offset = __ pc_offset();
+  __ Ldr(x0, isolate->factory()->undefined_value());
+  __ Ldr(x1, isolate->factory()->the_hole_value());
+  CHECK_CONSTANT_POOL_SIZE(first_pool_size_bytes);
 
-  // Check that the requested range (allowing space for a branch over the pool)
-  // can be handled by this test.
-  CHECK_LE(code_size, range);
+  size_t expected_pool_size = 0;
 
-#if defined(_M_ARM64) && !defined(__clang__)
-  auto PoolSizeAt = [pool_entries, kEntrySize](int pc_offset) {
-#else
-  auto PoolSizeAt = [](int pc_offset) {
-#endif
+  auto PoolSizeAt = [&](int pc_offset) {
     // To determine padding, consider the size of the prologue of the pool,
     // and the jump around the pool, which we always need.
     size_t prologue_size = 2 * kInstrSize + kInstrSize;
     size_t pc = pc_offset + prologue_size;
-    const size_t padding = IsAligned(pc, 8) ? 0 : 4;
-    return prologue_size + pool_entries * kEntrySize + padding;
+    const size_t padding = IsAligned(pc, kInt64Size) ? 0 : kInt32Size;
+    CHECK_EQ(padding == 0, unaligned_emission == EmitAtAligned);
+    return prologue_size + first_pool_size_bytes + padding;
   };
 
   int pc_offset_before_emission = -1;
-  // Emit NOPs up to 'range'.
-  while (code_size < range) {
+  bool pool_was_emitted = false;
+  while (__ pc_offset() - initial_pc_offset < static_cast<intptr_t>(range)) {
     pc_offset_before_emission = __ pc_offset() + kInstrSize;
     __ Nop();
-    code_size += kInstrSize;
+    if (__ GetConstantPoolEntriesSizeForTesting() == 0) {
+      pool_was_emitted = true;
+      break;
+    }
   }
-  CHECK_EQ(code_size, range);
 
   if (outcome == EmitExpected) {
-    CHECK_CONSTANT_POOL_SIZE(0);
+    if (!pool_was_emitted) {
+      FATAL(
+          "Pool was not emitted up to pc_offset %d which corresponds to a "
+          "distance to the first constant of %d bytes",
+          __ pc_offset(), __ pc_offset() - initial_pc_offset);
+    }
     // Check that the size of the emitted constant pool is as expected.
-    size_t pool_size = PoolSizeAt(pc_offset_before_emission);
-    CHECK_EQ(pc_offset_before_emission + pool_size, __ pc_offset());
-    byte* pool_start = buf + pc_offset_before_emission;
-    Instruction* branch = reinterpret_cast<Instruction*>(pool_start);
-    CHECK(branch->IsImmBranch());
-    CHECK_EQ(pool_size, branch->ImmPCOffset());
-    Instruction* marker =
-        reinterpret_cast<Instruction*>(pool_start + kInstrSize);
-    CHECK(marker->IsLdrLiteralX());
-    const size_t padding =
-        IsAligned(pc_offset_before_emission + kInstrSize, kEntrySize) ? 0 : 1;
-    CHECK_EQ(pool_entries * 2 + 1 + padding, marker->ImmLLiteral());
-
+    expected_pool_size = PoolSizeAt(pc_offset_before_emission);
+    CHECK_EQ(pc_offset_before_emission + expected_pool_size, __ pc_offset());
   } else {
     CHECK_EQ(outcome, NoEmitExpected);
-    CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
+    if (pool_was_emitted) {
+      FATAL("Pool was unexpectedly emitted at pc_offset %d ",
+            pc_offset_before_emission);
+    }
+    CHECK_CONSTANT_POOL_SIZE(first_pool_size_bytes);
     CHECK_EQ(pc_offset_before_emission, __ pc_offset());
   }
 
   // Force a pool flush to check that a second pool functions correctly.
-  __ CheckConstPool(true, true);
+  __ ForceConstantPoolEmissionWithJump();
   CHECK_CONSTANT_POOL_SIZE(0);
 
   // These loads should be after the pool (and will require a new one).
-  LoadLiteral(&masm, x4, 0x34567890ABCDEF12UL);
-  LoadLiteral(&masm, x5, 0xABCDEF0123456789UL);
-  CHECK_CONSTANT_POOL_SIZE(pool_entries * kEntrySize);
+  const int second_pool_entries = 2;
+  __ Ldr(x4, isolate->factory()->true_value());
+  __ Ldr(x5, isolate->factory()->false_value());
+  CHECK_CONSTANT_POOL_SIZE(second_pool_entries * kInt64Size);
+
   END();
+
+  if (outcome == EmitExpected) {
+    Address pool_start = code->InstructionStart() + pc_offset_before_emission;
+    Instruction* branch = reinterpret_cast<Instruction*>(pool_start);
+    CHECK(branch->IsImmBranch());
+    CHECK_EQ(expected_pool_size, branch->ImmPCOffset());
+    Instruction* marker =
+        reinterpret_cast<Instruction*>(pool_start + kInstrSize);
+    CHECK(marker->IsLdrLiteralX());
+    size_t pool_data_start_offset = pc_offset_before_emission + kInstrSize;
+    size_t padding =
+        IsAligned(pool_data_start_offset, kInt64Size) ? 0 : kInt32Size;
+    size_t marker_size = kInstrSize;
+    CHECK_EQ((first_pool_size_bytes + marker_size + padding) / kInt32Size,
+             marker->ImmLLiteral());
+  }
 
   RUN();
 
   // Check that the literals loaded correctly.
-  CHECK_EQUAL_64(0x1234567890ABCDEFUL, x0);
-  CHECK_EQUAL_64(0xABCDEF1234567890UL, x1);
-  CHECK_EQUAL_64(0x34567890ABCDEF12UL, x4);
-  CHECK_EQUAL_64(0xABCDEF0123456789UL, x5);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->undefined_value(), x0);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->the_hole_value(), x1);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->true_value(), x4);
+  CHECK_FULL_HEAP_OBJECT_IN_REGISTER(isolate->factory()->false_value(), x5);
 }
 
 TEST(ldr_literal_range_max_dist_emission_1) {
   INIT_V8();
-  LdrLiteralRangeHelper(MacroAssembler::GetApproxMaxDistToConstPoolForTesting(),
-                        EmitExpected);
+  LdrLiteralRangeHelper(
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() +
+          MacroAssembler::GetCheckConstPoolIntervalForTesting(),
+      EmitExpected, EmitAtAligned);
 }
 
 TEST(ldr_literal_range_max_dist_emission_2) {
   INIT_V8();
-  LdrLiteralRangeHelper(MacroAssembler::GetApproxMaxDistToConstPoolForTesting(),
-                        EmitExpected, 1);
+  LdrLiteralRangeHelper(
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() +
+          MacroAssembler::GetCheckConstPoolIntervalForTesting(),
+      EmitExpected, EmitAtUnaligned);
 }
 
 TEST(ldr_literal_range_max_dist_no_emission_1) {
   INIT_V8();
   LdrLiteralRangeHelper(
-      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() - kInstrSize,
-      NoEmitExpected);
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() -
+          MacroAssembler::GetCheckConstPoolIntervalForTesting(),
+      NoEmitExpected, EmitAtUnaligned);
 }
 
 TEST(ldr_literal_range_max_dist_no_emission_2) {
   INIT_V8();
   LdrLiteralRangeHelper(
-      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() - kInstrSize,
-      NoEmitExpected, 1);
+      MacroAssembler::GetApproxMaxDistToConstPoolForTesting() -
+          MacroAssembler::GetCheckConstPoolIntervalForTesting(),
+      NoEmitExpected, EmitAtAligned);
 }
 
 #endif
@@ -6682,7 +6883,7 @@ TEST(add_sub_wide_imm) {
   __ Add(w12, w0, Operand(0x12345678));
   __ Add(w13, w1, Operand(0xFFFFFFFF));
 
-  __ Add(w18, w0, Operand(kWMinInt));
+  __ Add(w28, w0, Operand(kWMinInt));
   __ Sub(w19, w0, Operand(kWMinInt));
 
   __ Sub(x20, x0, Operand(0x1234567890ABCDEFUL));
@@ -6697,7 +6898,7 @@ TEST(add_sub_wide_imm) {
   CHECK_EQUAL_32(0x12345678, w12);
   CHECK_EQUAL_64(0x0, x13);
 
-  CHECK_EQUAL_32(kWMinInt, w18);
+  CHECK_EQUAL_32(kWMinInt, w28);
   CHECK_EQUAL_32(kWMinInt, w19);
 
   CHECK_EQUAL_64(-0x1234567890ABCDEFLL, x20);
@@ -6720,7 +6921,7 @@ TEST(add_sub_shifted) {
   __ Add(x13, x0, Operand(x1, ASR, 8));
   __ Add(x14, x0, Operand(x2, ASR, 8));
   __ Add(w15, w0, Operand(w1, ASR, 8));
-  __ Add(w18, w3, Operand(w1, ROR, 8));
+  __ Add(w28, w3, Operand(w1, ROR, 8));
   __ Add(x19, x3, Operand(x1, ROR, 8));
 
   __ Sub(x20, x3, Operand(x2));
@@ -6741,7 +6942,7 @@ TEST(add_sub_shifted) {
   CHECK_EQUAL_64(0x000123456789ABCDL, x13);
   CHECK_EQUAL_64(0xFFFEDCBA98765432L, x14);
   CHECK_EQUAL_64(0xFF89ABCD, x15);
-  CHECK_EQUAL_64(0xEF89ABCC, x18);
+  CHECK_EQUAL_64(0xEF89ABCC, x28);
   CHECK_EQUAL_64(0xEF0123456789ABCCL, x19);
 
   CHECK_EQUAL_64(0x0123456789ABCDEFL, x20);
@@ -6773,7 +6974,7 @@ TEST(add_sub_extended) {
   __ Add(x15, x0, Operand(x1, SXTB, 1));
   __ Add(x16, x0, Operand(x1, SXTH, 2));
   __ Add(x17, x0, Operand(x1, SXTW, 3));
-  __ Add(x18, x0, Operand(x2, SXTB, 0));
+  __ Add(x4, x0, Operand(x2, SXTB, 0));
   __ Add(x19, x0, Operand(x2, SXTB, 1));
   __ Add(x20, x0, Operand(x2, SXTH, 2));
   __ Add(x21, x0, Operand(x2, SXTW, 3));
@@ -6803,7 +7004,7 @@ TEST(add_sub_extended) {
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFDEL, x15);
   CHECK_EQUAL_64(0xFFFFFFFFFFFF37BCL, x16);
   CHECK_EQUAL_64(0xFFFFFFFC4D5E6F78L, x17);
-  CHECK_EQUAL_64(0x10L, x18);
+  CHECK_EQUAL_64(0x10L, x4);
   CHECK_EQUAL_64(0x20L, x19);
   CHECK_EQUAL_64(0xC840L, x20);
   CHECK_EQUAL_64(0x3B2A19080L, x21);
@@ -6984,10 +7185,6 @@ TEST(claim_drop_zero) {
   __ Drop(xzr, 0);
   __ Claim(x7, 0);
   __ Drop(x7, 0);
-  __ ClaimBySMI(xzr, 8);
-  __ DropBySMI(xzr, 8);
-  __ ClaimBySMI(xzr, 0);
-  __ DropBySMI(xzr, 0);
   CHECK_EQ(0u, __ SizeOfCodeGeneratedSince(&start));
 
   END();
@@ -7434,7 +7631,7 @@ TEST(adc_sbc_shift) {
   // Set the C flag.
   __ Cmp(w0, Operand(w0));
 
-  __ Adc(x18, x2, Operand(x3));
+  __ Adc(x28, x2, Operand(x3));
   __ Adc(x19, x0, Operand(x1, LSL, 60));
   __ Sbc(x20, x4, Operand(x3, LSR, 4));
   __ Adc(x21, x2, Operand(x3, ASR, 4));
@@ -7461,7 +7658,7 @@ TEST(adc_sbc_shift) {
   CHECK_EQUAL_32(0x91111110, w13);
   CHECK_EQUAL_32(0x9A222221, w14);
 
-  CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFLL + 1, x18);
+  CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFLL + 1, x28);
   CHECK_EQUAL_64((1LL << 60) + 1, x19);
   CHECK_EQUAL_64(0xF0123456789ABCDDL + 1, x20);
   CHECK_EQUAL_64(0x0111111111111110L + 1, x21);
@@ -7585,7 +7782,7 @@ TEST(adc_sbc_wide_imm) {
   // Set the C flag.
   __ Cmp(w0, Operand(w0));
 
-  __ Adc(x18, x0, Operand(0x1234567890ABCDEFUL));
+  __ Adc(x28, x0, Operand(0x1234567890ABCDEFUL));
   __ Adc(w19, w0, Operand(0xFFFFFFFF));
   __ Sbc(x20, x0, Operand(0x1234567890ABCDEFUL));
   __ Sbc(w21, w0, Operand(0xFFFFFFFF));
@@ -7602,7 +7799,7 @@ TEST(adc_sbc_wide_imm) {
   CHECK_EQUAL_64(0xFFFFFFFF, x11);
   CHECK_EQUAL_64(0xFFFF, x12);
 
-  CHECK_EQUAL_64(0x1234567890ABCDEFUL + 1, x18);
+  CHECK_EQUAL_64(0x1234567890ABCDEFUL + 1, x28);
   CHECK_EQUAL_64(0, x19);
   CHECK_EQUAL_64(0xEDCBA9876F543211UL, x20);
   CHECK_EQUAL_64(1, x21);
@@ -7762,7 +7959,7 @@ TEST(cmp_shift) {
   SETUP();
 
   START();
-  __ Mov(x18, 0xF0000000);
+  __ Mov(x28, 0xF0000000);
   __ Mov(x19, 0xF000000010000000UL);
   __ Mov(x20, 0xF0000000F0000000UL);
   __ Mov(x21, 0x7800000078000000UL);
@@ -7782,7 +7979,7 @@ TEST(cmp_shift) {
   __ Cmp(w19, Operand(w23, LSR, 3));
   __ Mrs(x2, NZCV);
 
-  __ Cmp(x18, Operand(x24, LSR, 4));
+  __ Cmp(x28, Operand(x24, LSR, 4));
   __ Mrs(x3, NZCV);
 
   __ Cmp(w20, Operand(w25, ASR, 2));
@@ -7997,7 +8194,7 @@ TEST(csel) {
   __ Cneg(x12, x24, ne);
 
   __ csel(w15, w24, w25, al);
-  __ csel(x18, x24, x25, nv);
+  __ csel(x28, x24, x25, nv);
 
   __ CzeroX(x24, ne);
   __ CzeroX(x25, eq);
@@ -8024,7 +8221,7 @@ TEST(csel) {
   CHECK_EQUAL_64(0x0000000F, x13);
   CHECK_EQUAL_64(0x0000000F0000000FUL, x14);
   CHECK_EQUAL_64(0x0000000F, x15);
-  CHECK_EQUAL_64(0x0000000F0000000FUL, x18);
+  CHECK_EQUAL_64(0x0000000F0000000FUL, x28);
   CHECK_EQUAL_64(0, x24);
   CHECK_EQUAL_64(0x0000001F0000001FUL, x25);
   CHECK_EQUAL_64(0x0000001F0000001FUL, x26);
@@ -8036,11 +8233,11 @@ TEST(csel_imm) {
   SETUP();
 
   START();
-  __ Mov(x18, 0);
+  __ Mov(x28, 0);
   __ Mov(x19, 0x80000000);
   __ Mov(x20, 0x8000000000000000UL);
 
-  __ Cmp(x18, Operand(0));
+  __ Cmp(x28, Operand(0));
   __ Csel(w0, w19, -2, ne);
   __ Csel(w1, w19, -1, ne);
   __ Csel(w2, w19, 0, ne);
@@ -8102,7 +8299,7 @@ TEST(lslv) {
 
   __ Lsl(x16, x0, x1);
   __ Lsl(x17, x0, x2);
-  __ Lsl(x18, x0, x3);
+  __ Lsl(x28, x0, x3);
   __ Lsl(x19, x0, x4);
   __ Lsl(x20, x0, x5);
   __ Lsl(x21, x0, x6);
@@ -8120,7 +8317,7 @@ TEST(lslv) {
   CHECK_EQUAL_64(value, x0);
   CHECK_EQUAL_64(value << (shift[0] & 63), x16);
   CHECK_EQUAL_64(value << (shift[1] & 63), x17);
-  CHECK_EQUAL_64(value << (shift[2] & 63), x18);
+  CHECK_EQUAL_64(value << (shift[2] & 63), x28);
   CHECK_EQUAL_64(value << (shift[3] & 63), x19);
   CHECK_EQUAL_64(value << (shift[4] & 63), x20);
   CHECK_EQUAL_64(value << (shift[5] & 63), x21);
@@ -8152,7 +8349,7 @@ TEST(lsrv) {
 
   __ Lsr(x16, x0, x1);
   __ Lsr(x17, x0, x2);
-  __ Lsr(x18, x0, x3);
+  __ Lsr(x28, x0, x3);
   __ Lsr(x19, x0, x4);
   __ Lsr(x20, x0, x5);
   __ Lsr(x21, x0, x6);
@@ -8170,7 +8367,7 @@ TEST(lsrv) {
   CHECK_EQUAL_64(value, x0);
   CHECK_EQUAL_64(value >> (shift[0] & 63), x16);
   CHECK_EQUAL_64(value >> (shift[1] & 63), x17);
-  CHECK_EQUAL_64(value >> (shift[2] & 63), x18);
+  CHECK_EQUAL_64(value >> (shift[2] & 63), x28);
   CHECK_EQUAL_64(value >> (shift[3] & 63), x19);
   CHECK_EQUAL_64(value >> (shift[4] & 63), x20);
   CHECK_EQUAL_64(value >> (shift[5] & 63), x21);
@@ -8204,7 +8401,7 @@ TEST(asrv) {
 
   __ Asr(x16, x0, x1);
   __ Asr(x17, x0, x2);
-  __ Asr(x18, x0, x3);
+  __ Asr(x28, x0, x3);
   __ Asr(x19, x0, x4);
   __ Asr(x20, x0, x5);
   __ Asr(x21, x0, x6);
@@ -8222,7 +8419,7 @@ TEST(asrv) {
   CHECK_EQUAL_64(value, x0);
   CHECK_EQUAL_64(value >> (shift[0] & 63), x16);
   CHECK_EQUAL_64(value >> (shift[1] & 63), x17);
-  CHECK_EQUAL_64(value >> (shift[2] & 63), x18);
+  CHECK_EQUAL_64(value >> (shift[2] & 63), x28);
   CHECK_EQUAL_64(value >> (shift[3] & 63), x19);
   CHECK_EQUAL_64(value >> (shift[4] & 63), x20);
   CHECK_EQUAL_64(value >> (shift[5] & 63), x21);
@@ -8256,7 +8453,7 @@ TEST(rorv) {
 
   __ Ror(x16, x0, x1);
   __ Ror(x17, x0, x2);
-  __ Ror(x18, x0, x3);
+  __ Ror(x28, x0, x3);
   __ Ror(x19, x0, x4);
   __ Ror(x20, x0, x5);
   __ Ror(x21, x0, x6);
@@ -8274,7 +8471,7 @@ TEST(rorv) {
   CHECK_EQUAL_64(value, x0);
   CHECK_EQUAL_64(0xF0123456789ABCDEUL, x16);
   CHECK_EQUAL_64(0xEF0123456789ABCDUL, x17);
-  CHECK_EQUAL_64(0xDEF0123456789ABCUL, x18);
+  CHECK_EQUAL_64(0xDEF0123456789ABCUL, x28);
   CHECK_EQUAL_64(0xCDEF0123456789ABUL, x19);
   CHECK_EQUAL_64(0xABCDEF0123456789UL, x20);
   CHECK_EQUAL_64(0x789ABCDEF0123456UL, x21);
@@ -8342,7 +8539,7 @@ TEST(sbfm) {
   __ sbfm(w17, w2, 24, 15);
 
   // Aliases.
-  __ Asr(x18, x1, 32);
+  __ Asr(x3, x1, 32);
   __ Asr(x19, x2, 32);
   __ Sbfiz(x20, x1, 8, 16);
   __ Sbfiz(x21, x2, 8, 16);
@@ -8368,7 +8565,7 @@ TEST(sbfm) {
   CHECK_EQUAL_32(0x54, w16);
   CHECK_EQUAL_32(0x00321000, w17);
 
-  CHECK_EQUAL_64(0x01234567L, x18);
+  CHECK_EQUAL_64(0x01234567L, x3);
   CHECK_EQUAL_64(0xFFFFFFFFFEDCBA98L, x19);
   CHECK_EQUAL_64(0xFFFFFFFFFFCDEF00L, x20);
   CHECK_EQUAL_64(0x321000L, x21);
@@ -8407,7 +8604,7 @@ TEST(ubfm) {
   __ Lsl(x15, x1, 63);
   __ Lsl(x16, x1, 0);
   __ Lsr(x17, x1, 32);
-  __ Ubfiz(x18, x1, 8, 16);
+  __ Ubfiz(x3, x1, 8, 16);
   __ Ubfx(x19, x1, 8, 16);
   __ Uxtb(x20, x1);
   __ Uxth(x21, x1);
@@ -8429,7 +8626,7 @@ TEST(ubfm) {
   CHECK_EQUAL_64(0x8000000000000000L, x15);
   CHECK_EQUAL_64(0x0123456789ABCDEFL, x16);
   CHECK_EQUAL_64(0x01234567L, x17);
-  CHECK_EQUAL_64(0xCDEF00L, x18);
+  CHECK_EQUAL_64(0xCDEF00L, x3);
   CHECK_EQUAL_64(0xABCDL, x19);
   CHECK_EQUAL_64(0xEFL, x20);
   CHECK_EQUAL_64(0xCDEFL, x21);
@@ -9363,8 +9560,8 @@ TEST(fcmp) {
 
     __ Fmov(s8, 0.0);
     __ Fmov(s9, 0.5);
-    __ Mov(w18, 0x7F800001);  // Single precision NaN.
-    __ Fmov(s18, w18);
+    __ Mov(w19, 0x7F800001);  // Single precision NaN.
+    __ Fmov(s18, w19);
 
     __ Fcmp(s8, s8);
     __ Mrs(x0, NZCV);
@@ -10194,6 +10391,9 @@ TEST(fcvtas) {
   INIT_V8();
   SETUP();
 
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
+
   START();
   __ Fmov(s0, 1.0);
   __ Fmov(s1, 1.1);
@@ -10211,8 +10411,8 @@ TEST(fcvtas) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 2.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 2.5);
   __ Fmov(s19, -2.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10243,7 +10443,6 @@ TEST(fcvtas) {
   __ Fcvtas(w14, d14);
   __ Fcvtas(w15, d15);
   __ Fcvtas(x17, s17);
-  __ Fcvtas(x18, s18);
   __ Fcvtas(x19, s19);
   __ Fcvtas(x20, s20);
   __ Fcvtas(x21, s21);
@@ -10254,6 +10453,12 @@ TEST(fcvtas) {
   __ Fcvtas(x26, d26);
   __ Fcvtas(x27, d27);
   __ Fcvtas(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtas(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtas(x29, d29);
   __ Fcvtas(x30, d30);
   END();
@@ -10276,8 +10481,8 @@ TEST(fcvtas) {
   CHECK_EQUAL_64(0x80000000, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
   CHECK_EQUAL_64(0x80000001, x15);
+  CHECK_EQUAL_64(3, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(3, x18);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFDUL, x19);
   CHECK_EQUAL_64(0x7FFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x8000000000000000UL, x21);
@@ -10343,7 +10548,7 @@ TEST(fcvtau) {
   __ Fcvtau(w15, d15);
   __ Fcvtau(x16, s16);
   __ Fcvtau(x17, s17);
-  __ Fcvtau(x18, s18);
+  __ Fcvtau(x7, s18);
   __ Fcvtau(x19, s19);
   __ Fcvtau(x20, s20);
   __ Fcvtau(x21, s21);
@@ -10375,7 +10580,7 @@ TEST(fcvtau) {
   CHECK_EQUAL_64(0xFFFFFFFE, x14);
   CHECK_EQUAL_64(1, x16);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(3, x18);
+  CHECK_EQUAL_64(3, x7);
   CHECK_EQUAL_64(0, x19);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0, x21);
@@ -10392,6 +10597,9 @@ TEST(fcvtau) {
 TEST(fcvtms) {
   INIT_V8();
   SETUP();
+
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
 
   START();
   __ Fmov(s0, 1.0);
@@ -10410,8 +10618,8 @@ TEST(fcvtms) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 1.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10442,7 +10650,6 @@ TEST(fcvtms) {
   __ Fcvtms(w14, d14);
   __ Fcvtms(w15, d15);
   __ Fcvtms(x17, s17);
-  __ Fcvtms(x18, s18);
   __ Fcvtms(x19, s19);
   __ Fcvtms(x20, s20);
   __ Fcvtms(x21, s21);
@@ -10453,6 +10660,12 @@ TEST(fcvtms) {
   __ Fcvtms(x26, d26);
   __ Fcvtms(x27, d27);
   __ Fcvtms(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtms(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtms(x29, d29);
   __ Fcvtms(x30, d30);
   END();
@@ -10475,8 +10688,8 @@ TEST(fcvtms) {
   CHECK_EQUAL_64(0x80000000, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
   CHECK_EQUAL_64(0x80000001, x15);
+  CHECK_EQUAL_64(1, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(1, x18);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFEUL, x19);
   CHECK_EQUAL_64(0x7FFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x8000000000000000UL, x21);
@@ -10495,6 +10708,9 @@ TEST(fcvtmu) {
   INIT_V8();
   SETUP();
 
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
+
   START();
   __ Fmov(s0, 1.0);
   __ Fmov(s1, 1.1);
@@ -10512,8 +10728,8 @@ TEST(fcvtmu) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 1.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10542,8 +10758,8 @@ TEST(fcvtmu) {
   __ Fcvtmu(w12, d12);
   __ Fcvtmu(w13, d13);
   __ Fcvtmu(w14, d14);
+  __ Fcvtmu(w15, d15);
   __ Fcvtmu(x17, s17);
-  __ Fcvtmu(x18, s18);
   __ Fcvtmu(x19, s19);
   __ Fcvtmu(x20, s20);
   __ Fcvtmu(x21, s21);
@@ -10554,6 +10770,12 @@ TEST(fcvtmu) {
   __ Fcvtmu(x26, d26);
   __ Fcvtmu(x27, d27);
   __ Fcvtmu(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtmu(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtmu(x29, d29);
   __ Fcvtmu(x30, d30);
   END();
@@ -10575,8 +10797,9 @@ TEST(fcvtmu) {
   CHECK_EQUAL_64(0xFFFFFFFF, x12);
   CHECK_EQUAL_64(0, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
+  CHECK_EQUAL_64(0x0, x15);
+  CHECK_EQUAL_64(1, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(1, x18);
   CHECK_EQUAL_64(0x0UL, x19);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x0UL, x21);
@@ -10595,6 +10818,9 @@ TEST(fcvtns) {
   INIT_V8();
   SETUP();
 
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
+
   START();
   __ Fmov(s0, 1.0);
   __ Fmov(s1, 1.1);
@@ -10612,8 +10838,8 @@ TEST(fcvtns) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 1.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10644,7 +10870,6 @@ TEST(fcvtns) {
   __ Fcvtns(w14, d14);
   __ Fcvtns(w15, d15);
   __ Fcvtns(x17, s17);
-  __ Fcvtns(x18, s18);
   __ Fcvtns(x19, s19);
   __ Fcvtns(x20, s20);
   __ Fcvtns(x21, s21);
@@ -10655,6 +10880,12 @@ TEST(fcvtns) {
   __ Fcvtns(x26, d26);
   __ Fcvtns(x27, d27);
 //  __ Fcvtns(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtns(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtns(x29, d29);
   __ Fcvtns(x30, d30);
   END();
@@ -10677,8 +10908,8 @@ TEST(fcvtns) {
   CHECK_EQUAL_64(0x80000000, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
   CHECK_EQUAL_64(0x80000001, x15);
+  CHECK_EQUAL_64(2, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(2, x18);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFEUL, x19);
   CHECK_EQUAL_64(0x7FFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x8000000000000000UL, x21);
@@ -10705,6 +10936,7 @@ TEST(fcvtnu) {
   __ Fmov(s4, kFP32PositiveInfinity);
   __ Fmov(s5, kFP32NegativeInfinity);
   __ Fmov(s6, 0xFFFFFF00);  // Largest float < UINT32_MAX.
+  __ Fmov(s7, 1.5);
   __ Fmov(d8, 1.0);
   __ Fmov(d9, 1.1);
   __ Fmov(d10, 1.5);
@@ -10714,7 +10946,6 @@ TEST(fcvtnu) {
   __ Fmov(d14, 0xFFFFFFFE);
   __ Fmov(s16, 1.0);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10734,6 +10965,7 @@ TEST(fcvtnu) {
   __ Fcvtnu(w4, s4);
   __ Fcvtnu(w5, s5);
   __ Fcvtnu(w6, s6);
+  __ Fcvtnu(x7, s7);
   __ Fcvtnu(w8, d8);
   __ Fcvtnu(w9, d9);
   __ Fcvtnu(w10, d10);
@@ -10744,7 +10976,6 @@ TEST(fcvtnu) {
   __ Fcvtnu(w15, d15);
   __ Fcvtnu(x16, s16);
   __ Fcvtnu(x17, s17);
-  __ Fcvtnu(x18, s18);
   __ Fcvtnu(x19, s19);
   __ Fcvtnu(x20, s20);
   __ Fcvtnu(x21, s21);
@@ -10767,6 +10998,7 @@ TEST(fcvtnu) {
   CHECK_EQUAL_64(0xFFFFFFFF, x4);
   CHECK_EQUAL_64(0, x5);
   CHECK_EQUAL_64(0xFFFFFF00, x6);
+  CHECK_EQUAL_64(2, x7);
   CHECK_EQUAL_64(1, x8);
   CHECK_EQUAL_64(1, x9);
   CHECK_EQUAL_64(2, x10);
@@ -10776,7 +11008,6 @@ TEST(fcvtnu) {
   CHECK_EQUAL_64(0xFFFFFFFE, x14);
   CHECK_EQUAL_64(1, x16);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(2, x18);
   CHECK_EQUAL_64(0, x19);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0, x21);
@@ -10793,6 +11024,9 @@ TEST(fcvtnu) {
 TEST(fcvtzs) {
   INIT_V8();
   SETUP();
+
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
 
   START();
   __ Fmov(s0, 1.0);
@@ -10811,8 +11045,8 @@ TEST(fcvtzs) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 1.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10843,7 +11077,6 @@ TEST(fcvtzs) {
   __ Fcvtzs(w14, d14);
   __ Fcvtzs(w15, d15);
   __ Fcvtzs(x17, s17);
-  __ Fcvtzs(x18, s18);
   __ Fcvtzs(x19, s19);
   __ Fcvtzs(x20, s20);
   __ Fcvtzs(x21, s21);
@@ -10854,6 +11087,12 @@ TEST(fcvtzs) {
   __ Fcvtzs(x26, d26);
   __ Fcvtzs(x27, d27);
   __ Fcvtzs(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtmu(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtzs(x29, d29);
   __ Fcvtzs(x30, d30);
   END();
@@ -10876,8 +11115,8 @@ TEST(fcvtzs) {
   CHECK_EQUAL_64(0x80000000, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
   CHECK_EQUAL_64(0x80000001, x15);
+  CHECK_EQUAL_64(1, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(1, x18);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFUL, x19);
   CHECK_EQUAL_64(0x7FFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x8000000000000000UL, x21);
@@ -10896,6 +11135,9 @@ TEST(fcvtzu) {
   INIT_V8();
   SETUP();
 
+  int64_t scratch = 0;
+  uintptr_t scratch_base = reinterpret_cast<uintptr_t>(&scratch);
+
   START();
   __ Fmov(s0, 1.0);
   __ Fmov(s1, 1.1);
@@ -10913,8 +11155,8 @@ TEST(fcvtzu) {
   __ Fmov(d13, kFP64NegativeInfinity);
   __ Fmov(d14, kWMaxInt - 1);
   __ Fmov(d15, kWMinInt + 1);
+  __ Fmov(s16, 1.5);
   __ Fmov(s17, 1.1);
-  __ Fmov(s18, 1.5);
   __ Fmov(s19, -1.5);
   __ Fmov(s20, kFP32PositiveInfinity);
   __ Fmov(s21, kFP32NegativeInfinity);
@@ -10943,8 +11185,8 @@ TEST(fcvtzu) {
   __ Fcvtzu(w12, d12);
   __ Fcvtzu(w13, d13);
   __ Fcvtzu(w14, d14);
+  __ Fcvtzu(w15, d15);
   __ Fcvtzu(x17, s17);
-  __ Fcvtzu(x18, s18);
   __ Fcvtzu(x19, s19);
   __ Fcvtzu(x20, s20);
   __ Fcvtzu(x21, s21);
@@ -10955,6 +11197,12 @@ TEST(fcvtzu) {
   __ Fcvtzu(x26, d26);
   __ Fcvtzu(x27, d27);
   __ Fcvtzu(x28, d28);
+
+  // Save results to the scratch memory, for those that don't fit in registers.
+  __ Mov(x30, scratch_base);
+  __ Fcvtzu(x29, s16);
+  __ Str(x29, MemOperand(x30));
+
   __ Fcvtzu(x29, d29);
   __ Fcvtzu(x30, d30);
   END();
@@ -10976,8 +11224,9 @@ TEST(fcvtzu) {
   CHECK_EQUAL_64(0xFFFFFFFF, x12);
   CHECK_EQUAL_64(0, x13);
   CHECK_EQUAL_64(0x7FFFFFFE, x14);
+  CHECK_EQUAL_64(0x0, x15);
+  CHECK_EQUAL_64(1, scratch);
   CHECK_EQUAL_64(1, x17);
-  CHECK_EQUAL_64(1, x18);
   CHECK_EQUAL_64(0x0UL, x19);
   CHECK_EQUAL_64(0xFFFFFFFFFFFFFFFFUL, x20);
   CHECK_EQUAL_64(0x0UL, x21);
@@ -11413,6 +11662,79 @@ TEST(system_msr) {
   CHECK_EQUAL_64(0, x10);
 }
 
+TEST(system_pauth_a) {
+  SETUP();
+  START();
+
+  // Exclude x16 and x17 from the scratch register list so we can use
+  // Pac/Autia1716 safely.
+  UseScratchRegisterScope temps(&masm);
+  temps.Exclude(x16, x17);
+  temps.Include(x10, x11);
+
+  // Backup stack pointer.
+  __ Mov(x20, sp);
+
+  // Modifiers
+  __ Mov(x16, 0x477d469dec0b8768);
+  __ Mov(sp, 0x477d469dec0b8760);
+
+  // Generate PACs using the 3 system instructions.
+  __ Mov(x17, 0x0000000012345678);
+  __ Pacia1716();
+  __ Mov(x0, x17);
+
+  __ Mov(lr, 0x0000000012345678);
+  __ Paciasp();
+  __ Mov(x2, lr);
+
+  // Authenticate the pointers above.
+  __ Mov(x17, x0);
+  __ Autia1716();
+  __ Mov(x3, x17);
+
+  __ Mov(lr, x2);
+  __ Autiasp();
+  __ Mov(x5, lr);
+
+  // Attempt to authenticate incorrect pointers.
+  __ Mov(x17, x2);
+  __ Autia1716();
+  __ Mov(x6, x17);
+
+  __ Mov(lr, x0);
+  __ Autiasp();
+  __ Mov(x8, lr);
+
+  // Restore stack pointer.
+  __ Mov(sp, x20);
+
+  // Mask out just the PAC code bits.
+  __ And(x0, x0, 0x007f000000000000);
+  __ And(x2, x2, 0x007f000000000000);
+
+  END();
+
+// TODO(all): test on real hardware when available
+#ifdef USE_SIMULATOR
+  RUN();
+
+  // Check PAC codes have been generated and aren't equal.
+  // NOTE: with a different ComputePAC implementation, there may be a collision.
+  CHECK_NE(0, core.xreg(2));
+  CHECK_NOT_ZERO_AND_NOT_EQUAL_64(x0, x2);
+
+  // Pointers correctly authenticated.
+  CHECK_EQUAL_64(0x0000000012345678, x3);
+  CHECK_EQUAL_64(0x0000000012345678, x5);
+
+  // Pointers corrupted after failing to authenticate.
+  CHECK_EQUAL_64(0x0020000012345678, x6);
+  CHECK_EQUAL_64(0x0020000012345678, x8);
+
+#endif  // USE_SIMULATOR
+}
+
 TEST(system) {
   INIT_V8();
   SETUP();
@@ -11443,6 +11765,8 @@ TEST(zero_dest) {
   __ Mov(x0, 0);
   __ Mov(x1, literal_base);
   for (int i = 2; i < x30.code(); i++) {
+    // Skip x18, the platform register.
+    if (i == 18) continue;
     __ Add(Register::XRegFromCode(i), Register::XRegFromCode(i-1), x1);
   }
   before.Dump(&masm);
@@ -11507,6 +11831,8 @@ TEST(zero_dest_setflags) {
   __ Mov(x0, 0);
   __ Mov(x1, literal_base);
   for (int i = 2; i < 30; i++) {
+    // Skip x18, the platform register.
+    if (i == 18) continue;
     __ Add(Register::XRegFromCode(i), Register::XRegFromCode(i-1), x1);
   }
   before.Dump(&masm);
@@ -11560,27 +11886,27 @@ TEST(register_bit) {
   // teardown.
 
   // Simple tests.
-  CHECK(x0.bit() == (1ULL << 0));
-  CHECK(x1.bit() == (1ULL << 1));
-  CHECK(x10.bit() == (1ULL << 10));
+  CHECK_EQ(x0.bit(), 1ULL << 0);
+  CHECK_EQ(x1.bit(), 1ULL << 1);
+  CHECK_EQ(x10.bit(), 1ULL << 10);
 
   // AAPCS64 definitions.
-  CHECK(fp.bit() == (1ULL << kFramePointerRegCode));
-  CHECK(lr.bit() == (1ULL << kLinkRegCode));
+  CHECK_EQ(fp.bit(), 1ULL << kFramePointerRegCode);
+  CHECK_EQ(lr.bit(), 1ULL << kLinkRegCode);
 
   // Fixed (hardware) definitions.
-  CHECK(xzr.bit() == (1ULL << kZeroRegCode));
+  CHECK_EQ(xzr.bit(), 1ULL << kZeroRegCode);
 
   // Internal ABI definitions.
-  CHECK(sp.bit() == (1ULL << kSPRegInternalCode));
-  CHECK(sp.bit() != xzr.bit());
+  CHECK_EQ(sp.bit(), 1ULL << kSPRegInternalCode);
+  CHECK_NE(sp.bit(), xzr.bit());
 
   // xn.bit() == wn.bit() at all times, for the same n.
-  CHECK(x0.bit() == w0.bit());
-  CHECK(x1.bit() == w1.bit());
-  CHECK(x10.bit() == w10.bit());
-  CHECK(xzr.bit() == wzr.bit());
-  CHECK(sp.bit() == wsp.bit());
+  CHECK_EQ(x0.bit(), w0.bit());
+  CHECK_EQ(x1.bit(), w1.bit());
+  CHECK_EQ(x10.bit(), w10.bit());
+  CHECK_EQ(xzr.bit(), wzr.bit());
+  CHECK_EQ(sp.bit(), wsp.bit());
 }
 
 TEST(peek_poke_simple) {
@@ -11862,10 +12188,15 @@ static void PushPopSimpleHelper(int reg_count, int reg_size,
 
   // Registers in the TmpList can be used by the macro assembler for debug code
   // (for example in 'Pop'), so we can't use them here.
-  static RegList const allowed = ~(masm.TmpList()->list());
+  // x18 is reserved for the platform register.
+  // For simplicity, exclude LR as well, as we would need to sign it when
+  // pushing it. This also ensures that the list has an even number of elements,
+  // which is needed for alignment.
+  RegList allowed = ~(masm.TmpList()->list() | x18.bit() | lr.bit());
   if (reg_count == kPushPopMaxRegCount) {
     reg_count = CountSetBits(allowed, kNumberOfRegisters);
   }
+  DCHECK_EQ(reg_count % 2, 0);
   // Work out which registers to use, based on reg_size.
   auto r = CreateRegisterArray<Register, kNumberOfRegisters>();
   auto x = CreateRegisterArray<Register, kNumberOfRegisters>();
@@ -11895,7 +12226,8 @@ static void PushPopSimpleHelper(int reg_count, int reg_size,
       case PushPopByFour:
         // Push high-numbered registers first (to the highest addresses).
         for (i = reg_count; i >= 4; i -= 4) {
-          __ Push(r[i-1], r[i-2], r[i-3], r[i-4]);
+          __ Push<TurboAssembler::kDontStoreLR>(r[i - 1], r[i - 2], r[i - 3],
+                                                r[i - 4]);
         }
         // Finish off the leftovers.
         switch (i) {
@@ -11908,7 +12240,7 @@ static void PushPopSimpleHelper(int reg_count, int reg_size,
         }
         break;
       case PushPopRegList:
-        __ PushSizeRegList(list, reg_size);
+        __ PushSizeRegList<TurboAssembler::kDontStoreLR>(list, reg_size);
         break;
     }
 
@@ -11919,7 +12251,8 @@ static void PushPopSimpleHelper(int reg_count, int reg_size,
       case PushPopByFour:
         // Pop low-numbered registers first (from the lowest addresses).
         for (i = 0; i <= (reg_count-4); i += 4) {
-          __ Pop(r[i], r[i+1], r[i+2], r[i+3]);
+          __ Pop<TurboAssembler::kDontLoadLR>(r[i], r[i + 1], r[i + 2],
+                                              r[i + 3]);
         }
         // Finish off the leftovers.
         switch (reg_count - i) {
@@ -11927,12 +12260,12 @@ static void PushPopSimpleHelper(int reg_count, int reg_size,
           case 2:  __ Pop(r[i], r[i+1]);         break;
           case 1:  __ Pop(r[i]);                 break;
           default:
-            CHECK(i == reg_count);
+            CHECK_EQ(i, reg_count);
             break;
         }
         break;
       case PushPopRegList:
-        __ PopSizeRegList(list, reg_size);
+        __ PopSizeRegList<TurboAssembler::kDontLoadLR>(list, reg_size);
         break;
     }
   }
@@ -12076,7 +12409,7 @@ static void PushPopFPSimpleHelper(int reg_count, int reg_size,
           case 2:  __ Pop(v[i], v[i+1]);         break;
           case 1:  __ Pop(v[i]);                 break;
           default:
-            CHECK(i == reg_count);
+            CHECK_EQ(i, reg_count);
             break;
         }
         break;
@@ -12249,7 +12582,7 @@ TEST(push_pop) {
   __ Claim(2);
   __ Push(w2, w2, w1, w1);
   __ Push(x3, x3);
-  __ Pop(w18, w19, w20, w21);
+  __ Pop(w30, w19, w20, w21);
   __ Pop(x22, x23);
 
   __ Claim(2);
@@ -12263,8 +12596,10 @@ TEST(push_pop) {
   __ Claim(2);
   __ PushXRegList(0);
   __ PopXRegList(0);
-  __ PushXRegList(0xFFFFFFFF);
-  __ PopXRegList(0xFFFFFFFF);
+  // Don't push/pop x18 (platform register) or lr
+  RegList all_regs = 0xFFFFFFFF & ~(x18.bit() | lr.bit());
+  __ PushXRegList<TurboAssembler::kDontStoreLR>(all_regs);
+  __ PopXRegList<TurboAssembler::kDontLoadLR>(all_regs);
   __ Drop(12);
 
   END();
@@ -12291,7 +12626,7 @@ TEST(push_pop) {
   CHECK_EQUAL_32(0x33333333U, w15);
   CHECK_EQUAL_32(0x22222222U, w14);
 
-  CHECK_EQUAL_32(0x11111111U, w18);
+  CHECK_EQUAL_32(0x11111111U, w30);
   CHECK_EQUAL_32(0x11111111U, w19);
   CHECK_EQUAL_32(0x11111111U, w20);
   CHECK_EQUAL_32(0x11111111U, w21);
@@ -12305,160 +12640,6 @@ TEST(push_pop) {
   CHECK_EQUAL_32(0x00000000U, w27);
   CHECK_EQUAL_32(0x22222222U, w28);
   CHECK_EQUAL_32(0x33333333U, w29);
-}
-
-TEST(push_queued) {
-  INIT_V8();
-  SETUP();
-
-  START();
-
-  MacroAssembler::PushPopQueue queue(&masm);
-
-  // Queue up registers.
-  queue.Queue(x0);
-  queue.Queue(x1);
-  queue.Queue(x2);
-  queue.Queue(x3);
-
-  queue.Queue(w4);
-  queue.Queue(w5);
-  queue.Queue(w6);
-  queue.Queue(w7);
-
-  queue.Queue(d0);
-  queue.Queue(d1);
-
-  queue.Queue(s2);
-  queue.Queue(s3);
-  queue.Queue(s4);
-  queue.Queue(s5);
-
-  __ Mov(x0, 0x1234000000000000);
-  __ Mov(x1, 0x1234000100010001);
-  __ Mov(x2, 0x1234000200020002);
-  __ Mov(x3, 0x1234000300030003);
-  __ Mov(w4, 0x12340004);
-  __ Mov(w5, 0x12340005);
-  __ Mov(w6, 0x12340006);
-  __ Mov(w7, 0x12340007);
-  __ Fmov(d0, 123400.0);
-  __ Fmov(d1, 123401.0);
-  __ Fmov(s2, 123402.0);
-  __ Fmov(s3, 123403.0);
-  __ Fmov(s4, 123404.0);
-  __ Fmov(s5, 123405.0);
-
-  // Actually push them.
-  queue.PushQueued();
-
-  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSizeInBits, 0, 8));
-  Clobber(&masm, CPURegList(CPURegister::kVRegister, kDRegSizeInBits, 0, 6));
-
-  // Pop them conventionally.
-  __ Pop(s5, s4, s3, s2);
-  __ Pop(d1, d0);
-  __ Pop(w7, w6, w5, w4);
-  __ Pop(x3, x2, x1, x0);
-
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_64(0x1234000000000000, x0);
-  CHECK_EQUAL_64(0x1234000100010001, x1);
-  CHECK_EQUAL_64(0x1234000200020002, x2);
-  CHECK_EQUAL_64(0x1234000300030003, x3);
-
-  CHECK_EQUAL_64(0x0000000012340004, x4);
-  CHECK_EQUAL_64(0x0000000012340005, x5);
-  CHECK_EQUAL_64(0x0000000012340006, x6);
-  CHECK_EQUAL_64(0x0000000012340007, x7);
-
-  CHECK_EQUAL_FP64(123400.0, d0);
-  CHECK_EQUAL_FP64(123401.0, d1);
-
-  CHECK_EQUAL_FP32(123402.0, s2);
-  CHECK_EQUAL_FP32(123403.0, s3);
-  CHECK_EQUAL_FP32(123404.0, s4);
-  CHECK_EQUAL_FP32(123405.0, s5);
-}
-
-TEST(pop_queued) {
-  INIT_V8();
-  SETUP();
-
-  START();
-
-  MacroAssembler::PushPopQueue queue(&masm);
-
-  __ Mov(x0, 0x1234000000000000);
-  __ Mov(x1, 0x1234000100010001);
-  __ Mov(x2, 0x1234000200020002);
-  __ Mov(x3, 0x1234000300030003);
-  __ Mov(w4, 0x12340004);
-  __ Mov(w5, 0x12340005);
-  __ Mov(w6, 0x12340006);
-  __ Mov(w7, 0x12340007);
-  __ Fmov(d0, 123400.0);
-  __ Fmov(d1, 123401.0);
-  __ Fmov(s2, 123402.0);
-  __ Fmov(s3, 123403.0);
-  __ Fmov(s4, 123404.0);
-  __ Fmov(s5, 123405.0);
-
-  // Push registers conventionally.
-  __ Push(x0, x1, x2, x3);
-  __ Push(w4, w5, w6, w7);
-  __ Push(d0, d1);
-  __ Push(s2, s3, s4, s5);
-
-  // Queue up a pop.
-  queue.Queue(s5);
-  queue.Queue(s4);
-  queue.Queue(s3);
-  queue.Queue(s2);
-
-  queue.Queue(d1);
-  queue.Queue(d0);
-
-  queue.Queue(w7);
-  queue.Queue(w6);
-  queue.Queue(w5);
-  queue.Queue(w4);
-
-  queue.Queue(x3);
-  queue.Queue(x2);
-  queue.Queue(x1);
-  queue.Queue(x0);
-
-  Clobber(&masm, CPURegList(CPURegister::kRegister, kXRegSizeInBits, 0, 8));
-  Clobber(&masm, CPURegList(CPURegister::kVRegister, kDRegSizeInBits, 0, 6));
-
-  // Actually pop them.
-  queue.PopQueued();
-
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_64(0x1234000000000000, x0);
-  CHECK_EQUAL_64(0x1234000100010001, x1);
-  CHECK_EQUAL_64(0x1234000200020002, x2);
-  CHECK_EQUAL_64(0x1234000300030003, x3);
-
-  CHECK_EQUAL_64(0x0000000012340004, x4);
-  CHECK_EQUAL_64(0x0000000012340005, x5);
-  CHECK_EQUAL_64(0x0000000012340006, x6);
-  CHECK_EQUAL_64(0x0000000012340007, x7);
-
-  CHECK_EQUAL_FP64(123400.0, d0);
-  CHECK_EQUAL_FP64(123401.0, d1);
-
-  CHECK_EQUAL_FP32(123402.0, s2);
-  CHECK_EQUAL_FP32(123403.0, s3);
-  CHECK_EQUAL_FP32(123404.0, s4);
-  CHECK_EQUAL_FP32(123405.0, s5);
 }
 
 TEST(copy_slots_down) {
@@ -12759,155 +12940,15 @@ TEST(copy_noop) {
   CHECK_EQUAL_64(0, x16);
 }
 
-TEST(jump_both_smi) {
-  INIT_V8();
-  SETUP();
-
-  Label cond_pass_00, cond_pass_01, cond_pass_10, cond_pass_11;
-  Label cond_fail_00, cond_fail_01, cond_fail_10, cond_fail_11;
-  Label return1, return2, return3, done;
-
-  START();
-
-  __ Mov(x0, 0x5555555500000001UL);  // A pointer.
-  __ Mov(x1, 0xAAAAAAAA00000001UL);  // A pointer.
-  __ Mov(x2, 0x1234567800000000UL);  // A smi.
-  __ Mov(x3, 0x8765432100000000UL);  // A smi.
-  __ Mov(x4, 0xDEAD);
-  __ Mov(x5, 0xDEAD);
-  __ Mov(x6, 0xDEAD);
-  __ Mov(x7, 0xDEAD);
-
-  __ JumpIfBothSmi(x0, x1, &cond_pass_00, &cond_fail_00);
-  __ Bind(&return1);
-  __ JumpIfBothSmi(x0, x2, &cond_pass_01, &cond_fail_01);
-  __ Bind(&return2);
-  __ JumpIfBothSmi(x2, x1, &cond_pass_10, &cond_fail_10);
-  __ Bind(&return3);
-  __ JumpIfBothSmi(x2, x3, &cond_pass_11, &cond_fail_11);
-
-  __ Bind(&cond_fail_00);
-  __ Mov(x4, 0);
-  __ B(&return1);
-  __ Bind(&cond_pass_00);
-  __ Mov(x4, 1);
-  __ B(&return1);
-
-  __ Bind(&cond_fail_01);
-  __ Mov(x5, 0);
-  __ B(&return2);
-  __ Bind(&cond_pass_01);
-  __ Mov(x5, 1);
-  __ B(&return2);
-
-  __ Bind(&cond_fail_10);
-  __ Mov(x6, 0);
-  __ B(&return3);
-  __ Bind(&cond_pass_10);
-  __ Mov(x6, 1);
-  __ B(&return3);
-
-  __ Bind(&cond_fail_11);
-  __ Mov(x7, 0);
-  __ B(&done);
-  __ Bind(&cond_pass_11);
-  __ Mov(x7, 1);
-
-  __ Bind(&done);
-
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_64(0x5555555500000001UL, x0);
-  CHECK_EQUAL_64(0xAAAAAAAA00000001UL, x1);
-  CHECK_EQUAL_64(0x1234567800000000UL, x2);
-  CHECK_EQUAL_64(0x8765432100000000UL, x3);
-  CHECK_EQUAL_64(0, x4);
-  CHECK_EQUAL_64(0, x5);
-  CHECK_EQUAL_64(0, x6);
-  CHECK_EQUAL_64(1, x7);
-}
-
-TEST(jump_either_smi) {
-  INIT_V8();
-  SETUP();
-
-  Label cond_pass_00, cond_pass_01, cond_pass_10, cond_pass_11;
-  Label cond_fail_00, cond_fail_01, cond_fail_10, cond_fail_11;
-  Label return1, return2, return3, done;
-
-  START();
-
-  __ Mov(x0, 0x5555555500000001UL);  // A pointer.
-  __ Mov(x1, 0xAAAAAAAA00000001UL);  // A pointer.
-  __ Mov(x2, 0x1234567800000000UL);  // A smi.
-  __ Mov(x3, 0x8765432100000000UL);  // A smi.
-  __ Mov(x4, 0xDEAD);
-  __ Mov(x5, 0xDEAD);
-  __ Mov(x6, 0xDEAD);
-  __ Mov(x7, 0xDEAD);
-
-  __ JumpIfEitherSmi(x0, x1, &cond_pass_00, &cond_fail_00);
-  __ Bind(&return1);
-  __ JumpIfEitherSmi(x0, x2, &cond_pass_01, &cond_fail_01);
-  __ Bind(&return2);
-  __ JumpIfEitherSmi(x2, x1, &cond_pass_10, &cond_fail_10);
-  __ Bind(&return3);
-  __ JumpIfEitherSmi(x2, x3, &cond_pass_11, &cond_fail_11);
-
-  __ Bind(&cond_fail_00);
-  __ Mov(x4, 0);
-  __ B(&return1);
-  __ Bind(&cond_pass_00);
-  __ Mov(x4, 1);
-  __ B(&return1);
-
-  __ Bind(&cond_fail_01);
-  __ Mov(x5, 0);
-  __ B(&return2);
-  __ Bind(&cond_pass_01);
-  __ Mov(x5, 1);
-  __ B(&return2);
-
-  __ Bind(&cond_fail_10);
-  __ Mov(x6, 0);
-  __ B(&return3);
-  __ Bind(&cond_pass_10);
-  __ Mov(x6, 1);
-  __ B(&return3);
-
-  __ Bind(&cond_fail_11);
-  __ Mov(x7, 0);
-  __ B(&done);
-  __ Bind(&cond_pass_11);
-  __ Mov(x7, 1);
-
-  __ Bind(&done);
-
-  END();
-
-  RUN();
-
-  CHECK_EQUAL_64(0x5555555500000001UL, x0);
-  CHECK_EQUAL_64(0xAAAAAAAA00000001UL, x1);
-  CHECK_EQUAL_64(0x1234567800000000UL, x2);
-  CHECK_EQUAL_64(0x8765432100000000UL, x3);
-  CHECK_EQUAL_64(0, x4);
-  CHECK_EQUAL_64(1, x5);
-  CHECK_EQUAL_64(1, x6);
-  CHECK_EQUAL_64(1, x7);
-}
-
 TEST(noreg) {
   // This test doesn't generate any code, but it verifies some invariants
   // related to NoReg.
-  CHECK(NoReg.Is(NoVReg));
-  CHECK(NoVReg.Is(NoReg));
-  CHECK(NoReg.Is(NoCPUReg));
-  CHECK(NoCPUReg.Is(NoReg));
-  CHECK(NoVReg.Is(NoCPUReg));
-  CHECK(NoCPUReg.Is(NoVReg));
+  CHECK_EQ(NoReg, NoVReg);
+  CHECK_EQ(NoVReg, NoReg);
+  CHECK_EQ(NoReg, NoCPUReg);
+  CHECK_EQ(NoCPUReg, NoReg);
+  CHECK_EQ(NoVReg, NoCPUReg);
+  CHECK_EQ(NoCPUReg, NoVReg);
 
   CHECK(NoReg.IsNone());
   CHECK(NoVReg.IsNone());
@@ -13367,24 +13408,24 @@ TEST(vreg) {
 TEST(isvalid) {
   // This test doesn't generate any code, but it verifies some invariants
   // related to IsValid().
-  CHECK(!NoReg.IsValid());
-  CHECK(!NoVReg.IsValid());
-  CHECK(!NoCPUReg.IsValid());
+  CHECK(!NoReg.is_valid());
+  CHECK(!NoVReg.is_valid());
+  CHECK(!NoCPUReg.is_valid());
 
-  CHECK(x0.IsValid());
-  CHECK(w0.IsValid());
-  CHECK(x30.IsValid());
-  CHECK(w30.IsValid());
-  CHECK(xzr.IsValid());
-  CHECK(wzr.IsValid());
+  CHECK(x0.is_valid());
+  CHECK(w0.is_valid());
+  CHECK(x30.is_valid());
+  CHECK(w30.is_valid());
+  CHECK(xzr.is_valid());
+  CHECK(wzr.is_valid());
 
-  CHECK(sp.IsValid());
-  CHECK(wsp.IsValid());
+  CHECK(sp.is_valid());
+  CHECK(wsp.is_valid());
 
-  CHECK(d0.IsValid());
-  CHECK(s0.IsValid());
-  CHECK(d31.IsValid());
-  CHECK(s31.IsValid());
+  CHECK(d0.is_valid());
+  CHECK(s0.is_valid());
+  CHECK(d31.is_valid());
+  CHECK(s31.is_valid());
 
   CHECK(x0.IsRegister());
   CHECK(w0.IsRegister());
@@ -13406,20 +13447,20 @@ TEST(isvalid) {
 
   // Test the same as before, but using CPURegister types. This shouldn't make
   // any difference.
-  CHECK(static_cast<CPURegister>(x0).IsValid());
-  CHECK(static_cast<CPURegister>(w0).IsValid());
-  CHECK(static_cast<CPURegister>(x30).IsValid());
-  CHECK(static_cast<CPURegister>(w30).IsValid());
-  CHECK(static_cast<CPURegister>(xzr).IsValid());
-  CHECK(static_cast<CPURegister>(wzr).IsValid());
+  CHECK(static_cast<CPURegister>(x0).is_valid());
+  CHECK(static_cast<CPURegister>(w0).is_valid());
+  CHECK(static_cast<CPURegister>(x30).is_valid());
+  CHECK(static_cast<CPURegister>(w30).is_valid());
+  CHECK(static_cast<CPURegister>(xzr).is_valid());
+  CHECK(static_cast<CPURegister>(wzr).is_valid());
 
-  CHECK(static_cast<CPURegister>(sp).IsValid());
-  CHECK(static_cast<CPURegister>(wsp).IsValid());
+  CHECK(static_cast<CPURegister>(sp).is_valid());
+  CHECK(static_cast<CPURegister>(wsp).is_valid());
 
-  CHECK(static_cast<CPURegister>(d0).IsValid());
-  CHECK(static_cast<CPURegister>(s0).IsValid());
-  CHECK(static_cast<CPURegister>(d31).IsValid());
-  CHECK(static_cast<CPURegister>(s31).IsValid());
+  CHECK(static_cast<CPURegister>(d0).is_valid());
+  CHECK(static_cast<CPURegister>(s0).is_valid());
+  CHECK(static_cast<CPURegister>(d31).is_valid());
+  CHECK(static_cast<CPURegister>(s31).is_valid());
 
   CHECK(static_cast<CPURegister>(x0).IsRegister());
   CHECK(static_cast<CPURegister>(w0).IsRegister());
@@ -13527,10 +13568,10 @@ TEST(cpureglist_utils_x) {
 
   CHECK(!test.IsEmpty());
 
-  CHECK(test.type() == x0.type());
+  CHECK_EQ(test.type(), x0.type());
 
-  CHECK(test.PopHighestIndex().Is(x3));
-  CHECK(test.PopLowestIndex().Is(x0));
+  CHECK_EQ(test.PopHighestIndex(), x3);
+  CHECK_EQ(test.PopLowestIndex(), x0);
 
   CHECK(test.IncludesAliasOf(x1));
   CHECK(test.IncludesAliasOf(x2));
@@ -13541,8 +13582,8 @@ TEST(cpureglist_utils_x) {
   CHECK(!test.IncludesAliasOf(w0));
   CHECK(!test.IncludesAliasOf(w3));
 
-  CHECK(test.PopHighestIndex().Is(x2));
-  CHECK(test.PopLowestIndex().Is(x1));
+  CHECK_EQ(test.PopHighestIndex(), x2);
+  CHECK_EQ(test.PopLowestIndex(), x1);
 
   CHECK(!test.IncludesAliasOf(x1));
   CHECK(!test.IncludesAliasOf(x2));
@@ -13592,10 +13633,10 @@ TEST(cpureglist_utils_w) {
 
   CHECK(!test.IsEmpty());
 
-  CHECK(test.type() == w10.type());
+  CHECK_EQ(test.type(), w10.type());
 
-  CHECK(test.PopHighestIndex().Is(w13));
-  CHECK(test.PopLowestIndex().Is(w10));
+  CHECK_EQ(test.PopHighestIndex(), w13);
+  CHECK_EQ(test.PopLowestIndex(), w10);
 
   CHECK(test.IncludesAliasOf(x11));
   CHECK(test.IncludesAliasOf(x12));
@@ -13606,8 +13647,8 @@ TEST(cpureglist_utils_w) {
   CHECK(!test.IncludesAliasOf(w10));
   CHECK(!test.IncludesAliasOf(w13));
 
-  CHECK(test.PopHighestIndex().Is(w12));
-  CHECK(test.PopLowestIndex().Is(w11));
+  CHECK_EQ(test.PopHighestIndex(), w12);
+  CHECK_EQ(test.PopLowestIndex(), w11);
 
   CHECK(!test.IncludesAliasOf(x11));
   CHECK(!test.IncludesAliasOf(x12));
@@ -13658,10 +13699,10 @@ TEST(cpureglist_utils_d) {
 
   CHECK(!test.IsEmpty());
 
-  CHECK(test.type() == d20.type());
+  CHECK_EQ(test.type(), d20.type());
 
-  CHECK(test.PopHighestIndex().Is(d23));
-  CHECK(test.PopLowestIndex().Is(d20));
+  CHECK_EQ(test.PopHighestIndex(), d23);
+  CHECK_EQ(test.PopLowestIndex(), d20);
 
   CHECK(test.IncludesAliasOf(d21));
   CHECK(test.IncludesAliasOf(d22));
@@ -13672,8 +13713,8 @@ TEST(cpureglist_utils_d) {
   CHECK(!test.IncludesAliasOf(s20));
   CHECK(!test.IncludesAliasOf(s23));
 
-  CHECK(test.PopHighestIndex().Is(d22));
-  CHECK(test.PopLowestIndex().Is(d21));
+  CHECK_EQ(test.PopHighestIndex(), d22);
+  CHECK_EQ(test.PopLowestIndex(), d21);
 
   CHECK(!test.IncludesAliasOf(d21));
   CHECK(!test.IncludesAliasOf(d22));
@@ -13939,7 +13980,7 @@ TEST(blr_lr) {
   __ Mov(x0, 0xDEADBEEF);
   __ B(&end);
 
-  __ Bind(&target);
+  __ Bind(&target, BranchTargetIdentifier::kBtiCall);
   __ Mov(x0, 0xC001C0DE);
 
   __ Bind(&end);
@@ -14540,12 +14581,11 @@ TEST(default_nan_double) {
   DefaultNaNHelper(qn, qm, qa);
 }
 
-TEST(call_no_relocation) {
+TEST(near_call_no_relocation) {
   INIT_V8();
   SETUP();
 
   START();
-  Address buf_addr = reinterpret_cast<Address>(buf);
 
   Label function;
   Label test;
@@ -14558,19 +14598,17 @@ TEST(call_no_relocation) {
 
   __ Bind(&test);
   __ Mov(x0, 0x0);
-  __ Push(lr, xzr);
   {
     Assembler::BlockConstPoolScope scope(&masm);
-    __ Call(buf_addr + function.pos(), RelocInfo::NONE);
+    int offset = (function.pos() - __ pc_offset()) / kInstrSize;
+    __ near_call(offset, RelocInfo::NONE);
   }
-  __ Pop(xzr, lr);
   END();
 
   RUN();
 
   CHECK_EQUAL_64(1, x0);
 }
-
 
 static void AbsHelperX(int64_t value) {
   int64_t expected;
@@ -14719,11 +14757,11 @@ TEST(pool_size) {
 
   __ bind(&exit);
 
-  HandleScope handle_scope(isolate);
   CodeDesc desc;
   masm.GetCode(isolate, &desc);
-  Handle<Code> code =
-      isolate->factory()->NewCode(desc, Code::STUB, masm.CodeObject());
+  code = Factory::CodeBuilder(isolate, desc, Code::STUB)
+             .set_self_reference(masm.CodeObject())
+             .Build();
 
   unsigned pool_count = 0;
   int pool_mask = RelocInfo::ModeMask(RelocInfo::CONST_POOL) |
@@ -14731,11 +14769,11 @@ TEST(pool_size) {
   for (RelocIterator it(*code, pool_mask); !it.done(); it.next()) {
     RelocInfo* info = it.rinfo();
     if (RelocInfo::IsConstPool(info->rmode())) {
-      CHECK(info->data() == constant_pool_size);
+      CHECK_EQ(info->data(), constant_pool_size);
       ++pool_count;
     }
     if (RelocInfo::IsVeneerPool(info->rmode())) {
-      CHECK(info->data() == veneer_pool_size);
+      CHECK_EQ(info->data(), veneer_pool_size);
       ++pool_count;
     }
   }
@@ -14784,7 +14822,7 @@ TEST(jump_tables_forward) {
   }
 
   for (int i = 0; i < kNumCases; ++i) {
-    __ Bind(&labels[i]);
+    __ Bind(&labels[i], BranchTargetIdentifier::kBtiJump);
     __ Mov(value, values[i]);
     __ B(&done);
   }
@@ -14832,7 +14870,7 @@ TEST(jump_tables_backward) {
   __ B(&loop);
 
   for (int i = 0; i < kNumCases; ++i) {
-    __ Bind(&labels[i]);
+    __ Bind(&labels[i], BranchTargetIdentifier::kBtiJump);
     __ Mov(value, values[i]);
     __ B(&done);
   }
@@ -14894,7 +14932,7 @@ TEST(internal_reference_linked) {
   __ dcptr(&done);
   __ Tbz(x0, 1, &done);
 
-  __ Bind(&done);
+  __ Bind(&done, BranchTargetIdentifier::kBtiJump);
   __ Mov(x0, 1);
 
   END();
@@ -14922,6 +14960,8 @@ TEST(internal_reference_linked) {
 #undef CHECK_EQUAL_32
 #undef CHECK_EQUAL_FP32
 #undef CHECK_EQUAL_64
+#undef CHECK_FULL_HEAP_OBJECT_IN_REGISTER
+#undef CHECK_NOT_ZERO_AND_NOT_EQUAL_64
 #undef CHECK_EQUAL_FP64
 #undef CHECK_EQUAL_128
 #undef CHECK_CONSTANT_POOL_SIZE

@@ -40,7 +40,6 @@
       "main": "run.js",
       "resources": [],
       "results_regexp": "^%s\\-ArrayLiteralInitialSpreadLargePacked\\(Score\\): (.+)$",
-      "retry_count_arm64": 1,
       "tests": [
         {"name": "Spread"},
         {"name": "ForLength"},
@@ -57,7 +56,6 @@
       "main": "run.js",
       "resources": [],
       "results_regexp": "^%s\\-ArrayLiteralInitialSpreadLargeHoley\\(Score\\): (.+)$",
-      "retry_count_arm64": 1,
       "tests": [
         {"name": "Spread"},
         {"name": "ForLength"},
@@ -74,7 +72,6 @@
       "main": "run.js",
       "resources": [],
       "results_regexp": "^%s\\-ArrayLiteralInitialSpreadLargeDoublePacked\\(Score\\): (.+)$",
-      "retry_count_arm64": 1,
       "tests": [
         {"name": "Spread"},
         {"name": "ForLength"},
@@ -91,7 +88,6 @@
       "main": "run.js",
       "resources": [],
       "results_regexp": "^%s\\-ArrayLiteralInitialSpreadLargeDoubleHoley\\(Score\\): (.+)$",
-      "retry_count_arm64": 1,
       "tests": [
         {"name": "Spread"},
         {"name": "ForLength"},
@@ -508,7 +504,9 @@
         {"name": "NewIntlNumberFormat"},
         {"name": "NewIntlPluralRules"},
         {"name": "NewIntlListFormat"},
-        {"name": "NewIntlRelativeTimeFormat"}
+        {"name": "NewIntlRelativeTimeFormat"},
+        {"name": "NewIntlLocale"},
+        {"name": "NewIntlLocaleWithOptions"}
       ]
     },
     {
@@ -570,12 +568,26 @@
       "main": "run.js",
       "flags": [],
       "resources": [
-	      "tagged-template.js"
+	      "array-indexof-includes.js",
+	      "spread-call.js",
+        "tagged-template.js",
+        "has-own-property.js",
+        "array-map.js",
+        "array-reduce.js"
       ],
       "results_regexp": "^%s\\-Numbers\\(Score\\): (.+)$",
       "tests": [
         {"name": "TaggedTemplate"},
-        {"name": "TaggedTemplateLoose"}
+        {"name": "TaggedTemplateLoose"},
+        {"name": "ArrayIndexOf"},
+        {"name": "ArrayIncludes"},
+        {"name": "ApplySpreadLiteral"},
+        {"name": "SpreadCall"},
+        {"name": "SpreadCallSpreadLiteral"},
+        {"name": "HasOwnProperty"},
+        {"name": "ArrayMap"},
+        {"name": "ArrayReduce"},
+        {"name": "ArrayReduceRight"}
       ]
     },
     {
@@ -605,6 +617,18 @@
         {"name": "Custom-Serialize-Error.stack"},
         {"name": "Inline-Serialize-Error.stack"},
         {"name": "Recursive-Serialize-Error.stack"}
+      ]
+    },
+    {
+      "name": "IC",
+      "path": ["IC"],
+      "main": "run.js",
+      "flags": ["--no-opt"],
+      "resources": ["loadconstantfromprototype.js"],
+      "results_regexp": "^%s\\-IC\\(Score\\): (.+)$",
+      "tests": [
+        {"name": "LoadConstantFromPrototype"
+        }
       ]
     }
   ]

@@ -17,7 +17,7 @@ function Baseline() {
 %NeverOptimizeFunction(Baseline);
 
 assertThrows(Baseline, TypeError,
-    "Cannot perform Array Iterator.prototype.next on a neutered ArrayBuffer");
+    "Cannot perform Array Iterator.prototype.next on a detached ArrayBuffer");
 
 function Turbo(count = 10000) {
   let array = Array(10000);
@@ -39,9 +39,10 @@ function Turbo(count = 10000) {
   return sum;
 }
 
+%PrepareFunctionForOptimization(Turbo);
 Turbo(10);
 Turbo(10);
 %OptimizeFunctionOnNextCall(Turbo);
 
 assertThrows(Turbo, TypeError,
-    "Cannot perform Array Iterator.prototype.next on a neutered ArrayBuffer");
+    "Cannot perform Array Iterator.prototype.next on a detached ArrayBuffer");

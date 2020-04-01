@@ -5,7 +5,7 @@
 #ifndef V8_OBJECTS_FRAME_ARRAY_H_
 #define V8_OBJECTS_FRAME_ARRAY_H_
 
-#include "src/objects.h"
+#include "src/objects/objects.h"
 #include "src/wasm/wasm-objects.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -38,6 +38,7 @@ class FrameArray : public FixedArray {
 #undef DECL_FRAME_ARRAY_ACCESSORS
 
   inline bool IsWasmFrame(int frame_ix) const;
+  inline bool IsWasmCompiledFrame(int frame_ix) const;
   inline bool IsWasmInterpretedFrame(int frame_ix) const;
   inline bool IsAsmJsWasmFrame(int frame_ix) const;
   inline bool IsAnyWasmFrame(int frame_ix) const;
@@ -47,7 +48,7 @@ class FrameArray : public FixedArray {
 
   // Flags.
   enum Flag {
-    kIsWasmFrame = 1 << 0,
+    kIsWasmCompiledFrame = 1 << 0,
     kIsWasmInterpretedFrame = 1 << 1,
     kIsAsmJsWasmFrame = 1 << 2,
     kIsStrict = 1 << 3,

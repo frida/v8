@@ -8,13 +8,13 @@ namespace array {
   // Naming convention from elements.cc. We have a similar intent but implement
   // fastpaths using generics instead of using a class hierarchy for elements
   // kinds specific implementations.
-  type GenericElementsAccessor;
-  type FastPackedSmiElements;
-  type FastPackedObjectElements;
-  type FastPackedDoubleElements;
-  type FastSmiOrObjectElements;
-  type FastDoubleElements;
-  type DictionaryElements;
+  type GenericElementsAccessor extends ElementsKind;
+  type FastPackedSmiElements extends ElementsKind;
+  type FastPackedObjectElements extends ElementsKind;
+  type FastPackedDoubleElements extends ElementsKind;
+  type FastSmiOrObjectElements extends ElementsKind;
+  type FastDoubleElements extends ElementsKind;
+  type DictionaryElements extends ElementsKind;
 
   macro EnsureWriteableFastElements(implicit context: Context)(array: JSArray) {
     assert(IsFastElementsKind(array.map.elements_kind));
@@ -26,63 +26,57 @@ namespace array {
     // extract FixedArrays and don't have to worry about FixedDoubleArrays.
     assert(IsFastSmiOrTaggedElementsKind(array.map.elements_kind));
 
-    const length: Smi = Cast<Smi>(array.length) otherwise unreachable;
+    const length =
+        Convert<intptr>(Cast<Smi>(array.length) otherwise unreachable);
     array.elements =
-        ExtractFixedArray(elements, 0, length, length, kFixedArrays);
+        ExtractFixedArray(UnsafeCast<FixedArray>(elements), 0, length, length);
     assert(array.elements.map != kCOWMap);
   }
 
-  macro IsJSArray(implicit context: Context)(o: Object): bool {
-    try {
-      const array: JSArray = Cast<JSArray>(o) otherwise NotArray;
-      return true;
-    }
-    label NotArray {
-      return false;
-    }
-  }
-
-  macro LoadElementOrUndefined(a: FixedArray, i: Smi): Object {
-    const e: Object = a.objects[i];
-    return e == Hole ? Undefined : e;
+  macro LoadElementOrUndefined(implicit context:
+                                   Context)(a: FixedArray, i: Smi): JSAny {
+    const e = UnsafeCast<(JSAny | TheHole)>(a.objects[i]);
+    return ReplaceTheHoleWithUndefined(e);
   }
 
   macro LoadElementOrUndefined(a: FixedDoubleArray, i: Smi): NumberOrUndefined {
-    try {
-      const f: float64 = LoadDoubleWithHoleCheck(a, i) otherwise IfHole;
-      return AllocateHeapNumberWithValue(f);
-    }
-    label IfHole {
-      return Undefined;
-    }
+    const f: float64 = a.floats[i].Value() otherwise return Undefined;
+    return AllocateHeapNumberWithValue(f);
   }
 
   macro StoreArrayHole(elements: FixedDoubleArray, k: Smi): void {
-    StoreFixedDoubleArrayHoleSmi(elements, k);
+    elements.floats[k] = kDoubleHole;
   }
 
   macro StoreArrayHole(elements: FixedArray, k: Smi): void {
-    elements.objects[k] = Hole;
+    elements.objects[k] = TheHole;
   }
 
-  macro CopyArrayElement(
-      elements: FixedArray, newElements: FixedArray, from: Smi, to: Smi): void {
-    const e: Object = elements.objects[from];
-    newElements.objects[to] = e;
-  }
+  extern macro SetPropertyLength(implicit context: Context)(JSAny, Number);
 
-  macro CopyArrayElement(
-      elements: FixedDoubleArray, newElements: FixedDoubleArray, from: Smi,
-      to: Smi): void {
-    try {
-      const floatValue: float64 = LoadDoubleWithHoleCheck(elements, from)
-          otherwise FoundHole;
-      newElements.floats[to] = floatValue;
+  const kLengthDescriptorIndex:
+      constexpr int31 generates 'JSArray::kLengthDescriptorIndex';
+  const kAttributesReadOnlyMask: constexpr int31
+  generates 'PropertyDetails::kAttributesReadOnlyMask';
+
+  @export
+  macro EnsureArrayLengthWritable(implicit context: Context)(map: Map):
+      void labels Bailout {
+    // Don't support arrays in dictionary named property mode.
+    if (IsDictionaryMap(map)) {
+      goto Bailout;
     }
-    label FoundHole {
-      StoreArrayHole(newElements, to);
+
+    // Check whether the length property is writable. The length property is the
+    // only default named property on arrays. It's nonconfigurable, hence is
+    // guaranteed to stay the first property.
+    const descriptors: DescriptorArray = map.instance_descriptors;
+    const descriptor:&DescriptorEntry =
+        & descriptors.descriptors[kLengthDescriptorIndex];
+    assert(TaggedEqual(descriptor->key, LengthStringConstant()));
+    const details: Smi = UnsafeCast<Smi>(descriptor->details);
+    if ((details & kAttributesReadOnlyMask) != 0) {
+      goto Bailout;
     }
   }
-
-  extern macro SetPropertyLength(implicit context: Context)(Object, Number);
 }

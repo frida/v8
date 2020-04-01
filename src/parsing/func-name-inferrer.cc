@@ -6,7 +6,7 @@
 
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/ast.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -45,7 +45,7 @@ void FuncNameInferrer::RemoveAsyncKeywordFromEnd() {
   }
 }
 
-const AstConsString* FuncNameInferrer::MakeNameFromStack() {
+AstConsString* FuncNameInferrer::MakeNameFromStack() {
   if (names_stack_.size() == 0) {
     return ast_value_factory_->empty_cons_string();
   }
@@ -70,7 +70,7 @@ const AstConsString* FuncNameInferrer::MakeNameFromStack() {
 }
 
 void FuncNameInferrer::InferFunctionsNames() {
-  const AstConsString* func_name = MakeNameFromStack();
+  AstConsString* func_name = MakeNameFromStack();
   for (FunctionLiteral* func : funcs_to_infer_) {
     func->set_raw_inferred_name(func_name);
   }

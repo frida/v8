@@ -5,13 +5,18 @@
 #ifndef V8_TORQUE_AST_H_
 #define V8_TORQUE_AST_H_
 
+#include <algorithm>
 #include <iostream>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "src/base/optional.h"
+#include "src/torque/constants.h"
 #include "src/torque/source-positions.h"
+#include "src/torque/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -42,8 +47,7 @@ namespace torque {
 #define AST_TYPE_EXPRESSION_NODE_KIND_LIST(V) \
   V(BasicTypeExpression)                      \
   V(FunctionTypeExpression)                   \
-  V(UnionTypeExpression)                      \
-  V(ReferenceTypeExpression)
+  V(UnionTypeExpression)
 
 #define AST_STATEMENT_NODE_KIND_LIST(V) \
   V(BlockStatement)                     \
@@ -51,7 +55,6 @@ namespace torque {
   V(IfStatement)                        \
   V(WhileStatement)                     \
   V(ForLoopStatement)                   \
-  V(ForOfLoopStatement)                 \
   V(BreakStatement)                     \
   V(ContinueStatement)                  \
   V(ReturnStatement)                    \
@@ -61,25 +64,27 @@ namespace torque {
   V(VarDeclarationStatement)            \
   V(GotoStatement)
 
+#define AST_TYPE_DECLARATION_NODE_KIND_LIST(V) \
+  V(AbstractTypeDeclaration)                   \
+  V(TypeAliasDeclaration)                      \
+  V(BitFieldStructDeclaration)                 \
+  V(ClassDeclaration)                          \
+  V(StructDeclaration)
+
 #define AST_DECLARATION_NODE_KIND_LIST(V) \
-  V(TypeDeclaration)                      \
-  V(TypeAliasDeclaration)                 \
-  V(StandardDeclaration)                  \
-  V(GenericDeclaration)                   \
+  AST_TYPE_DECLARATION_NODE_KIND_LIST(V)  \
+  V(GenericCallableDeclaration)           \
+  V(GenericTypeDeclaration)               \
   V(SpecializationDeclaration)            \
   V(ExternConstDeclaration)               \
-  V(ClassDeclaration)                     \
-  V(StructDeclaration)                    \
   V(NamespaceDeclaration)                 \
   V(ConstDeclaration)                     \
-  V(CppIncludeDeclaration)
-
-#define AST_CALLABLE_NODE_KIND_LIST(V) \
-  V(TorqueMacroDeclaration)            \
-  V(TorqueBuiltinDeclaration)          \
-  V(ExternalMacroDeclaration)          \
-  V(ExternalBuiltinDeclaration)        \
-  V(ExternalRuntimeDeclaration)        \
+  V(CppIncludeDeclaration)                \
+  V(TorqueMacroDeclaration)               \
+  V(TorqueBuiltinDeclaration)             \
+  V(ExternalMacroDeclaration)             \
+  V(ExternalBuiltinDeclaration)           \
+  V(ExternalRuntimeDeclaration)           \
   V(IntrinsicDeclaration)
 
 #define AST_NODE_KIND_LIST(V)           \
@@ -87,9 +92,9 @@ namespace torque {
   AST_TYPE_EXPRESSION_NODE_KIND_LIST(V) \
   AST_STATEMENT_NODE_KIND_LIST(V)       \
   AST_DECLARATION_NODE_KIND_LIST(V)     \
-  AST_CALLABLE_NODE_KIND_LIST(V)        \
   V(Identifier)                         \
-  V(LabelBlock)
+  V(LabelBlock)                         \
+  V(ClassBody)
 
 struct AstNode {
  public:
@@ -112,16 +117,16 @@ struct AstNodeClassCheck {
 };
 
 // Boilerplate for most derived classes.
-#define DEFINE_AST_NODE_LEAF_BOILERPLATE(T)                        \
-  static const Kind kKind = Kind::k##T;                            \
-  static T* cast(AstNode* node) {                                  \
-    if (node->kind != kKind) return nullptr;                       \
-    return static_cast<T*>(node);                                  \
-  }                                                                \
-  static T* DynamicCast(AstNode* node) {                           \
-    if (!node) return nullptr;                                     \
-    if (!AstNodeClassCheck::IsInstanceOf<T>(node)) return nullptr; \
-    return static_cast<T*>(node);                                  \
+#define DEFINE_AST_NODE_LEAF_BOILERPLATE(T)  \
+  static const Kind kKind = Kind::k##T;      \
+  static T* cast(AstNode* node) {            \
+    DCHECK_EQ(node->kind, kKind);            \
+    return static_cast<T*>(node);            \
+  }                                          \
+  static T* DynamicCast(AstNode* node) {     \
+    if (!node) return nullptr;               \
+    if (node->kind != kKind) return nullptr; \
+    return static_cast<T*>(node);            \
   }
 
 // Boilerplate for classes with subclasses.
@@ -139,6 +144,12 @@ struct AstNodeClassCheck {
 struct Expression : AstNode {
   Expression(Kind kind, SourcePosition pos) : AstNode(kind, pos) {}
   DEFINE_AST_NODE_INNER_BOILERPLATE(Expression)
+
+  using VisitCallback = std::function<void(Expression*)>;
+  virtual void VisitAllSubExpressions(VisitCallback callback) {
+    // TODO(szuend): Hoist this up to AstNode and make it a
+    //               general Ast visitor.
+  }
 };
 
 struct LocationExpression : Expression {
@@ -174,6 +185,23 @@ struct NamespaceDeclaration : Declaration {
   std::string name;
 };
 
+struct EnumDescription {
+  SourcePosition pos;
+  std::string name;
+  std::string constexpr_generates;
+  bool is_open;
+  std::vector<std::string> entries;
+
+  EnumDescription(SourcePosition pos, std::string name,
+                  std::string constexpr_generates, bool is_open,
+                  std::vector<std::string> entries = {})
+      : pos(std::move(pos)),
+        name(std::move(name)),
+        constexpr_generates(std::move(constexpr_generates)),
+        is_open(is_open),
+        entries(std::move(entries)) {}
+};
+
 class Ast {
  public:
   Ast() {}
@@ -189,9 +217,30 @@ class Ast {
     return result;
   }
 
+  void DeclareImportForCurrentFile(SourceId import_id) {
+    declared_imports_[CurrentSourcePosition::Get().source].insert(import_id);
+  }
+
+  void AddEnumDescription(EnumDescription description) {
+    std::string name = description.name;
+    DCHECK(!name.empty());
+    auto f = [&](const auto& d) { return d.name == name; };
+    USE(f);  // Suppress unused in release.
+    DCHECK_EQ(
+        std::find_if(enum_descriptions_.begin(), enum_descriptions_.end(), f),
+        enum_descriptions_.end());
+    enum_descriptions_.push_back(std::move(description));
+  }
+
+  std::vector<EnumDescription>& EnumDescriptions() {
+    return enum_descriptions_;
+  }
+
  private:
   std::vector<Declaration*> declarations_;
   std::vector<std::unique_ptr<AstNode>> nodes_;
+  std::map<SourceId, std::set<SourceId>> declared_imports_;
+  std::vector<EnumDescription> enum_descriptions_;
 };
 
 static const char* const kThisParameterName = "this";
@@ -202,6 +251,16 @@ struct Identifier : AstNode {
   Identifier(SourcePosition pos, std::string identifier)
       : AstNode(kKind, pos), value(std::move(identifier)) {}
   std::string value;
+};
+
+inline std::ostream& operator<<(std::ostream& os, Identifier* id) {
+  return os << id->value;
+}
+
+struct IdentifierPtrValueEq {
+  bool operator()(const Identifier* a, const Identifier* b) {
+    return a->value < b->value;
+  }
 };
 
 struct IdentifierExpression : LocationExpression {
@@ -217,6 +276,11 @@ struct IdentifierExpression : LocationExpression {
                        std::vector<TypeExpression*> args = {})
       : IdentifierExpression(pos, {}, name, std::move(args)) {}
   bool IsThis() const { return name->value == kThisParameterName; }
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    callback(this);
+  }
+
   std::vector<std::string> namespace_qualification;
   Identifier* name;
   std::vector<TypeExpression*> generic_arguments;
@@ -224,14 +288,22 @@ struct IdentifierExpression : LocationExpression {
 
 struct IntrinsicCallExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(IntrinsicCallExpression)
-  IntrinsicCallExpression(SourcePosition pos, std::string name,
+  IntrinsicCallExpression(SourcePosition pos, Identifier* name,
                           std::vector<TypeExpression*> generic_arguments,
                           std::vector<Expression*> arguments)
       : Expression(kKind, pos),
-        name(std::move(name)),
+        name(name),
         generic_arguments(std::move(generic_arguments)),
         arguments(std::move(arguments)) {}
-  std::string name;
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    for (auto argument : arguments) {
+      argument->VisitAllSubExpressions(callback);
+    }
+    callback(this);
+  }
+
+  Identifier* name;
   std::vector<TypeExpression*> generic_arguments;
   std::vector<Expression*> arguments;
 };
@@ -241,30 +313,49 @@ struct CallMethodExpression : Expression {
   CallMethodExpression(SourcePosition pos, Expression* target,
                        IdentifierExpression* method,
                        std::vector<Expression*> arguments,
-                       std::vector<std::string> labels)
+                       std::vector<Identifier*> labels)
       : Expression(kKind, pos),
         target(target),
         method(method),
         arguments(std::move(arguments)),
         labels(std::move(labels)) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    target->VisitAllSubExpressions(callback);
+    method->VisitAllSubExpressions(callback);
+    for (auto argument : arguments) {
+      argument->VisitAllSubExpressions(callback);
+    }
+    callback(this);
+  }
+
   Expression* target;
   IdentifierExpression* method;
   std::vector<Expression*> arguments;
-  std::vector<std::string> labels;
+  std::vector<Identifier*> labels;
 };
 
 struct CallExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(CallExpression)
   CallExpression(SourcePosition pos, IdentifierExpression* callee,
                  std::vector<Expression*> arguments,
-                 std::vector<std::string> labels)
+                 std::vector<Identifier*> labels)
       : Expression(kKind, pos),
         callee(callee),
         arguments(std::move(arguments)),
         labels(std::move(labels)) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    callee->VisitAllSubExpressions(callback);
+    for (auto argument : arguments) {
+      argument->VisitAllSubExpressions(callback);
+    }
+    callback(this);
+  }
+
   IdentifierExpression* callee;
   std::vector<Expression*> arguments;
-  std::vector<std::string> labels;
+  std::vector<Identifier*> labels;
 };
 
 struct NameAndExpression {
@@ -279,6 +370,14 @@ struct StructExpression : Expression {
       : Expression(kKind, pos),
         type(type),
         initializers(std::move(initializers)) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    for (auto& initializer : initializers) {
+      initializer.expression->VisitAllSubExpressions(callback);
+    }
+    callback(this);
+  }
+
   TypeExpression* type;
   std::vector<NameAndExpression> initializers;
 };
@@ -287,6 +386,13 @@ struct LogicalOrExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(LogicalOrExpression)
   LogicalOrExpression(SourcePosition pos, Expression* left, Expression* right)
       : Expression(kKind, pos), left(left), right(right) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    left->VisitAllSubExpressions(callback);
+    right->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* left;
   Expression* right;
 };
@@ -295,6 +401,13 @@ struct LogicalAndExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(LogicalAndExpression)
   LogicalAndExpression(SourcePosition pos, Expression* left, Expression* right)
       : Expression(kKind, pos), left(left), right(right) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    left->VisitAllSubExpressions(callback);
+    right->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* left;
   Expression* right;
 };
@@ -303,6 +416,12 @@ struct SpreadExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(SpreadExpression)
   SpreadExpression(SourcePosition pos, Expression* spreadee)
       : Expression(kKind, pos), spreadee(spreadee) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    spreadee->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* spreadee;
 };
 
@@ -314,6 +433,14 @@ struct ConditionalExpression : Expression {
         condition(condition),
         if_true(if_true),
         if_false(if_false) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    condition->VisitAllSubExpressions(callback);
+    if_true->VisitAllSubExpressions(callback);
+    if_false->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* condition;
   Expression* if_true;
   Expression* if_false;
@@ -323,14 +450,24 @@ struct StringLiteralExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(StringLiteralExpression)
   StringLiteralExpression(SourcePosition pos, std::string literal)
       : Expression(kKind, pos), literal(std::move(literal)) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    callback(this);
+  }
+
   std::string literal;
 };
 
 struct NumberLiteralExpression : Expression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(NumberLiteralExpression)
-  NumberLiteralExpression(SourcePosition pos, std::string name)
-      : Expression(kKind, pos), number(std::move(name)) {}
-  std::string number;
+  NumberLiteralExpression(SourcePosition pos, double number)
+      : Expression(kKind, pos), number(number) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    callback(this);
+  }
+
+  double number;
 };
 
 struct ElementAccessExpression : LocationExpression {
@@ -338,6 +475,13 @@ struct ElementAccessExpression : LocationExpression {
   ElementAccessExpression(SourcePosition pos, Expression* array,
                           Expression* index)
       : LocationExpression(kKind, pos), array(array), index(index) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    array->VisitAllSubExpressions(callback);
+    index->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* array;
   Expression* index;
 };
@@ -347,6 +491,12 @@ struct FieldAccessExpression : LocationExpression {
   FieldAccessExpression(SourcePosition pos, Expression* object,
                         Identifier* field)
       : LocationExpression(kKind, pos), object(object), field(field) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    object->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* object;
   Identifier* field;
 };
@@ -355,6 +505,12 @@ struct DereferenceExpression : LocationExpression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(DereferenceExpression)
   DereferenceExpression(SourcePosition pos, Expression* reference)
       : LocationExpression(kKind, pos), reference(reference) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    reference->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* reference;
 };
 
@@ -369,6 +525,13 @@ struct AssignmentExpression : Expression {
         location(location),
         op(std::move(op)),
         value(value) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    location->VisitAllSubExpressions(callback);
+    value->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* location;
   base::Optional<std::string> op;
   Expression* value;
@@ -381,6 +544,12 @@ struct IncrementDecrementExpression : Expression {
   IncrementDecrementExpression(SourcePosition pos, Expression* location,
                                IncrementDecrementOperator op, bool postfix)
       : Expression(kKind, pos), location(location), op(op), postfix(postfix) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    location->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   Expression* location;
   IncrementDecrementOperator op;
   bool postfix;
@@ -398,6 +567,12 @@ struct AssumeTypeImpossibleExpression : Expression {
       : Expression(kKind, pos),
         excluded_type(excluded_type),
         expression(expression) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    expression->VisitAllSubExpressions(callback);
+    callback(this);
+  }
+
   TypeExpression* excluded_type;
   Expression* expression;
 };
@@ -409,18 +584,30 @@ struct NewExpression : Expression {
       : Expression(kKind, pos),
         type(type),
         initializers(std::move(initializers)) {}
+
+  void VisitAllSubExpressions(VisitCallback callback) override {
+    for (auto& initializer : initializers) {
+      initializer.expression->VisitAllSubExpressions(callback);
+    }
+    callback(this);
+  }
+
   TypeExpression* type;
   std::vector<NameAndExpression> initializers;
 };
 
+enum class ImplicitKind { kNoImplicit, kJSImplicit, kImplicit };
+
 struct ParameterList {
   std::vector<Identifier*> names;
   std::vector<TypeExpression*> types;
-  size_t implicit_count;
-  bool has_varargs;
-  std::string arguments_variable;
+  ImplicitKind implicit_kind = ImplicitKind::kNoImplicit;
+  SourcePosition implicit_kind_pos = SourcePosition::Invalid();
+  size_t implicit_count = 0;
+  bool has_varargs = false;
+  std::string arguments_variable = "";
 
-  static ParameterList Empty() { return ParameterList{{}, {}, 0, false, ""}; }
+  static ParameterList Empty() { return {}; }
   std::vector<TypeExpression*> GetImplicitTypes() {
     return std::vector<TypeExpression*>(types.begin(),
                                         types.begin() + implicit_count);
@@ -435,14 +622,19 @@ struct BasicTypeExpression : TypeExpression {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(BasicTypeExpression)
   BasicTypeExpression(SourcePosition pos,
                       std::vector<std::string> namespace_qualification,
-                      bool is_constexpr, std::string name)
+                      std::string name,
+                      std::vector<TypeExpression*> generic_arguments)
       : TypeExpression(kKind, pos),
         namespace_qualification(std::move(namespace_qualification)),
-        is_constexpr(is_constexpr),
-        name(std::move(name)) {}
+        is_constexpr(IsConstexprName(name)),
+        name(std::move(name)),
+        generic_arguments(std::move(generic_arguments)) {}
+  BasicTypeExpression(SourcePosition pos, std::string name)
+      : BasicTypeExpression(pos, {}, std::move(name), {}) {}
   std::vector<std::string> namespace_qualification;
   bool is_constexpr;
   std::string name;
+  std::vector<TypeExpression*> generic_arguments;
 };
 
 struct FunctionTypeExpression : TypeExpression {
@@ -463,13 +655,6 @@ struct UnionTypeExpression : TypeExpression {
       : TypeExpression(kKind, pos), a(a), b(b) {}
   TypeExpression* a;
   TypeExpression* b;
-};
-
-struct ReferenceTypeExpression : TypeExpression {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(ReferenceTypeExpression)
-  ReferenceTypeExpression(SourcePosition pos, TypeExpression* referenced_type)
-      : TypeExpression(kKind, pos), referenced_type(referenced_type) {}
-  TypeExpression* referenced_type;
 };
 
 struct ExpressionStatement : Statement {
@@ -569,12 +754,10 @@ struct ContinueStatement : Statement {
 
 struct GotoStatement : Statement {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(GotoStatement)
-  GotoStatement(SourcePosition pos, std::string label,
+  GotoStatement(SourcePosition pos, Identifier* label,
                 const std::vector<Expression*>& arguments)
-      : Statement(kKind, pos),
-        label(std::move(label)),
-        arguments(std::move(arguments)) {}
-  std::string label;
+      : Statement(kKind, pos), label(label), arguments(std::move(arguments)) {}
+  Identifier* label;
   std::vector<Expression*> arguments;
 };
 
@@ -597,40 +780,15 @@ struct ForLoopStatement : Statement {
   Statement* body;
 };
 
-struct RangeExpression {
-  base::Optional<Expression*> begin;
-  base::Optional<Expression*> end;
-};
-
-struct ForOfLoopStatement : Statement {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(ForOfLoopStatement)
-  ForOfLoopStatement(SourcePosition pos, Statement* decl, Expression* iterable,
-                     base::Optional<RangeExpression> range, Statement* body)
-      : Statement(kKind, pos),
-        var_declaration(VarDeclarationStatement::cast(decl)),
-        iterable(iterable),
-        body(body) {
-    if (range) {
-      begin = range->begin;
-      end = range->end;
-    }
-  }
-  VarDeclarationStatement* var_declaration;
-  Expression* iterable;
-  base::Optional<Expression*> begin;
-  base::Optional<Expression*> end;
-  Statement* body;
-};
-
 struct LabelBlock : AstNode {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(LabelBlock)
-  LabelBlock(SourcePosition pos, std::string label,
+  LabelBlock(SourcePosition pos, Identifier* label,
              const ParameterList& parameters, Statement* body)
       : AstNode(kKind, pos),
-        label(std::move(label)),
+        label(label),
         parameters(parameters),
         body(std::move(body)) {}
-  std::string label;
+  Identifier* label;
   ParameterList parameters;
   Statement* body;
 };
@@ -667,30 +825,39 @@ struct BlockStatement : Statement {
 };
 
 struct TypeDeclaration : Declaration {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(TypeDeclaration)
-  TypeDeclaration(SourcePosition pos, Identifier* name, bool transient,
-                  base::Optional<Identifier*> extends,
-                  base::Optional<std::string> generates,
-                  base::Optional<std::string> constexpr_generates)
-      : Declaration(kKind, pos),
-        name(name),
-        transient(transient),
-        extends(extends),
-        generates(std::move(generates)),
-        constexpr_generates(std::move(constexpr_generates)) {}
+  DEFINE_AST_NODE_INNER_BOILERPLATE(TypeDeclaration)
+  TypeDeclaration(Kind kKind, SourcePosition pos, Identifier* name)
+      : Declaration(kKind, pos), name(name) {}
   Identifier* name;
-  bool transient;
-  base::Optional<Identifier*> extends;
-  base::Optional<std::string> generates;
-  base::Optional<std::string> constexpr_generates;
 };
 
-struct TypeAliasDeclaration : Declaration {
+struct InstanceTypeConstraints {
+  InstanceTypeConstraints() : value(-1), num_flags_bits(-1) {}
+  int value;
+  int num_flags_bits;
+};
+
+struct AbstractTypeDeclaration : TypeDeclaration {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(AbstractTypeDeclaration)
+  AbstractTypeDeclaration(SourcePosition pos, Identifier* name, bool transient,
+                          base::Optional<TypeExpression*> extends,
+                          base::Optional<std::string> generates)
+      : TypeDeclaration(kKind, pos, name),
+        is_constexpr(IsConstexprName(name->value)),
+        transient(transient),
+        extends(extends),
+        generates(std::move(generates)) {}
+  bool is_constexpr;
+  bool transient;
+  base::Optional<TypeExpression*> extends;
+  base::Optional<std::string> generates;
+};
+
+struct TypeAliasDeclaration : TypeDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(TypeAliasDeclaration)
   TypeAliasDeclaration(SourcePosition pos, Identifier* name,
                        TypeExpression* type)
-      : Declaration(kKind, pos), name(name), type(type) {}
-  Identifier* name;
+      : TypeDeclaration(kKind, pos, name), type(type) {}
   TypeExpression* type;
 };
 
@@ -699,54 +866,91 @@ struct NameAndTypeExpression {
   TypeExpression* type;
 };
 
+struct ImplicitParameters {
+  Identifier* kind;
+  std::vector<NameAndTypeExpression> parameters;
+};
+
 struct StructFieldExpression {
   NameAndTypeExpression name_and_type;
   bool const_qualified;
 };
 
+struct BitFieldDeclaration {
+  NameAndTypeExpression name_and_type;
+  int num_bits;
+};
+
+enum class ConditionalAnnotationType {
+  kPositive,
+  kNegative,
+};
+
+struct ConditionalAnnotation {
+  std::string condition;
+  ConditionalAnnotationType type;
+};
+
+struct AnnotationParameter {
+  std::string string_value;
+  int int_value;
+  bool is_int;
+};
+
+struct Annotation {
+  Identifier* name;
+  base::Optional<AnnotationParameter> param;
+};
+
 struct ClassFieldExpression {
   NameAndTypeExpression name_and_type;
-  base::Optional<std::string> index;
+  base::Optional<Expression*> index;
+  std::vector<ConditionalAnnotation> conditions;
   bool weak;
   bool const_qualified;
+  bool generate_verify;
 };
 
 struct LabelAndTypes {
-  std::string name;
+  Identifier* name;
   std::vector<TypeExpression*> types;
 };
 
-typedef std::vector<LabelAndTypes> LabelAndTypesVector;
+using LabelAndTypesVector = std::vector<LabelAndTypes>;
 
-struct CallableNodeSignature {
+struct CallableDeclaration : Declaration {
+  CallableDeclaration(AstNode::Kind kind, SourcePosition pos,
+                      bool transitioning, Identifier* name,
+                      ParameterList parameters, TypeExpression* return_type,
+                      LabelAndTypesVector labels)
+      : Declaration(kind, pos),
+        transitioning(transitioning),
+        name(name),
+        parameters(std::move(parameters)),
+        return_type(return_type),
+        labels(std::move(labels)) {}
+  DEFINE_AST_NODE_INNER_BOILERPLATE(CallableDeclaration)
+  bool transitioning;
+  Identifier* name;
   ParameterList parameters;
   TypeExpression* return_type;
   LabelAndTypesVector labels;
 };
 
-struct CallableNode : AstNode {
-  CallableNode(AstNode::Kind kind, SourcePosition pos, bool transitioning,
-               std::string name, ParameterList parameters,
-               TypeExpression* return_type, const LabelAndTypesVector& labels)
-      : AstNode(kind, pos),
-        transitioning(transitioning),
-        name(std::move(name)),
-        signature(new CallableNodeSignature{parameters, return_type, labels}) {}
-  DEFINE_AST_NODE_INNER_BOILERPLATE(CallableNode)
-  bool transitioning;
-  std::string name;
-  std::unique_ptr<CallableNodeSignature> signature;
-};
-
-struct MacroDeclaration : CallableNode {
+struct MacroDeclaration : CallableDeclaration {
   DEFINE_AST_NODE_INNER_BOILERPLATE(MacroDeclaration)
   MacroDeclaration(AstNode::Kind kind, SourcePosition pos, bool transitioning,
-                   std::string name, base::Optional<std::string> op,
+                   Identifier* name, base::Optional<std::string> op,
                    ParameterList parameters, TypeExpression* return_type,
                    const LabelAndTypesVector& labels)
-      : CallableNode(kind, pos, transitioning, std::move(name),
-                     std::move(parameters), return_type, labels),
-        op(std::move(op)) {}
+      : CallableDeclaration(kind, pos, transitioning, name,
+                            std::move(parameters), return_type, labels),
+        op(std::move(op)) {
+    if (parameters.implicit_kind == ImplicitKind::kJSImplicit) {
+      Error("Cannot use \"js-implicit\" with macros, use \"implicit\" instead.")
+          .Position(parameters.implicit_kind_pos);
+    }
+  }
   base::Optional<std::string> op;
 };
 
@@ -754,77 +958,99 @@ struct ExternalMacroDeclaration : MacroDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(ExternalMacroDeclaration)
   ExternalMacroDeclaration(SourcePosition pos, bool transitioning,
                            std::string external_assembler_name,
-                           std::string name, base::Optional<std::string> op,
+                           Identifier* name, base::Optional<std::string> op,
                            ParameterList parameters,
                            TypeExpression* return_type,
                            const LabelAndTypesVector& labels)
-      : MacroDeclaration(kKind, pos, transitioning, std::move(name),
-                         std::move(op), std::move(parameters), return_type,
-                         labels),
+      : MacroDeclaration(kKind, pos, transitioning, name, std::move(op),
+                         std::move(parameters), return_type, labels),
         external_assembler_name(std::move(external_assembler_name)) {}
   std::string external_assembler_name;
 };
 
-struct IntrinsicDeclaration : CallableNode {
+struct IntrinsicDeclaration : CallableDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(IntrinsicDeclaration)
-  IntrinsicDeclaration(SourcePosition pos, std::string name,
+  IntrinsicDeclaration(SourcePosition pos, Identifier* name,
                        ParameterList parameters, TypeExpression* return_type)
-      : CallableNode(kKind, pos, false, std::move(name), std::move(parameters),
-                     return_type, {}) {}
+      : CallableDeclaration(kKind, pos, false, name, std::move(parameters),
+                            return_type, {}) {
+    if (parameters.implicit_kind != ImplicitKind::kNoImplicit) {
+      Error("Intinsics cannot have implicit parameters.");
+    }
+  }
 };
 
 struct TorqueMacroDeclaration : MacroDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(TorqueMacroDeclaration)
   TorqueMacroDeclaration(SourcePosition pos, bool transitioning,
-                         std::string name, base::Optional<std::string> op,
+                         Identifier* name, base::Optional<std::string> op,
                          ParameterList parameters, TypeExpression* return_type,
-                         const LabelAndTypesVector& labels)
-      : MacroDeclaration(kKind, pos, transitioning, std::move(name),
-                         std::move(op), std::move(parameters), return_type,
-                         labels) {}
+                         const LabelAndTypesVector& labels, bool export_to_csa,
+                         base::Optional<Statement*> body)
+      : MacroDeclaration(kKind, pos, transitioning, name, std::move(op),
+                         std::move(parameters), return_type, labels),
+        export_to_csa(export_to_csa),
+        body(body) {}
+  bool export_to_csa;
+  base::Optional<Statement*> body;
 };
 
-struct BuiltinDeclaration : CallableNode {
+struct BuiltinDeclaration : CallableDeclaration {
   DEFINE_AST_NODE_INNER_BOILERPLATE(BuiltinDeclaration)
   BuiltinDeclaration(AstNode::Kind kind, SourcePosition pos,
                      bool javascript_linkage, bool transitioning,
-                     std::string name, ParameterList parameters,
+                     Identifier* name, ParameterList parameters,
                      TypeExpression* return_type)
-      : CallableNode(kind, pos, transitioning, std::move(name),
-                     std::move(parameters), return_type, {}),
-        javascript_linkage(javascript_linkage) {}
+      : CallableDeclaration(kind, pos, transitioning, name,
+                            std::move(parameters), return_type, {}),
+        javascript_linkage(javascript_linkage) {
+    if (parameters.implicit_kind == ImplicitKind::kJSImplicit &&
+        !javascript_linkage) {
+      Error(
+          "\"js-implicit\" is for implicit parameters passed according to the "
+          "JavaScript calling convention. Use \"implicit\" instead.");
+    }
+    if (parameters.implicit_kind == ImplicitKind::kImplicit &&
+        javascript_linkage) {
+      Error(
+          "The JavaScript calling convention implicitly passes a fixed set of "
+          "values. Use \"js-implicit\" to refer to those.")
+          .Position(parameters.implicit_kind_pos);
+    }
+  }
   bool javascript_linkage;
 };
 
 struct ExternalBuiltinDeclaration : BuiltinDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(ExternalBuiltinDeclaration)
   ExternalBuiltinDeclaration(SourcePosition pos, bool transitioning,
-                             bool javascript_linkage, std::string name,
+                             bool javascript_linkage, Identifier* name,
                              ParameterList parameters,
                              TypeExpression* return_type)
-      : BuiltinDeclaration(kKind, pos, javascript_linkage, transitioning,
-                           std::move(name), std::move(parameters),
-                           return_type) {}
+      : BuiltinDeclaration(kKind, pos, javascript_linkage, transitioning, name,
+                           std::move(parameters), return_type) {}
 };
 
 struct TorqueBuiltinDeclaration : BuiltinDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(TorqueBuiltinDeclaration)
   TorqueBuiltinDeclaration(SourcePosition pos, bool transitioning,
-                           bool javascript_linkage, std::string name,
+                           bool javascript_linkage, Identifier* name,
                            ParameterList parameters,
-                           TypeExpression* return_type)
-      : BuiltinDeclaration(kKind, pos, javascript_linkage, transitioning,
-                           std::move(name), std::move(parameters),
-                           return_type) {}
+                           TypeExpression* return_type,
+                           base::Optional<Statement*> body)
+      : BuiltinDeclaration(kKind, pos, javascript_linkage, transitioning, name,
+                           std::move(parameters), return_type),
+        body(body) {}
+  base::Optional<Statement*> body;
 };
 
-struct ExternalRuntimeDeclaration : CallableNode {
+struct ExternalRuntimeDeclaration : CallableDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(ExternalRuntimeDeclaration)
   ExternalRuntimeDeclaration(SourcePosition pos, bool transitioning,
-                             std::string name, ParameterList parameters,
+                             Identifier* name, ParameterList parameters,
                              TypeExpression* return_type)
-      : CallableNode(kKind, pos, transitioning, name, parameters, return_type,
-                     {}) {}
+      : CallableDeclaration(kKind, pos, transitioning, name, parameters,
+                            return_type, {}) {}
 };
 
 struct ConstDeclaration : Declaration {
@@ -840,47 +1066,59 @@ struct ConstDeclaration : Declaration {
   Expression* expression;
 };
 
-struct StandardDeclaration : Declaration {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(StandardDeclaration)
-  StandardDeclaration(SourcePosition pos, CallableNode* callable,
-                      base::Optional<Statement*> body)
-      : Declaration(kKind, pos), callable(callable), body(body) {}
-  CallableNode* callable;
-  base::Optional<Statement*> body;
+struct GenericParameter {
+  Identifier* name;
+  base::Optional<TypeExpression*> constraint;
 };
 
-struct GenericDeclaration : Declaration {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(GenericDeclaration)
-  GenericDeclaration(SourcePosition pos, CallableNode* callable,
-                     std::vector<Identifier*> generic_parameters,
-                     base::Optional<Statement*> body = base::nullopt)
+using GenericParameters = std::vector<GenericParameter>;
+
+// The AST re-shuffles generics from the concrete syntax:
+// Instead of the generic parameters being part of a normal declaration,
+// a declaration with generic parameters gets wrapped in a generic declaration,
+// which holds the generic parameters. This corresponds to how you write
+// templates in C++, with the template parameters coming before the declaration.
+
+struct GenericCallableDeclaration : Declaration {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(GenericCallableDeclaration)
+  GenericCallableDeclaration(SourcePosition pos,
+                             GenericParameters generic_parameters,
+                             CallableDeclaration* declaration)
       : Declaration(kKind, pos),
-        callable(callable),
         generic_parameters(std::move(generic_parameters)),
-        body(body) {}
-  CallableNode* callable;
-  std::vector<Identifier*> generic_parameters;
-  base::Optional<Statement*> body;
+        declaration(declaration) {}
+
+  GenericParameters generic_parameters;
+  CallableDeclaration* declaration;
 };
 
-struct SpecializationDeclaration : Declaration {
+struct GenericTypeDeclaration : Declaration {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(GenericTypeDeclaration)
+  GenericTypeDeclaration(SourcePosition pos,
+                         GenericParameters generic_parameters,
+                         TypeDeclaration* declaration)
+      : Declaration(kKind, pos),
+        generic_parameters(std::move(generic_parameters)),
+        declaration(declaration) {}
+
+  GenericParameters generic_parameters;
+  TypeDeclaration* declaration;
+};
+
+struct SpecializationDeclaration : CallableDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(SpecializationDeclaration)
-  SpecializationDeclaration(SourcePosition pos, std::string name,
+  SpecializationDeclaration(SourcePosition pos, bool transitioning,
+                            Identifier* name,
                             std::vector<TypeExpression*> generic_parameters,
                             ParameterList parameters,
                             TypeExpression* return_type,
-                            LabelAndTypesVector labels, Statement* b)
-      : Declaration(kKind, pos),
-        name(std::move(name)),
-        external(false),
+                            LabelAndTypesVector labels, Statement* body)
+      : CallableDeclaration(kKind, pos, transitioning, name,
+                            std::move(parameters), return_type,
+                            std::move(labels)),
         generic_parameters(std::move(generic_parameters)),
-        signature(new CallableNodeSignature{std::move(parameters), return_type,
-                                            std::move(labels)}),
-        body(b) {}
-  std::string name;
-  bool external;
+        body(body) {}
   std::vector<TypeExpression*> generic_parameters;
-  std::unique_ptr<CallableNodeSignature> signature;
   Statement* body;
 };
 
@@ -897,45 +1135,64 @@ struct ExternConstDeclaration : Declaration {
   std::string literal;
 };
 
-struct StructDeclaration : Declaration {
+struct StructDeclaration : TypeDeclaration {
   DEFINE_AST_NODE_LEAF_BOILERPLATE(StructDeclaration)
-  StructDeclaration(SourcePosition pos, Identifier* name,
+  StructDeclaration(SourcePosition pos, StructFlags flags, Identifier* name,
                     std::vector<Declaration*> methods,
                     std::vector<StructFieldExpression> fields)
-      : Declaration(kKind, pos),
-        name(name),
+      : TypeDeclaration(kKind, pos, name),
+        flags(flags),
         methods(std::move(methods)),
         fields(std::move(fields)) {}
-  Identifier* name;
+  StructFlags flags;
   std::vector<Declaration*> methods;
   std::vector<StructFieldExpression> fields;
 };
 
-struct ClassDeclaration : Declaration {
-  DEFINE_AST_NODE_LEAF_BOILERPLATE(ClassDeclaration)
-  ClassDeclaration(SourcePosition pos, Identifier* name, bool is_extern,
-                   bool generate_print, bool transient,
-                   base::Optional<std::string> super,
-                   base::Optional<std::string> generates,
-                   std::vector<Declaration*> methods,
-                   std::vector<ClassFieldExpression> fields)
-      : Declaration(kKind, pos),
-        name(name),
-        is_extern(is_extern),
-        generate_print(generate_print),
-        transient(transient),
-        super(std::move(super)),
-        generates(std::move(generates)),
+struct BitFieldStructDeclaration : TypeDeclaration {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(BitFieldStructDeclaration)
+  BitFieldStructDeclaration(SourcePosition pos, Identifier* name,
+                            TypeExpression* parent,
+                            std::vector<BitFieldDeclaration> fields)
+      : TypeDeclaration(kKind, pos, name),
+        parent(parent),
+        fields(std::move(fields)) {}
+  TypeExpression* parent;
+  std::vector<BitFieldDeclaration> fields;
+};
+
+struct ClassBody : AstNode {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(ClassBody)
+  ClassBody(SourcePosition pos, std::vector<Declaration*> methods,
+            std::vector<ClassFieldExpression> fields)
+      : AstNode(kKind, pos),
         methods(std::move(methods)),
         fields(std::move(fields)) {}
-  Identifier* name;
-  bool is_extern;
-  bool generate_print;
-  bool transient;
-  base::Optional<std::string> super;
+  std::vector<Declaration*> methods;
+  std::vector<ClassFieldExpression> fields;
+};
+
+struct ClassDeclaration : TypeDeclaration {
+  DEFINE_AST_NODE_LEAF_BOILERPLATE(ClassDeclaration)
+  ClassDeclaration(SourcePosition pos, Identifier* name, ClassFlags flags,
+                   base::Optional<TypeExpression*> super,
+                   base::Optional<std::string> generates,
+                   std::vector<Declaration*> methods,
+                   std::vector<ClassFieldExpression> fields,
+                   InstanceTypeConstraints instance_type_constraints)
+      : TypeDeclaration(kKind, pos, name),
+        flags(flags),
+        super(super),
+        generates(std::move(generates)),
+        methods(std::move(methods)),
+        fields(std::move(fields)),
+        instance_type_constraints(std::move(instance_type_constraints)) {}
+  ClassFlags flags;
+  base::Optional<TypeExpression*> super;
   base::Optional<std::string> generates;
   std::vector<Declaration*> methods;
   std::vector<ClassFieldExpression> fields;
+  InstanceTypeConstraints instance_type_constraints;
 };
 
 struct CppIncludeDeclaration : Declaration {
@@ -973,8 +1230,8 @@ DECLARE_CONTEXTUAL_VARIABLE(CurrentAst, Ast);
 
 template <class T, class... Args>
 T* MakeNode(Args... args) {
-  return CurrentAst::Get().AddNode(std::unique_ptr<T>(
-      new T(CurrentSourcePosition::Get(), std::move(args)...)));
+  return CurrentAst::Get().AddNode(
+      std::make_unique<T>(CurrentSourcePosition::Get(), std::move(args)...));
 }
 
 }  // namespace torque

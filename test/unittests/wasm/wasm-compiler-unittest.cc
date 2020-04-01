@@ -4,10 +4,10 @@
 
 #include "test/unittests/test-utils.h"
 
+#include "src/codegen/machine-type.h"
+#include "src/codegen/signature.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/wasm-compiler.h"
-#include "src/machine-type.h"
-#include "src/signature.h"
 #include "src/wasm/value-type.h"
 
 namespace v8 {
@@ -21,9 +21,9 @@ TEST_F(WasmCallDescriptorTest, TestAnyRefIsGrouped) {
   ValueType params[kMaxCount];
 
   for (size_t i = 0; i < kMaxCount; i += 2) {
-    params[i] = ValueType::kWasmAnyRef;
+    params[i] = kWasmAnyRef;
     CHECK_LT(i + 1, kMaxCount);
-    params[i + 1] = ValueType::kWasmI32;
+    params[i + 1] = kWasmI32;
   }
 
   for (size_t count = 1; count <= kMaxCount; ++count) {

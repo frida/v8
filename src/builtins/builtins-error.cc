@@ -2,15 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/accessors.h"
+#include "src/builtins/accessors.h"
 #include "src/builtins/builtins-utils-inl.h"
 #include "src/builtins/builtins.h"
-#include "src/counters.h"
-#include "src/isolate-inl.h"
-#include "src/messages.h"
-#include "src/objects-inl.h"
+#include "src/execution/isolate-inl.h"
+#include "src/execution/messages.h"
+#include "src/logging/counters.h"
 #include "src/objects/api-callbacks.h"
-#include "src/property-descriptor.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/property-descriptor.h"
 
 namespace v8 {
 namespace internal {
@@ -31,10 +31,11 @@ BUILTIN(ErrorConstructor) {
   }
 
   RETURN_RESULT_OR_FAILURE(
-      isolate, ErrorUtils::Construct(isolate, args.target(),
-                                     Handle<Object>::cast(args.new_target()),
-                                     args.atOrUndefined(isolate, 1), mode,
-                                     caller, false));
+      isolate,
+      ErrorUtils::Construct(isolate, args.target(),
+                            Handle<Object>::cast(args.new_target()),
+                            args.atOrUndefined(isolate, 1), mode, caller,
+                            ErrorUtils::StackTraceCollection::kDetailed));
 }
 
 // static
@@ -95,11 +96,9 @@ Object MakeGenericError(Isolate* isolate, BuiltinArguments args,
 
   DCHECK(template_index->IsSmi());
 
-  RETURN_RESULT_OR_FAILURE(
-      isolate, ErrorUtils::MakeGenericError(
-                   isolate, constructor,
-                   MessageTemplateFromInt(Smi::ToInt(*template_index)), arg0,
-                   arg1, arg2, SKIP_NONE));
+  return *ErrorUtils::MakeGenericError(
+      isolate, constructor, MessageTemplateFromInt(Smi::ToInt(*template_index)),
+      arg0, arg1, arg2, SKIP_NONE);
 }
 
 }  // namespace
@@ -129,10 +128,9 @@ BUILTIN(MakeURIError) {
   Handle<JSFunction> constructor = isolate->uri_error_function();
   Handle<Object> undefined = isolate->factory()->undefined_value();
   MessageTemplate template_index = MessageTemplate::kURIMalformed;
-  RETURN_RESULT_OR_FAILURE(
-      isolate,
-      ErrorUtils::MakeGenericError(isolate, constructor, template_index,
-                                   undefined, undefined, undefined, SKIP_NONE));
+  return *ErrorUtils::MakeGenericError(isolate, constructor, template_index,
+                                       undefined, undefined, undefined,
+                                       SKIP_NONE);
 }
 
 }  // namespace internal

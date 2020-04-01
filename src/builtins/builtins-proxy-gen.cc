@@ -7,20 +7,24 @@
 #include "src/builtins/builtins-utils.h"
 #include "src/builtins/builtins.h"
 
-#include "src/counters.h"
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/objects/js-proxy.h"
+#include "src/objects/objects-inl.h"
+
+#include "torque-generated/exported-macros-assembler-tq.h"
 
 namespace v8 {
 namespace internal {
 
-Node* ProxiesCodeStubAssembler::AllocateProxy(Node* target, Node* handler,
-                                              Node* context) {
-  VARIABLE(map, MachineRepresentation::kTagged);
+TNode<JSProxy> ProxiesCodeStubAssembler::AllocateProxy(
+    TNode<Context> context, TNode<JSReceiver> target,
+    TNode<JSReceiver> handler) {
+  TVARIABLE(Map, map);
 
   Label callable_target(this), constructor_target(this), none_target(this),
       create_proxy(this);
 
-  Node* nativeContext = LoadNativeContext(context);
+  TNode<NativeContext> nativeContext = LoadNativeContext(context);
 
   Branch(IsCallable(target), &callable_target, &none_target);
 
@@ -29,134 +33,73 @@ Node* ProxiesCodeStubAssembler::AllocateProxy(Node* target, Node* handler,
     // Every object that is a constructor is implicitly callable
     // so it's okay to nest this check here
     GotoIf(IsConstructor(target), &constructor_target);
-    map.Bind(
+    map = CAST(
         LoadContextElement(nativeContext, Context::PROXY_CALLABLE_MAP_INDEX));
     Goto(&create_proxy);
   }
   BIND(&constructor_target);
   {
-    map.Bind(LoadContextElement(nativeContext,
-                                Context::PROXY_CONSTRUCTOR_MAP_INDEX));
+    map = CAST(LoadContextElement(nativeContext,
+                                  Context::PROXY_CONSTRUCTOR_MAP_INDEX));
     Goto(&create_proxy);
   }
   BIND(&none_target);
   {
-    map.Bind(LoadContextElement(nativeContext, Context::PROXY_MAP_INDEX));
+    map = CAST(LoadContextElement(nativeContext, Context::PROXY_MAP_INDEX));
     Goto(&create_proxy);
   }
 
   BIND(&create_proxy);
-  Node* proxy = Allocate(JSProxy::kSize);
+  TNode<HeapObject> proxy = Allocate(JSProxy::kSize);
   StoreMapNoWriteBarrier(proxy, map.value());
   StoreObjectFieldRoot(proxy, JSProxy::kPropertiesOrHashOffset,
                        RootIndex::kEmptyPropertyDictionary);
   StoreObjectFieldNoWriteBarrier(proxy, JSProxy::kTargetOffset, target);
   StoreObjectFieldNoWriteBarrier(proxy, JSProxy::kHandlerOffset, handler);
 
-  return proxy;
+  return CAST(proxy);
 }
 
-Node* ProxiesCodeStubAssembler::AllocateJSArrayForCodeStubArguments(
-    Node* context, CodeStubArguments& args, Node* argc, ParameterMode mode) {
-  Comment("AllocateJSArrayForCodeStubArguments");
-
-  Label if_empty_array(this), allocate_js_array(this);
-  // Do not use AllocateJSArray since {elements} might end up in LOS.
-  VARIABLE(elements, MachineRepresentation::kTagged);
-
-  TNode<Smi> length = ParameterToTagged(argc, mode);
-  GotoIf(SmiEqual(length, SmiConstant(0)), &if_empty_array);
-  {
-    Label if_large_object(this, Label::kDeferred);
-    Node* allocated_elements = AllocateFixedArray(PACKED_ELEMENTS, argc, mode,
-                                                  kAllowLargeObjectAllocation);
-    elements.Bind(allocated_elements);
-
-    TVARIABLE(IntPtrT, offset,
-              IntPtrConstant(FixedArrayBase::kHeaderSize - kHeapObjectTag));
-    VariableList list({&offset}, zone());
-
-    GotoIf(SmiGreaterThan(length, SmiConstant(FixedArray::kMaxRegularLength)),
-           &if_large_object);
-    args.ForEach(list, [=, &offset](Node* arg) {
-      StoreNoWriteBarrier(MachineRepresentation::kTagged, allocated_elements,
-                          offset.value(), arg);
-      Increment(&offset, kTaggedSize);
-    });
-    Goto(&allocate_js_array);
-
-    BIND(&if_large_object);
-    {
-      args.ForEach(list, [=, &offset](Node* arg) {
-        Store(allocated_elements, offset.value(), arg);
-        Increment(&offset, kTaggedSize);
-      });
-      Goto(&allocate_js_array);
-    }
-  }
-
-  BIND(&if_empty_array);
-  {
-    elements.Bind(EmptyFixedArrayConstant());
-    Goto(&allocate_js_array);
-  }
-
-  BIND(&allocate_js_array);
-  // Allocate the result JSArray.
-  Node* native_context = LoadNativeContext(context);
-  TNode<Map> array_map =
-      LoadJSArrayElementsMap(PACKED_ELEMENTS, native_context);
-  TNode<JSArray> array =
-      AllocateJSArray(array_map, CAST(elements.value()), length);
-
-  return array;
-}
-
-Node* ProxiesCodeStubAssembler::CreateProxyRevokeFunctionContext(
-    Node* proxy, Node* native_context) {
-  Node* const context = Allocate(FixedArray::SizeFor(kProxyContextLength));
-  StoreMapNoWriteBarrier(context, RootIndex::kFunctionContextMap);
-  InitializeFunctionContext(native_context, context, kProxyContextLength);
+TNode<Context> ProxiesCodeStubAssembler::CreateProxyRevokeFunctionContext(
+    TNode<JSProxy> proxy, TNode<NativeContext> native_context) {
+  const TNode<Context> context =
+      AllocateSyntheticFunctionContext(native_context, kProxyContextLength);
   StoreContextElementNoWriteBarrier(context, kProxySlot, proxy);
   return context;
 }
 
-Node* ProxiesCodeStubAssembler::AllocateProxyRevokeFunction(Node* proxy,
-                                                            Node* context) {
-  Node* const native_context = LoadNativeContext(context);
+TNode<JSFunction> ProxiesCodeStubAssembler::AllocateProxyRevokeFunction(
+    TNode<Context> context, TNode<JSProxy> proxy) {
+  const TNode<NativeContext> native_context = LoadNativeContext(context);
 
-  Node* const proxy_context =
+  const TNode<Context> proxy_context =
       CreateProxyRevokeFunctionContext(proxy, native_context);
-  Node* const revoke_map = LoadContextElement(
-      native_context, Context::STRICT_FUNCTION_WITHOUT_PROTOTYPE_MAP_INDEX);
-  Node* const revoke_info =
-      LoadContextElement(native_context, Context::PROXY_REVOKE_SHARED_FUN);
+  const TNode<Map> revoke_map = CAST(LoadContextElement(
+      native_context, Context::STRICT_FUNCTION_WITHOUT_PROTOTYPE_MAP_INDEX));
+  const TNode<SharedFunctionInfo> revoke_info = CAST(
+      LoadContextElement(native_context, Context::PROXY_REVOKE_SHARED_FUN));
 
   return AllocateFunctionWithMapAndContext(revoke_map, revoke_info,
                                            proxy_context);
 }
 
-Node* ProxiesCodeStubAssembler::GetProxyConstructorJSNewTarget() {
-  return CodeAssembler::Parameter(static_cast<int>(
-      Builtin_ProxyConstructor_InterfaceDescriptor::kJSNewTarget));
-}
-
 TF_BUILTIN(CallProxy, ProxiesCodeStubAssembler) {
-  Node* argc = Parameter(Descriptor::kActualArgumentsCount);
-  Node* argc_ptr = ChangeInt32ToIntPtr(argc);
-  Node* proxy = Parameter(Descriptor::kFunction);
-  Node* context = Parameter(Descriptor::kContext);
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  TNode<IntPtrT> argc_ptr = ChangeInt32ToIntPtr(argc);
+  TNode<JSProxy> proxy = CAST(Parameter(Descriptor::kFunction));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
 
-  CSA_ASSERT(this, IsJSProxy(proxy));
   CSA_ASSERT(this, IsCallable(proxy));
 
-  PerformStackCheck(CAST(context));
+  PerformStackCheck(context);
 
   Label throw_proxy_handler_revoked(this, Label::kDeferred),
       trap_undefined(this);
 
   // 1. Let handler be the value of the [[ProxyHandler]] internal slot of O.
-  Node* handler = LoadObjectField(proxy, JSProxy::kHandlerOffset);
+  TNode<HeapObject> handler =
+      CAST(LoadObjectField(proxy, JSProxy::kHandlerOffset));
 
   // 2. If handler is null, throw a TypeError exception.
   CSA_ASSERT(this, IsNullOrJSReceiver(handler));
@@ -166,23 +109,24 @@ TF_BUILTIN(CallProxy, ProxiesCodeStubAssembler) {
   CSA_ASSERT(this, IsJSReceiver(handler));
 
   // 4. Let target be the value of the [[ProxyTarget]] internal slot of O.
-  Node* target = LoadObjectField(proxy, JSProxy::kTargetOffset);
+  TNode<Object> target = LoadObjectField(proxy, JSProxy::kTargetOffset);
 
   // 5. Let trap be ? GetMethod(handler, "apply").
   // 6. If trap is undefined, then
   Handle<Name> trap_name = factory()->apply_string();
-  Node* trap = GetMethod(context, handler, trap_name, &trap_undefined);
+  TNode<Object> trap = GetMethod(context, handler, trap_name, &trap_undefined);
 
   CodeStubArguments args(this, argc_ptr);
-  Node* receiver = args.GetReceiver();
+  TNode<Object> receiver = args.GetReceiver();
 
   // 7. Let argArray be CreateArrayFromList(argumentsList).
-  Node* array = AllocateJSArrayForCodeStubArguments(context, args, argc_ptr,
-                                                    INTPTR_PARAMETERS);
+  TNode<JSArray> array =
+      EmitFastNewAllArguments(UncheckedCast<Context>(context),
+                              UncheckedCast<RawPtrT>(LoadFramePointer()),
+                              UncheckedCast<IntPtrT>(argc_ptr));
 
   // 8. Return Call(trap, handler, «target, thisArgument, argArray»).
-  Node* result = CallJS(CodeFactory::Call(isolate()), context, trap, handler,
-                        target, receiver, array);
+  TNode<Object> result = Call(context, trap, handler, target, receiver, array);
   args.PopAndReturn(result);
 
   BIND(&trap_undefined);
@@ -196,20 +140,21 @@ TF_BUILTIN(CallProxy, ProxiesCodeStubAssembler) {
 }
 
 TF_BUILTIN(ConstructProxy, ProxiesCodeStubAssembler) {
-  Node* argc = Parameter(Descriptor::kActualArgumentsCount);
-  Node* argc_ptr = ChangeInt32ToIntPtr(argc);
-  Node* proxy = Parameter(Descriptor::kTarget);
-  Node* new_target = Parameter(Descriptor::kNewTarget);
-  Node* context = Parameter(Descriptor::kContext);
+  TNode<Int32T> argc =
+      UncheckedCast<Int32T>(Parameter(Descriptor::kActualArgumentsCount));
+  TNode<IntPtrT> argc_ptr = ChangeInt32ToIntPtr(argc);
+  TNode<JSProxy> proxy = CAST(Parameter(Descriptor::kTarget));
+  TNode<Object> new_target = CAST(Parameter(Descriptor::kNewTarget));
+  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
 
-  CSA_ASSERT(this, IsJSProxy(proxy));
   CSA_ASSERT(this, IsCallable(proxy));
 
   Label throw_proxy_handler_revoked(this, Label::kDeferred),
       trap_undefined(this), not_an_object(this, Label::kDeferred);
 
   // 1. Let handler be the value of the [[ProxyHandler]] internal slot of O.
-  Node* handler = LoadObjectField(proxy, JSProxy::kHandlerOffset);
+  TNode<HeapObject> handler =
+      CAST(LoadObjectField(proxy, JSProxy::kHandlerOffset));
 
   // 2. If handler is null, throw a TypeError exception.
   CSA_ASSERT(this, IsNullOrJSReceiver(handler));
@@ -219,26 +164,28 @@ TF_BUILTIN(ConstructProxy, ProxiesCodeStubAssembler) {
   CSA_ASSERT(this, IsJSReceiver(handler));
 
   // 4. Let target be the value of the [[ProxyTarget]] internal slot of O.
-  Node* target = LoadObjectField(proxy, JSProxy::kTargetOffset);
+  TNode<Object> target = LoadObjectField(proxy, JSProxy::kTargetOffset);
 
   // 5. Let trap be ? GetMethod(handler, "construct").
   // 6. If trap is undefined, then
   Handle<Name> trap_name = factory()->construct_string();
-  Node* trap = GetMethod(context, handler, trap_name, &trap_undefined);
+  TNode<Object> trap = GetMethod(context, handler, trap_name, &trap_undefined);
 
   CodeStubArguments args(this, argc_ptr);
 
   // 7. Let argArray be CreateArrayFromList(argumentsList).
-  Node* array = AllocateJSArrayForCodeStubArguments(context, args, argc_ptr,
-                                                    INTPTR_PARAMETERS);
+  TNode<JSArray> array =
+      EmitFastNewAllArguments(UncheckedCast<Context>(context),
+                              UncheckedCast<RawPtrT>(LoadFramePointer()),
+                              UncheckedCast<IntPtrT>(argc_ptr));
 
   // 8. Let newObj be ? Call(trap, handler, « target, argArray, newTarget »).
-  Node* new_obj = CallJS(CodeFactory::Call(isolate()), context, trap, handler,
-                         target, array, new_target);
+  TNode<Object> new_obj =
+      Call(context, trap, handler, target, array, new_target);
 
   // 9. If Type(newObj) is not Object, throw a TypeError exception.
   GotoIf(TaggedIsSmi(new_obj), &not_an_object);
-  GotoIfNot(IsJSReceiver(new_obj), &not_an_object);
+  GotoIfNot(IsJSReceiver(CAST(new_obj)), &not_an_object);
 
   // 10. Return newObj.
   args.PopAndReturn(new_obj);
@@ -251,7 +198,7 @@ TF_BUILTIN(ConstructProxy, ProxiesCodeStubAssembler) {
   BIND(&trap_undefined);
   {
     // 6.a. Assert: target has a [[Construct]] internal method.
-    CSA_ASSERT(this, IsConstructor(target));
+    CSA_ASSERT(this, IsConstructor(CAST(target)));
 
     // 6.b. Return ? Construct(target, argumentsList, newTarget).
     TailCallStub(CodeFactory::Construct(isolate()), context, target, new_target,
@@ -262,182 +209,21 @@ TF_BUILTIN(ConstructProxy, ProxiesCodeStubAssembler) {
   { ThrowTypeError(context, MessageTemplate::kProxyRevoked, "construct"); }
 }
 
-TF_BUILTIN(ProxyHasProperty, ProxiesCodeStubAssembler) {
-  Node* context = Parameter(Descriptor::kContext);
-  Node* proxy = Parameter(Descriptor::kProxy);
-  Node* name = Parameter(Descriptor::kName);
-
-  CSA_ASSERT(this, IsJSProxy(proxy));
-
-  PerformStackCheck(CAST(context));
-
-  // 1. Assert: IsPropertyKey(P) is true.
-  CSA_ASSERT(this, IsName(name));
-  CSA_ASSERT(this, Word32Equal(IsPrivateSymbol(name), Int32Constant(0)));
-
-  Label throw_proxy_handler_revoked(this, Label::kDeferred),
-      trap_undefined(this),
-      if_try_get_own_property_bailout(this, Label::kDeferred),
-      trap_not_callable(this, Label::kDeferred), return_true(this),
-      return_false(this), check_target_desc(this);
-
-  // 2. Let handler be O.[[ProxyHandler]].
-  Node* handler = LoadObjectField(proxy, JSProxy::kHandlerOffset);
-
-  // 3. If handler is null, throw a TypeError exception.
-  // 4. Assert: Type(handler) is Object.
-  GotoIfNot(IsJSReceiver(handler), &throw_proxy_handler_revoked);
-
-  // 5. Let target be O.[[ProxyTarget]].
-  Node* target = LoadObjectField(proxy, JSProxy::kTargetOffset);
-
-  // 6. Let trap be ? GetMethod(handler, "has").
-  // 7. If trap is undefined, then (see 7.a below).
-  Handle<Name> trap_name = factory()->has_string();
-  Node* trap = GetMethod(context, handler, trap_name, &trap_undefined);
-
-  GotoIf(TaggedIsSmi(trap), &trap_not_callable);
-  GotoIfNot(IsCallable(trap), &trap_not_callable);
-
-  // 8. Let booleanTrapResult be ToBoolean(? Call(trap, handler, « target, P
-  // »)).
-  BranchIfToBooleanIsTrue(CallJS(CodeFactory::Call(isolate()), context, trap,
-                                 handler, target, name),
-                          &return_true, &check_target_desc);
-
-  BIND(&check_target_desc);
-  {
-    // 9. If booleanTrapResult is false, then (see 9.a. in CheckHasTrapResult).
-    CheckHasTrapResult(context, target, proxy, name, &return_false,
-                       &if_try_get_own_property_bailout);
-  }
-
-  BIND(&if_try_get_own_property_bailout);
-  {
-    CallRuntime(Runtime::kCheckProxyHasTrap, context, name, target);
-    Return(FalseConstant());
-  }
-
-  BIND(&trap_undefined);
-  {
-    // 7.a. Return ? target.[[HasProperty]](P).
-    TailCallBuiltin(Builtins::kHasProperty, context, target, name);
-  }
-
-  BIND(&return_false);
-  Return(FalseConstant());
-
-  BIND(&return_true);
-  Return(TrueConstant());
-
-  BIND(&throw_proxy_handler_revoked);
-  ThrowTypeError(context, MessageTemplate::kProxyRevoked, "has");
-
-  BIND(&trap_not_callable);
-  ThrowTypeError(context, MessageTemplate::kPropertyNotFunction, trap,
-                 StringConstant("has"), proxy);
-}
-
-TF_BUILTIN(ProxySetProperty, ProxiesCodeStubAssembler) {
-  Node* context = Parameter(Descriptor::kContext);
-  Node* proxy = Parameter(Descriptor::kProxy);
-  Node* name = Parameter(Descriptor::kName);
-  Node* value = Parameter(Descriptor::kValue);
-  Node* receiver = Parameter(Descriptor::kReceiverValue);
-
-  CSA_ASSERT(this, IsJSProxy(proxy));
-
-  // 1. Assert: IsPropertyKey(P) is true.
-  CSA_ASSERT(this, TaggedIsNotSmi(name));
-  CSA_ASSERT(this, IsName(name));
-
-  Label throw_proxy_handler_revoked(this, Label::kDeferred),
-      trap_undefined(this), failure(this, Label::kDeferred),
-      continue_checks(this), success(this),
-      private_symbol(this, Label::kDeferred);
-
-  GotoIf(IsPrivateSymbol(name), &private_symbol);
-
-  // 2. Let handler be O.[[ProxyHandler]].
-  Node* handler = LoadObjectField(proxy, JSProxy::kHandlerOffset);
-
-  // 3. If handler is null, throw a TypeError exception.
-  GotoIfNot(IsJSReceiver(handler), &throw_proxy_handler_revoked);
-
-  // 4. Assert: Type(handler) is Object.
-  CSA_ASSERT(this, IsJSReceiver(handler));
-
-  // 5. Let target be O.[[ProxyTarget]].
-  Node* target = LoadObjectField(proxy, JSProxy::kTargetOffset);
-
-  // 6. Let trap be ? GetMethod(handler, "set").
-  // 7. If trap is undefined, then (see 7.a below).
-  Handle<Name> set_string = factory()->set_string();
-  Node* trap = GetMethod(context, handler, set_string, &trap_undefined);
-
-  // 8. Let booleanTrapResult be ToBoolean(? Call(trap, handler,
-  // « target, P, V, Receiver »)).
-  // 9. If booleanTrapResult is false, return false.
-  BranchIfToBooleanIsTrue(
-      CallJS(CodeFactory::Call(isolate(),
-                               ConvertReceiverMode::kNotNullOrUndefined),
-             context, trap, handler, target, name, value, receiver),
-      &continue_checks, &failure);
-
-  BIND(&continue_checks);
-  {
-    // 9. Let targetDesc be ? target.[[GetOwnProperty]](P).
-    Label return_result(this);
-    Return(CheckGetSetTrapResult(context, target, proxy, name, value,
-                                 JSProxy::kSet));
-  }
-
-  BIND(&failure);
-  {
-    CallRuntime(Runtime::kThrowTypeErrorIfStrict, context,
-                SmiConstant(MessageTemplate::kProxyTrapReturnedFalsishFor),
-                HeapConstant(set_string), name);
-    Goto(&success);
-  }
-
-  // 12. Return true.
-  BIND(&success);
-  Return(value);
-
-  BIND(&private_symbol);
-  {
-    Label failure(this);
-
-    CallRuntime(Runtime::kThrowTypeErrorIfStrict, context,
-                SmiConstant(MessageTemplate::kProxyPrivate));
-    Return(UndefinedConstant());
-  }
-
-  BIND(&trap_undefined);
-  {
-    // 7.a. Return ? target.[[Set]](P, V, Receiver).
-    CallRuntime(Runtime::kSetPropertyWithReceiver, context, target, name, value,
-                receiver);
-    Return(value);
-  }
-
-  BIND(&throw_proxy_handler_revoked);
-  ThrowTypeError(context, MessageTemplate::kProxyRevoked, "set");
-}
-
-Node* ProxiesCodeStubAssembler::CheckGetSetTrapResult(
-    Node* context, Node* target, Node* proxy, Node* name, Node* trap_result,
+void ProxiesCodeStubAssembler::CheckGetSetTrapResult(
+    TNode<Context> context, TNode<JSReceiver> target, TNode<JSProxy> proxy,
+    TNode<Name> name, TNode<Object> trap_result,
     JSProxy::AccessKind access_kind) {
-  Node* map = LoadMap(target);
-  VARIABLE(var_value, MachineRepresentation::kTagged);
-  VARIABLE(var_details, MachineRepresentation::kWord32);
-  VARIABLE(var_raw_value, MachineRepresentation::kTagged);
+  // TODO(mslekova): Think of a better name for the trap_result param.
+  TNode<Map> map = LoadMap(target);
+  TVARIABLE(Object, var_value);
+  TVARIABLE(Uint32T, var_details);
+  TVARIABLE(Object, var_raw_value);
 
   Label if_found_value(this), check_in_runtime(this, Label::kDeferred),
       check_passed(this);
 
-  GotoIfNot(IsUniqueNameNoIndex(CAST(name)), &check_in_runtime);
-  Node* instance_type = LoadInstanceType(target);
+  GotoIfNot(IsUniqueNameNoIndex(name), &check_in_runtime);
+  TNode<Uint16T> instance_type = LoadInstanceType(target);
   TryGetOwnProperty(context, target, target, map, instance_type, name,
                     &if_found_value, &var_value, &var_details, &var_raw_value,
                     &check_passed, &check_in_runtime, kReturnAccessorPair);
@@ -460,8 +246,8 @@ Node* ProxiesCodeStubAssembler::CheckGetSetTrapResult(
 
     BIND(&check_data);
     {
-      Node* read_only = IsSetWord32(var_details.value(),
-                                    PropertyDetails::kAttributesReadOnlyMask);
+      TNode<BoolT> read_only = IsSetWord32(
+          var_details.value(), PropertyDetails::kAttributesReadOnlyMask);
       GotoIfNot(read_only, &check_passed);
 
       // If SameValue(trapResult, targetDesc.[[Value]]) is false,
@@ -472,13 +258,13 @@ Node* ProxiesCodeStubAssembler::CheckGetSetTrapResult(
 
     BIND(&check_accessor);
     {
-      Node* accessor_pair = var_raw_value.value();
+      TNode<HeapObject> accessor_pair = CAST(var_raw_value.value());
 
       if (access_kind == JSProxy::kGet) {
         Label continue_check(this, Label::kDeferred);
         // 10.b. If IsAccessorDescriptor(targetDesc) is true and
         // targetDesc.[[Get]] is undefined, then:
-        Node* getter =
+        TNode<Object> getter =
             LoadObjectField(accessor_pair, AccessorPair::kGetterOffset);
         // Here we check for null as well because if the getter was never
         // defined it's set as null.
@@ -492,7 +278,7 @@ Node* ProxiesCodeStubAssembler::CheckGetSetTrapResult(
       } else {
         // 11.b.i. If targetDesc.[[Set]] is undefined, throw a TypeError
         // exception.
-        Node* setter =
+        TNode<Object> setter =
             LoadObjectField(accessor_pair, AccessorPair::kSetterOffset);
         GotoIf(IsUndefined(setter), &throw_non_configurable_accessor);
         GotoIf(IsNull(setter), &throw_non_configurable_accessor);
@@ -529,45 +315,45 @@ Node* ProxiesCodeStubAssembler::CheckGetSetTrapResult(
     }
 
     BIND(&check_passed);
-    return trap_result;
   }
 }
 
-void ProxiesCodeStubAssembler::CheckHasTrapResult(Node* context, Node* target,
-                                                  Node* proxy, Node* name,
-                                                  Label* check_passed,
-                                                  Label* if_bailout) {
-  Node* target_map = LoadMap(target);
-  VARIABLE(var_value, MachineRepresentation::kTagged);
-  VARIABLE(var_details, MachineRepresentation::kWord32);
-  VARIABLE(var_raw_value, MachineRepresentation::kTagged);
+void ProxiesCodeStubAssembler::CheckHasTrapResult(TNode<Context> context,
+                                                  TNode<JSReceiver> target,
+                                                  TNode<JSProxy> proxy,
+                                                  TNode<Name> name) {
+  TNode<Map> target_map = LoadMap(target);
+  TVARIABLE(Object, var_value);
+  TVARIABLE(Uint32T, var_details);
+  TVARIABLE(Object, var_raw_value);
 
   Label if_found_value(this, Label::kDeferred),
       throw_non_configurable(this, Label::kDeferred),
-      throw_non_extensible(this, Label::kDeferred);
+      throw_non_extensible(this, Label::kDeferred), check_passed(this),
+      check_in_runtime(this, Label::kDeferred);
 
   // 9.a. Let targetDesc be ? target.[[GetOwnProperty]](P).
-  GotoIfNot(IsUniqueNameNoIndex(CAST(name)), if_bailout);
-  Node* instance_type = LoadInstanceType(target);
+  GotoIfNot(IsUniqueNameNoIndex(name), &check_in_runtime);
+  TNode<Uint16T> instance_type = LoadInstanceType(target);
   TryGetOwnProperty(context, target, target, target_map, instance_type, name,
                     &if_found_value, &var_value, &var_details, &var_raw_value,
-                    check_passed, if_bailout, kReturnAccessorPair);
+                    &check_passed, &check_in_runtime, kReturnAccessorPair);
 
   // 9.b. If targetDesc is not undefined, then (see 9.b.i. below).
   BIND(&if_found_value);
   {
     // 9.b.i. If targetDesc.[[Configurable]] is false, throw a TypeError
     // exception.
-    Node* non_configurable = IsSetWord32(
+    TNode<BoolT> non_configurable = IsSetWord32(
         var_details.value(), PropertyDetails::kAttributesDontDeleteMask);
     GotoIf(non_configurable, &throw_non_configurable);
 
     // 9.b.ii. Let extensibleTarget be ? IsExtensible(target).
-    Node* target_extensible = IsExtensibleMap(target_map);
+    TNode<BoolT> target_extensible = IsExtensibleMap(target_map);
 
     // 9.b.iii. If extensibleTarget is false, throw a TypeError exception.
     GotoIfNot(target_extensible, &throw_non_extensible);
-    Goto(check_passed);
+    Goto(&check_passed);
   }
 
   BIND(&throw_non_configurable);
@@ -575,6 +361,72 @@ void ProxiesCodeStubAssembler::CheckHasTrapResult(Node* context, Node* target,
 
   BIND(&throw_non_extensible);
   { ThrowTypeError(context, MessageTemplate::kProxyHasNonExtensible, name); }
+
+  BIND(&check_in_runtime);
+  {
+    CallRuntime(Runtime::kCheckProxyHasTrapResult, context, name, target);
+    Goto(&check_passed);
+  }
+
+  BIND(&check_passed);
+}
+
+void ProxiesCodeStubAssembler::CheckDeleteTrapResult(TNode<Context> context,
+                                                     TNode<JSReceiver> target,
+                                                     TNode<JSProxy> proxy,
+                                                     TNode<Name> name) {
+  TNode<Map> target_map = LoadMap(target);
+  TVARIABLE(Object, var_value);
+  TVARIABLE(Uint32T, var_details);
+  TVARIABLE(Object, var_raw_value);
+
+  Label if_found_value(this, Label::kDeferred),
+      throw_non_configurable(this, Label::kDeferred),
+      throw_non_extensible(this, Label::kDeferred), check_passed(this),
+      check_in_runtime(this, Label::kDeferred);
+
+  // 10. Let targetDesc be ? target.[[GetOwnProperty]](P).
+  GotoIfNot(IsUniqueNameNoIndex(name), &check_in_runtime);
+  TNode<Uint16T> instance_type = LoadInstanceType(target);
+  TryGetOwnProperty(context, target, target, target_map, instance_type, name,
+                    &if_found_value, &var_value, &var_details, &var_raw_value,
+                    &check_passed, &check_in_runtime, kReturnAccessorPair);
+
+  // 11. If targetDesc is undefined, return true.
+  BIND(&if_found_value);
+  {
+    // 12. If targetDesc.[[Configurable]] is false, throw a TypeError exception.
+    TNode<BoolT> non_configurable = IsSetWord32(
+        var_details.value(), PropertyDetails::kAttributesDontDeleteMask);
+    GotoIf(non_configurable, &throw_non_configurable);
+
+    // 13. Let extensibleTarget be ? IsExtensible(target).
+    TNode<BoolT> target_extensible = IsExtensibleMap(target_map);
+
+    // 14. If extensibleTarget is false, throw a TypeError exception.
+    GotoIfNot(target_extensible, &throw_non_extensible);
+    Goto(&check_passed);
+  }
+
+  BIND(&throw_non_configurable);
+  {
+    ThrowTypeError(context,
+                   MessageTemplate::kProxyDeletePropertyNonConfigurable, name);
+  }
+
+  BIND(&throw_non_extensible);
+  {
+    ThrowTypeError(context, MessageTemplate::kProxyDeletePropertyNonExtensible,
+                   name);
+  }
+
+  BIND(&check_in_runtime);
+  {
+    CallRuntime(Runtime::kCheckProxyDeleteTrapResult, context, name, target);
+    Goto(&check_passed);
+  }
+
+  BIND(&check_passed);
 }
 
 }  // namespace internal

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-private-fields --allow-natives-syntax
+// Flags: --allow-natives-syntax
 
 
 "use strict";
@@ -475,4 +475,13 @@
 
   let c = new C;
   assertThrows(() => c.getA(), SyntaxError);
+}
+
+{
+  assertThrows(() => {
+    class A {
+      [this.#a] = 1;
+      #a = 2;
+    }
+  }, TypeError);
 }

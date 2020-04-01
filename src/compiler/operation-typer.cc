@@ -5,12 +5,13 @@
 #include "src/compiler/operation-typer.h"
 
 #include "src/compiler/common-operator.h"
+#include "src/compiler/js-heap-broker.h"
 #include "src/compiler/type-cache.h"
 #include "src/compiler/types.h"
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
 
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -19,21 +20,18 @@ namespace compiler {
 OperationTyper::OperationTyper(JSHeapBroker* broker, Zone* zone)
     : zone_(zone), cache_(TypeCache::Get()) {
   Factory* factory = broker->isolate()->factory();
-  infinity_ = Type::NewConstant(V8_INFINITY, zone);
-  minus_infinity_ = Type::NewConstant(-V8_INFINITY, zone);
+  infinity_ = Type::Constant(V8_INFINITY, zone);
+  minus_infinity_ = Type::Constant(-V8_INFINITY, zone);
   Type truncating_to_zero = Type::MinusZeroOrNaN();
   DCHECK(!truncating_to_zero.Maybe(Type::Integral32()));
 
   singleton_empty_string_ =
-      Type::HeapConstant(broker, factory->empty_string(), zone);
-  singleton_NaN_string_ =
-      Type::HeapConstant(broker, factory->NaN_string(), zone);
-  singleton_zero_string_ =
-      Type::HeapConstant(broker, factory->zero_string(), zone);
-  singleton_false_ = Type::HeapConstant(broker, factory->false_value(), zone);
-  singleton_true_ = Type::HeapConstant(broker, factory->true_value(), zone);
-  singleton_the_hole_ =
-      Type::HeapConstant(broker, factory->the_hole_value(), zone);
+      Type::Constant(broker, factory->empty_string(), zone);
+  singleton_NaN_string_ = Type::Constant(broker, factory->NaN_string(), zone);
+  singleton_zero_string_ = Type::Constant(broker, factory->zero_string(), zone);
+  singleton_false_ = Type::Constant(broker, factory->false_value(), zone);
+  singleton_true_ = Type::Constant(broker, factory->true_value(), zone);
+  singleton_the_hole_ = Type::Hole();
   signed32ish_ = Type::Union(Type::Signed32(), truncating_to_zero, zone);
   unsigned32ish_ = Type::Union(Type::Unsigned32(), truncating_to_zero, zone);
 
@@ -259,7 +257,8 @@ Type OperationTyper::ConvertReceiver(Type type) {
   type = Type::Intersect(type, Type::Receiver(), zone());
   if (maybe_primitive) {
     // ConvertReceiver maps null and undefined to the JSGlobalProxy of the
-    // target function, and all other primitives are wrapped into a JSValue.
+    // target function, and all other primitives are wrapped into a
+    // JSPrimitiveWrapper.
     type = Type::Union(type, Type::OtherObject(), zone());
   }
   return type;
@@ -576,6 +575,13 @@ Type OperationTyper::NumberSilenceNaN(Type type) {
   if (type.Maybe(Type::NaN())) return Type::Number();
   return type;
 }
+
+Type OperationTyper::BigIntAsUintN(Type type) {
+  DCHECK(type.Is(Type::BigInt()));
+  return Type::BigInt();
+}
+
+Type OperationTyper::CheckBigInt(Type type) { return Type::BigInt(); }
 
 Type OperationTyper::NumberAdd(Type lhs, Type rhs) {
   DCHECK(lhs.Is(Type::Number()));
@@ -1034,23 +1040,31 @@ Type OperationTyper::NumberMax(Type lhs, Type rhs) {
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
-  lhs = Type::Intersect(lhs, Type::OrderedNumber(), zone());
-  DCHECK(!lhs.IsNone());
-  rhs = Type::Intersect(rhs, Type::OrderedNumber(), zone());
-  DCHECK(!rhs.IsNone());
-  if (lhs.Is(cache_->kIntegerOrMinusZero) &&
-      rhs.Is(cache_->kIntegerOrMinusZero)) {
-    // TODO(turbofan): This could still be improved in ruling out -0 when
-    // one of the inputs' min is 0.
-    double max = std::max(lhs.Max(), rhs.Max());
-    double min = std::max(lhs.Min(), rhs.Min());
+
+  if (!lhs.Is(cache_->kIntegerOrMinusZeroOrNaN) ||
+      !rhs.Is(cache_->kIntegerOrMinusZeroOrNaN)) {
+    return Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
+  }
+
+  bool const lhs_maybe_minus_zero = lhs.Maybe(Type::MinusZero());
+  bool const rhs_maybe_minus_zero = rhs.Maybe(Type::MinusZero());
+  lhs = Type::Intersect(lhs, cache_->kInteger, zone());
+  rhs = Type::Intersect(rhs, cache_->kInteger, zone());
+
+  bool maybe_minus_zero = lhs_maybe_minus_zero || rhs_maybe_minus_zero;
+  if (!lhs.IsNone() || !rhs.IsNone()) {
+    double min = std::max(lhs.IsNone() ? -V8_INFINITY : lhs.Min(),
+                          rhs.IsNone() ? -V8_INFINITY : rhs.Min());
+    double max = std::max(lhs.IsNone() ? -V8_INFINITY : lhs.Max(),
+                          rhs.IsNone() ? -V8_INFINITY : rhs.Max());
     type = Type::Union(type, Type::Range(min, max, zone()), zone());
-    if (min <= 0.0 && 0.0 <= max &&
-        (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero()))) {
-      type = Type::Union(type, Type::MinusZero(), zone());
-    }
-  } else {
-    type = Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
+    maybe_minus_zero =
+        maybe_minus_zero && (min < 0.0 || (min == 0.0 && lhs_maybe_minus_zero &&
+                                           rhs_maybe_minus_zero));
+  }
+
+  if (maybe_minus_zero) {
+    type = Type::Union(type, Type::MinusZero(), zone());
   }
   return type;
 }
@@ -1066,21 +1080,28 @@ Type OperationTyper::NumberMin(Type lhs, Type rhs) {
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
-  lhs = Type::Intersect(lhs, Type::OrderedNumber(), zone());
-  DCHECK(!lhs.IsNone());
-  rhs = Type::Intersect(rhs, Type::OrderedNumber(), zone());
-  DCHECK(!rhs.IsNone());
-  if (lhs.Is(cache_->kIntegerOrMinusZero) &&
-      rhs.Is(cache_->kIntegerOrMinusZero)) {
-    double max = std::min(lhs.Max(), rhs.Max());
-    double min = std::min(lhs.Min(), rhs.Min());
+
+  if (!lhs.Is(cache_->kIntegerOrMinusZeroOrNaN) ||
+      !rhs.Is(cache_->kIntegerOrMinusZeroOrNaN)) {
+    return Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
+  }
+
+  bool maybe_minus_zero =
+      lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero());
+  lhs = Type::Intersect(lhs, cache_->kInteger, zone());
+  rhs = Type::Intersect(rhs, cache_->kInteger, zone());
+
+  if (!lhs.IsNone() || !rhs.IsNone()) {
+    double min = std::min(lhs.IsNone() ? +V8_INFINITY : lhs.Min(),
+                          rhs.IsNone() ? +V8_INFINITY : rhs.Min());
+    double max = std::min(lhs.IsNone() ? +V8_INFINITY : lhs.Max(),
+                          rhs.IsNone() ? +V8_INFINITY : rhs.Max());
     type = Type::Union(type, Type::Range(min, max, zone()), zone());
-    if (min <= 0.0 && 0.0 <= max &&
-        (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero()))) {
-      type = Type::Union(type, Type::MinusZero(), zone());
-    }
-  } else {
-    type = Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
+    maybe_minus_zero = maybe_minus_zero && max >= 0.0;
+  }
+
+  if (maybe_minus_zero) {
+    type = Type::Union(type, Type::MinusZero(), zone());
   }
   return type;
 }
@@ -1111,6 +1132,36 @@ SPECULATIVE_NUMBER_BINOP(NumberShiftRight)
 SPECULATIVE_NUMBER_BINOP(NumberShiftRightLogical)
 #undef SPECULATIVE_NUMBER_BINOP
 
+Type OperationTyper::BigIntAdd(Type lhs, Type rhs) {
+  if (lhs.IsNone() || rhs.IsNone()) return Type::None();
+  return Type::BigInt();
+}
+
+Type OperationTyper::BigIntSubtract(Type lhs, Type rhs) {
+  if (lhs.IsNone() || rhs.IsNone()) return Type::None();
+  return Type::BigInt();
+}
+
+Type OperationTyper::BigIntNegate(Type type) {
+  if (type.IsNone()) return type;
+  return Type::BigInt();
+}
+
+Type OperationTyper::SpeculativeBigIntAdd(Type lhs, Type rhs) {
+  if (lhs.IsNone() || rhs.IsNone()) return Type::None();
+  return Type::BigInt();
+}
+
+Type OperationTyper::SpeculativeBigIntSubtract(Type lhs, Type rhs) {
+  if (lhs.IsNone() || rhs.IsNone()) return Type::None();
+  return Type::BigInt();
+}
+
+Type OperationTyper::SpeculativeBigIntNegate(Type type) {
+  if (type.IsNone()) return type;
+  return Type::BigInt();
+}
+
 Type OperationTyper::SpeculativeToNumber(Type type) {
   return ToNumber(Type::Intersect(type, Type::NumberOrOddball(), zone()));
 }
@@ -1124,7 +1175,7 @@ Type OperationTyper::ToPrimitive(Type type) {
 
 Type OperationTyper::Invert(Type type) {
   DCHECK(type.Is(Type::Boolean()));
-  DCHECK(!type.IsNone());
+  CHECK(!type.IsNone());
   if (type.Is(singleton_false())) return singleton_true();
   if (type.Is(singleton_true())) return singleton_false();
   return type;
@@ -1195,19 +1246,24 @@ Type OperationTyper::SameValueNumbersOnly(Type lhs, Type rhs) {
 }
 
 Type OperationTyper::StrictEqual(Type lhs, Type rhs) {
+  CHECK(!lhs.IsNone());
+  CHECK(!rhs.IsNone());
   if (!JSType(lhs).Maybe(JSType(rhs))) return singleton_false();
   if (lhs.Is(Type::NaN()) || rhs.Is(Type::NaN())) return singleton_false();
   if (lhs.Is(Type::Number()) && rhs.Is(Type::Number()) &&
       (lhs.Max() < rhs.Min() || lhs.Min() > rhs.Max())) {
     return singleton_false();
   }
-  if ((lhs.Is(Type::Hole()) || rhs.Is(Type::Hole())) && !lhs.Maybe(rhs)) {
-    return singleton_false();
-  }
-  if (lhs.IsHeapConstant() && rhs.Is(lhs)) {
+  if (lhs.IsSingleton() && rhs.Is(lhs)) {
     // Types are equal and are inhabited only by a single semantic value,
     // which is not nan due to the earlier check.
+    DCHECK(lhs.Is(rhs));
+    DCHECK(lhs.Is(Type::NonInternal()) || lhs.Is(Type::Hole()));
     return singleton_true();
+  }
+  if ((lhs.Is(Type::Unique()) || rhs.Is(Type::Unique())) && !lhs.Maybe(rhs)) {
+    // One of the inputs has a canonical representation but types don't overlap.
+    return singleton_false();
   }
   return Type::Boolean();
 }
@@ -1218,6 +1274,9 @@ Type OperationTyper::CheckBounds(Type index, Type length) {
   Type mask = Type::Range(0.0, length.Max() - 1, zone());
   if (index.Maybe(Type::MinusZero())) {
     index = Type::Union(index, cache_->kSingletonZero, zone());
+  }
+  if (index.Maybe(Type::String())) {
+    index = Type::Union(index, cache_->kIntPtr, zone());
   }
   return Type::Intersect(index, mask, zone());
 }

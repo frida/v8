@@ -7,8 +7,8 @@
 
 #include "src/objects/heap-number.h"
 
-#include "src/objects-inl.h"
-#include "src/objects/heap-object-inl.h"
+#include "src/objects/objects-inl.h"
+#include "src/objects/primitive-heap-object-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -16,37 +16,32 @@
 namespace v8 {
 namespace internal {
 
-OBJECT_CONSTRUCTORS_IMPL(HeapNumberBase, HeapObject)
-OBJECT_CONSTRUCTORS_IMPL(HeapNumber, HeapNumberBase)
-OBJECT_CONSTRUCTORS_IMPL(MutableHeapNumber, HeapNumberBase)
+OBJECT_CONSTRUCTORS_IMPL(HeapNumber, PrimitiveHeapObject)
 
 CAST_ACCESSOR(HeapNumber)
-CAST_ACCESSOR(MutableHeapNumber)
 
-double HeapNumberBase::value() const {
-  return READ_DOUBLE_FIELD(*this, kValueOffset);
+double HeapNumber::value() const { return ReadField<double>(kValueOffset); }
+
+void HeapNumber::set_value(double value) {
+  WriteField<double>(kValueOffset, value);
 }
 
-void HeapNumberBase::set_value(double value) {
-  WRITE_DOUBLE_FIELD(*this, kValueOffset, value);
+uint64_t HeapNumber::value_as_bits() const {
+  // Bug(v8:8875): HeapNumber's double may be unaligned.
+  return base::ReadUnalignedValue<uint64_t>(field_address(kValueOffset));
 }
 
-uint64_t HeapNumberBase::value_as_bits() const {
-  return READ_UINT64_FIELD(*this, kValueOffset);
+void HeapNumber::set_value_as_bits(uint64_t bits) {
+  base::WriteUnalignedValue<uint64_t>(field_address(kValueOffset), bits);
 }
 
-void HeapNumberBase::set_value_as_bits(uint64_t bits) {
-  WRITE_UINT64_FIELD(*this, kValueOffset, bits);
-}
-
-int HeapNumberBase::get_exponent() {
-  return ((READ_INT_FIELD(*this, kExponentOffset) & kExponentMask) >>
-          kExponentShift) -
+int HeapNumber::get_exponent() {
+  return ((ReadField<int>(kExponentOffset) & kExponentMask) >> kExponentShift) -
          kExponentBias;
 }
 
-int HeapNumberBase::get_sign() {
-  return READ_INT_FIELD(*this, kExponentOffset) & kSignMask;
+int HeapNumber::get_sign() {
+  return ReadField<int>(kExponentOffset) & kSignMask;
 }
 
 }  // namespace internal

@@ -5,42 +5,31 @@
 #include "src/heap/array-buffer-collector.h"
 
 #include "src/base/template-utils.h"
-#include "src/cancelable-task.h"
 #include "src/heap/array-buffer-tracker.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
-#include "src/task-utils.h"
+#include "src/tasks/cancelable-task.h"
+#include "src/tasks/task-utils.h"
 
 namespace v8 {
 namespace internal {
 
-namespace {
-
-void FreeAllocationsHelper(
-    Heap* heap, const std::vector<JSArrayBuffer::Allocation>& allocations) {
-  for (JSArrayBuffer::Allocation alloc : allocations) {
-    JSArrayBuffer::FreeBackingStore(heap->isolate(), alloc);
-  }
-}
-
-}  // namespace
-
 void ArrayBufferCollector::QueueOrFreeGarbageAllocations(
-    std::vector<JSArrayBuffer::Allocation> allocations) {
+    std::vector<std::shared_ptr<BackingStore>> backing_stores) {
   if (heap_->ShouldReduceMemory()) {
-    FreeAllocationsHelper(heap_, allocations);
+    // Destruct the vector, which destructs the std::shared_ptrs, freeing
+    // the backing stores.
+    backing_stores.clear();
   } else {
     base::MutexGuard guard(&allocations_mutex_);
-    allocations_.push_back(std::move(allocations));
+    allocations_.push_back(std::move(backing_stores));
   }
 }
 
 void ArrayBufferCollector::PerformFreeAllocations() {
   base::MutexGuard guard(&allocations_mutex_);
-  for (const std::vector<JSArrayBuffer::Allocation>& allocations :
-       allocations_) {
-    FreeAllocationsHelper(heap_, allocations);
-  }
+  // Destruct the vector, which destructs the vecotr of std::shared_ptrs,
+  // freeing the backing stores if their refcount drops to zero.
   allocations_.clear();
 }
 

@@ -7,7 +7,7 @@
 
 #include "src/objects/literal-objects.h"
 
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -15,12 +15,82 @@
 namespace v8 {
 namespace internal {
 
+//
+// ObjectBoilerplateDescription
+//
+
 OBJECT_CONSTRUCTORS_IMPL(ObjectBoilerplateDescription, FixedArray)
 
 CAST_ACCESSOR(ObjectBoilerplateDescription)
 
 SMI_ACCESSORS(ObjectBoilerplateDescription, flags,
               FixedArray::OffsetOfElementAt(kLiteralTypeOffset))
+
+Object ObjectBoilerplateDescription::name(int index) const {
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
+  return name(isolate, index);
+}
+
+Object ObjectBoilerplateDescription::name(const Isolate* isolate,
+                                          int index) const {
+  // get() already checks for out of bounds access, but we do not want to allow
+  // access to the last element, if it is the number of properties.
+  DCHECK_NE(size(), index);
+  return get(isolate, 2 * index + kDescriptionStartIndex);
+}
+
+Object ObjectBoilerplateDescription::value(int index) const {
+  const Isolate* isolate = GetIsolateForPtrCompr(*this);
+  return value(isolate, index);
+}
+
+Object ObjectBoilerplateDescription::value(const Isolate* isolate,
+                                           int index) const {
+  return get(isolate, 2 * index + 1 + kDescriptionStartIndex);
+}
+
+void ObjectBoilerplateDescription::set_key_value(int index, Object key,
+                                                 Object value) {
+  DCHECK_LT(index, size());
+  DCHECK_GE(index, 0);
+  set(2 * index + kDescriptionStartIndex, key);
+  set(2 * index + 1 + kDescriptionStartIndex, value);
+}
+
+int ObjectBoilerplateDescription::size() const {
+  DCHECK_EQ(0, (length() - kDescriptionStartIndex -
+                (this->has_number_of_properties() ? 1 : 0)) %
+                   2);
+  // Rounding is intended.
+  return (length() - kDescriptionStartIndex) / 2;
+}
+
+bool ObjectBoilerplateDescription::has_number_of_properties() const {
+  return (length() - kDescriptionStartIndex) % 2 != 0;
+}
+
+int ObjectBoilerplateDescription::backing_store_size() const {
+  if (has_number_of_properties()) {
+    // If present, the last entry contains the number of properties.
+    return Smi::ToInt(this->get(length() - 1));
+  }
+  // If the number is not given explicitly, we assume there are no
+  // properties with computed names.
+  return size();
+}
+
+void ObjectBoilerplateDescription::set_backing_store_size(
+    int backing_store_size) {
+  DCHECK(has_number_of_properties());
+  DCHECK_NE(size(), backing_store_size);
+  CHECK(Smi::IsValid(backing_store_size));
+  // TODO(ishell): move this value to the header
+  set(length() - 1, Smi::FromInt(backing_store_size));
+}
+
+//
+// ClassBoilerplate
+//
 
 OBJECT_CONSTRUCTORS_IMPL(ClassBoilerplate, FixedArray)
 CAST_ACCESSOR(ClassBoilerplate)
@@ -52,14 +122,11 @@ ACCESSORS(ClassBoilerplate, instance_elements_template, Object,
 ACCESSORS(ClassBoilerplate, instance_computed_properties, FixedArray,
           FixedArray::OffsetOfElementAt(kPrototypeComputedPropertiesIndex))
 
-OBJECT_CONSTRUCTORS_IMPL(ArrayBoilerplateDescription, Struct)
+//
+// ArrayBoilerplateDescription
+//
 
-CAST_ACCESSOR(ArrayBoilerplateDescription)
-
-SMI_ACCESSORS(ArrayBoilerplateDescription, flags, kFlagsOffset)
-
-ACCESSORS(ArrayBoilerplateDescription, constant_elements, FixedArrayBase,
-          kConstantElementsOffset)
+TQ_OBJECT_CONSTRUCTORS_IMPL(ArrayBoilerplateDescription)
 
 ElementsKind ArrayBoilerplateDescription::elements_kind() const {
   return static_cast<ElementsKind>(flags());
@@ -70,7 +137,7 @@ void ArrayBoilerplateDescription::set_elements_kind(ElementsKind kind) {
 }
 
 bool ArrayBoilerplateDescription::is_empty() const {
-  return constant_elements()->length() == 0;
+  return constant_elements().length() == 0;
 }
 
 }  // namespace internal

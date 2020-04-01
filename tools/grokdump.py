@@ -586,7 +586,10 @@ MINIDUMP_RAW_SYSTEM_INFO = Descriptor([
 
 MD_CPU_ARCHITECTURE_X86 = 0
 MD_CPU_ARCHITECTURE_ARM = 5
-MD_CPU_ARCHITECTURE_ARM64 = 0x8003
+# Breakpad used a custom value of 0x8003 here; Crashpad uses the new
+# standardized value 12.
+MD_CPU_ARCHITECTURE_ARM64 = 12
+MD_CPU_ARCHITECTURE_ARM64_BREAKPAD_LEGACY = 0x8003
 MD_CPU_ARCHITECTURE_AMD64 = 9
 
 OBJDUMP_BIN = None
@@ -613,8 +616,12 @@ class MinidumpReader(object):
 
   def __init__(self, options, minidump_name):
     self.minidump_name = minidump_name
-    self.minidump_file = open(minidump_name, "r")
-    self.minidump = mmap.mmap(self.minidump_file.fileno(), 0, mmap.MAP_PRIVATE)
+    if sys.platform == 'win32':
+      self.minidump_file = open(minidump_name, "a+")
+      self.minidump = mmap.mmap(self.minidump_file.fileno(), 0)
+    else:
+      self.minidump_file = open(minidump_name, "r")
+      self.minidump = mmap.mmap(self.minidump_file.fileno(), 0, mmap.MAP_PRIVATE)
     self.header = MINIDUMP_HEADER.Read(self.minidump, 0)
     if self.header.signature != MinidumpReader._HEADER_MAGIC:
       print("Warning: Unsupported minidump header magic!", file=sys.stderr)
@@ -647,6 +654,8 @@ class MinidumpReader(object):
         system_info = MINIDUMP_RAW_SYSTEM_INFO.Read(
             self.minidump, d.location.rva)
         self.arch = system_info.processor_architecture
+        if self.arch == MD_CPU_ARCHITECTURE_ARM64_BREAKPAD_LEGACY:
+          self.arch = MD_CPU_ARCHITECTURE_ARM64
         assert self.arch in [MD_CPU_ARCHITECTURE_AMD64,
                              MD_CPU_ARCHITECTURE_ARM,
                              MD_CPU_ARCHITECTURE_ARM64,

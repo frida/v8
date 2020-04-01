@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax
+// Flags: --allow-natives-syntax --expose-gc
 
 load('test/mjsunit/wasm/wasm-module-builder.js');
 
@@ -29,9 +29,9 @@ function checkStack(stack, expected_lines) {
   // grow_memory can be called from interpreted or compiled code, and changes
   // should be reflected in either execution.
   var builder = new WasmModuleBuilder();
-  var grow_body = [kExprGetLocal, 0, kExprMemoryGrow, kMemoryZero];
-  var load_body = [kExprGetLocal, 0, kExprI32LoadMem, 0, 0];
-  var store_body = [kExprGetLocal, 0, kExprGetLocal, 1, kExprI32StoreMem, 0, 0];
+  var grow_body = [kExprLocalGet, 0, kExprMemoryGrow, kMemoryZero];
+  var load_body = [kExprLocalGet, 0, kExprI32LoadMem, 0, 0];
+  var store_body = [kExprLocalGet, 0, kExprLocalGet, 1, kExprI32StoreMem, 0, 0];
   builder.addFunction('grow_memory', kSig_i_i).addBody(grow_body).exportFunc();
   builder.addFunction('load', kSig_i_i).addBody(load_body).exportFunc();
   builder.addFunction('store', kSig_v_ii).addBody(store_body).exportFunc();
@@ -96,7 +96,7 @@ function createTwoInstancesCallingEachOther(inner_throws = false) {
   let id_imp = builder1.addImport('q', 'id', kSig_i_i);
   let plus_one = builder1.addFunction('plus_one', kSig_i_i)
                      .addBody([
-                       kExprGetLocal, 0,  // -
+                       kExprLocalGet, 0,  // -
                        kExprI32Const, 1,  // -
                        kExprI32Add,       // -
                        kExprCallFunction, id_imp
@@ -114,7 +114,7 @@ function createTwoInstancesCallingEachOther(inner_throws = false) {
   let plus_two = builder2.addFunction('plus_two', kSig_i_i)
                      .addBody([
                        // Call import, add one more.
-                       kExprGetLocal, 0,                 // -
+                       kExprLocalGet, 0,                 // -
                        kExprCallFunction, plus_one_imp,  // -
                        kExprI32Const, 1,                 // -
                        kExprI32Add
@@ -144,28 +144,32 @@ function redirectToInterpreter(
   // Three runs: Break in instance 1, break in instance 2, or both.
   for (let run = 0; run < 3; ++run) {
     print(" - run " + run);
-    let [instance1, instance2] = createTwoInstancesCallingEachOther();
-
-    let interpreted_before_1 = %WasmNumInterpretedCalls(instance1);
-    let interpreted_before_2 = %WasmNumInterpretedCalls(instance2);
-    // Call plus_two, which calls plus_one.
-    assertEquals(9, instance2.exports.plus_two(7));
-
-    // Nothing interpreted:
-    assertEquals(interpreted_before_1, %WasmNumInterpretedCalls(instance1));
-    assertEquals(interpreted_before_2, %WasmNumInterpretedCalls(instance2));
-
-    // Now redirect functions to the interpreter.
-    redirectToInterpreter(instance1, instance2, run != 1, run != 0);
-
-    // Call plus_two, which calls plus_one.
-    assertEquals(9, instance2.exports.plus_two(7));
-
-    // TODO(6668): Fix patching of instances which imported others' code.
-    //assertEquals(interpreted_before_1 + (run == 1 ? 0 : 1),
-    //             %WasmNumInterpretedCalls(instance1));
-    assertEquals(interpreted_before_2 + (run == 0 ? 0 : 1),
-                 %WasmNumInterpretedCalls(instance2));
+    (() => {
+      // Trigger a GC to ensure that the underlying native module is not a cached
+      // one from a previous run, with functions already redirected to the
+      // interpreter. This is not observable from pure JavaScript, but this is
+      // observable with the internal runtime functions used in this test.
+      // Run in a local scope to ensure previous native modules are
+      // unreachable.
+      gc();
+      let [instance1, instance2] = createTwoInstancesCallingEachOther();
+      let interpreted_before_1 = %WasmNumInterpretedCalls(instance1);
+      let interpreted_before_2 = %WasmNumInterpretedCalls(instance2);
+      // Call plus_two, which calls plus_one.
+      assertEquals(9, instance2.exports.plus_two(7));
+      // Nothing interpreted:
+      assertEquals(interpreted_before_1, %WasmNumInterpretedCalls(instance1));
+      assertEquals(interpreted_before_2, %WasmNumInterpretedCalls(instance2));
+      // Now redirect functions to the interpreter.
+      redirectToInterpreter(instance1, instance2, run != 1, run != 0);
+      // Call plus_two, which calls plus_one.
+      assertEquals(9, instance2.exports.plus_two(7));
+      // TODO(6668): Fix patching of instances which imported others' code.
+      //assertEquals(interpreted_before_1 + (run == 1 ? 0 : 1),
+      //             %WasmNumInterpretedCalls(instance1));
+      assertEquals(interpreted_before_2 + (run == 0 ? 0 : 1),
+                   %WasmNumInterpretedCalls(instance2))
+    })();
   }
 })();
 
@@ -182,11 +186,11 @@ function redirectToInterpreter(
       assertUnreachable('should trap because of unreachable instruction');
     } catch (e) {
       checkStack(stripPath(e.stack), [
-        'Error: i=8',                                                // -
-        /^    at imp \(file:\d+:29\)$/,                              // -
-        '    at plus_one (wasm-function[1]:6)',                      // -
-        '    at plus_two (wasm-function[1]:3)',                      // -
-        /^    at testStackTraceThroughCWasmEntry \(file:\d+:25\)$/,  // -
+        'Error: i=8',                                                   // -
+        /^    at imp \(file:\d+:29\)$/,                                 // -
+        '    at plus_one (<anonymous>:wasm-function[1]:0x3b)',          // -
+        '    at plus_two (<anonymous>:wasm-function[1]:0x3e)',          // -
+        /^    at testStackTraceThroughCWasmEntry \(file:\d+:25\)$/,     // -
         /^    at file:\d+:3$/
       ]);
     }

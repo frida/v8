@@ -35,6 +35,10 @@
 #include "src/base/qnx-math.h"
 #endif
 
+#ifdef V8_USE_ADDRESS_SANITIZER
+#include <sanitizer/asan_interface.h>
+#endif  // V8_USE_ADDRESS_SANITIZER
+
 namespace v8 {
 
 namespace base {
@@ -207,7 +211,6 @@ class V8_BASE_EXPORT OS {
   static PRINTF_FORMAT(3, 0) int VSNPrintF(char* str, int length,
                                            const char* format, va_list args);
 
-  static char* StrChr(char* str, int c);
   static void StrNCpy(char* dest, int length, const char* src, size_t n);
 
   // Support for the profiler.  Can do nothing, in which case ticks
@@ -248,6 +251,8 @@ class V8_BASE_EXPORT OS {
   static int GetCurrentProcessId();
 
   static int GetCurrentThreadId();
+
+  static void AdjustSchedulingParams();
 
   static void ExitProcess(int exit_code);
 
@@ -332,15 +337,16 @@ class V8_BASE_EXPORT Thread {
   virtual ~Thread();
 
   // Start new thread by calling the Run() method on the new thread.
-  void Start();
+  V8_WARN_UNUSED_RESULT bool Start();
 
   // Start new thread and wait until Run() method is called on the new thread.
-  void StartSynchronously() {
+  bool StartSynchronously() {
     start_semaphore_ = new Semaphore(0);
-    Start();
+    if (!Start()) return false;
     start_semaphore_->Wait();
     delete start_semaphore_;
     start_semaphore_ = nullptr;
+    return true;
   }
 
   // Wait until thread terminates.
@@ -405,51 +411,36 @@ class V8_BASE_EXPORT Thread {
   DISALLOW_COPY_AND_ASSIGN(Thread);
 };
 
-class ThreadLocalValue {
- protected:
-  ThreadLocalValue() : key_(Thread::CreateThreadLocalKey()) {}
-
-  ~ThreadLocalValue() {
-    Thread::DeleteThreadLocalKey(key_);
-  }
-
-  Thread::LocalStorageKey key_;
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ThreadLocalValue);
-};
-
-template <typename T>
-class ThreadLocalPointer final : public ThreadLocalValue {
+// TODO(v8:10354): Make use of the stack utilities here in V8.
+class V8_BASE_EXPORT Stack {
  public:
-  ThreadLocalPointer() : ThreadLocalValue() {}
+  // Gets the start of the stack of the current thread.
+  static void* GetStackStart();
 
-  T* Get() const {
-    return static_cast<T*>(Thread::GetThreadLocal(key_));
+  // Returns the current stack top. Works correctly with ASAN and SafeStack.
+  // GetCurrentStackPosition() should not be inlined, because it works on stack
+  // frames if it were inlined into a function with a huge stack frame it would
+  // return an address significantly above the actual current stack position.
+  static V8_NOINLINE void* GetCurrentStackPosition();
+
+  // Translates an ASAN-based slot to a real stack slot if necessary.
+  static void* GetStackSlot(void* slot) {
+#ifdef V8_USE_ADDRESS_SANITIZER
+    void* fake_stack = __asan_get_current_fake_stack();
+    if (fake_stack) {
+      void* fake_frame_start;
+      void* real_frame = __asan_addr_is_in_fake_stack(
+          fake_stack, slot, &fake_frame_start, nullptr);
+      if (real_frame) {
+        return reinterpret_cast<void*>(
+            reinterpret_cast<uintptr_t>(real_frame) +
+            (reinterpret_cast<uintptr_t>(slot) -
+             reinterpret_cast<uintptr_t>(fake_frame_start)));
+      }
+    }
+#endif  // V8_USE_ADDRESS_SANITIZER
+    return slot;
   }
-
-  void Set(T* value) const {
-    Thread::SetThreadLocal(key_, value);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ThreadLocalPointer);
-};
-
-class ThreadLocalInt final : public ThreadLocalValue {
- public:
-  ThreadLocalInt() : ThreadLocalValue() {}
-
-  int Get() const {
-    return Thread::GetThreadLocalInt(key_);
-  }
-
-  void Set(int id) const {
-    Thread::SetThreadLocalInt(key_, id);
-  }
-
- private:
-  DISALLOW_COPY_AND_ASSIGN(ThreadLocalInt);
 };
 
 }  // namespace base

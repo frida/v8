@@ -27,7 +27,7 @@
 
 #include <stdlib.h>
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
 #include "test/cctest/cctest.h"
 
@@ -147,9 +147,7 @@ void DeclarationContext::Check(const char* source, int get, int set, int query,
   catcher.SetVerbose(true);
   Local<Context> context = CcTest::isolate()->GetCurrentContext();
   MaybeLocal<Script> script = Script::Compile(
-      context,
-      String::NewFromUtf8(CcTest::isolate(), source, v8::NewStringType::kNormal)
-          .ToLocalChecked());
+      context, String::NewFromUtf8(CcTest::isolate(), source).ToLocalChecked());
   if (expectations == EXPECT_ERROR) {
     CHECK(script.IsEmpty());
     return;
@@ -445,9 +443,8 @@ class SimpleContext {
     TryCatch catcher(context_->GetIsolate());
     catcher.SetVerbose(true);
     MaybeLocal<Script> script = Script::Compile(
-        context_, String::NewFromUtf8(context_->GetIsolate(), source,
-                                      v8::NewStringType::kNormal)
-                      .ToLocalChecked());
+        context_,
+        String::NewFromUtf8(context_->GetIsolate(), source).ToLocalChecked());
     if (expectations == EXPECT_ERROR) {
       CHECK(script.IsEmpty());
       return;
@@ -748,14 +745,10 @@ TEST(CrossScriptDynamicLookup) {
 
   {
     SimpleContext context;
-    Local<String> undefined_string =
-        String::NewFromUtf8(CcTest::isolate(), "undefined",
-                            v8::NewStringType::kInternalized)
-            .ToLocalChecked();
-    Local<String> number_string =
-        String::NewFromUtf8(CcTest::isolate(), "number",
-                            v8::NewStringType::kInternalized)
-            .ToLocalChecked();
+    Local<String> undefined_string = String::NewFromUtf8Literal(
+        CcTest::isolate(), "undefined", v8::NewStringType::kInternalized);
+    Local<String> number_string = String::NewFromUtf8Literal(
+        CcTest::isolate(), "number", v8::NewStringType::kInternalized);
 
     context.Check(
         "function f(o) { with(o) { return x; } }"
@@ -825,14 +818,10 @@ TEST(CrossScriptStaticLookupUndeclared) {
 
   {
     SimpleContext context;
-    Local<String> undefined_string =
-        String::NewFromUtf8(CcTest::isolate(), "undefined",
-                            v8::NewStringType::kInternalized)
-            .ToLocalChecked();
-    Local<String> number_string =
-        String::NewFromUtf8(CcTest::isolate(), "number",
-                            v8::NewStringType::kInternalized)
-            .ToLocalChecked();
+    Local<String> undefined_string = String::NewFromUtf8Literal(
+        CcTest::isolate(), "undefined", v8::NewStringType::kInternalized);
+    Local<String> number_string = String::NewFromUtf8Literal(
+        CcTest::isolate(), "number", v8::NewStringType::kInternalized);
 
     context.Check(
         "function f(o) { return x; }"
@@ -865,8 +854,10 @@ TEST(CrossScriptLoadICs) {
     SimpleContext context;
     context.Check(
         "x = 15;"
-        "function f() { return x; }"
-        "function g() { return x; }"
+        "function f() { return x; };"
+        "function g() { return x; };"
+        "%PrepareFunctionForOptimization(f);"
+        "%PrepareFunctionForOptimization(g);"
         "f()",
         EXPECT_RESULT, Number::New(CcTest::isolate(), 15));
     context.Check(
@@ -890,6 +881,7 @@ TEST(CrossScriptLoadICs) {
     context.Check(
         "x = 15;"
         "function f() { return x; }"
+        "%PrepareFunctionForOptimization(f);"
         "f()",
         EXPECT_RESULT, Number::New(CcTest::isolate(), 15));
     for (int k = 0; k < 3; k++) {
@@ -900,6 +892,7 @@ TEST(CrossScriptLoadICs) {
     context.Check(
         "'use strict';"
         "let x = 5;"
+        "%PrepareFunctionForOptimization(f);"
         "f()",
         EXPECT_RESULT, Number::New(CcTest::isolate(), 5));
     for (int k = 0; k < 3; k++) {
@@ -921,8 +914,10 @@ TEST(CrossScriptStoreICs) {
     context.Check(
         "var global = this;"
         "x = 15;"
-        "function f(v) { x = v; }"
-        "function g(v) { x = v; }"
+        "function f(v) { x = v; };"
+        "function g(v) { x = v; };"
+        "%PrepareFunctionForOptimization(f);"
+        "%PrepareFunctionForOptimization(g);"
         "f(10); x",
         EXPECT_RESULT, Number::New(CcTest::isolate(), 10));
     context.Check(
@@ -958,7 +953,8 @@ TEST(CrossScriptStoreICs) {
     context.Check(
         "var global = this;"
         "x = 15;"
-        "function f(v) { x = v; }"
+        "function f(v) { x = v; };"
+        "%PrepareFunctionForOptimization(f);"
         "f(10); x",
         EXPECT_RESULT, Number::New(CcTest::isolate(), 10));
     for (int k = 0; k < 3; k++) {
@@ -980,8 +976,10 @@ TEST(CrossScriptStoreICs) {
     }
     context.Check("global.x", EXPECT_RESULT,
                   Number::New(CcTest::isolate(), 20));
-    context.Check("%OptimizeFunctionOnNextCall(f); f(41); x", EXPECT_RESULT,
-                  Number::New(CcTest::isolate(), 41));
+    context.Check(
+        "%PrepareFunctionForOptimization(f);"
+        "%OptimizeFunctionOnNextCall(f); f(41); x",
+        EXPECT_RESULT, Number::New(CcTest::isolate(), 41));
     context.Check("global.x", EXPECT_RESULT,
                   Number::New(CcTest::isolate(), 20));
   }
@@ -1000,7 +998,7 @@ TEST(CrossScriptAssignmentToConst) {
                   Undefined(CcTest::isolate()));
     context.Check("'use strict';const x = 1; x", EXPECT_RESULT,
                   Number::New(CcTest::isolate(), 1));
-    context.Check("f();", EXPECT_EXCEPTION);
+    context.Check("%PrepareFunctionForOptimization(f);f();", EXPECT_EXCEPTION);
     context.Check("x", EXPECT_RESULT, Number::New(CcTest::isolate(), 1));
     context.Check("f();", EXPECT_EXCEPTION);
     context.Check("x", EXPECT_RESULT, Number::New(CcTest::isolate(), 1));
@@ -1055,8 +1053,10 @@ TEST(Regress3941) {
   {
     // Optimize.
     SimpleContext context;
-    context.Check("function f() { x = 1; }", EXPECT_RESULT,
-                  Undefined(CcTest::isolate()));
+    context.Check(
+        "function f() { x = 1; };"
+        "%PrepareFunctionForOptimization(f);",
+        EXPECT_RESULT, Undefined(CcTest::isolate()));
     for (int i = 0; i < 4; i++) {
       context.Check("f(); x", EXPECT_RESULT, Number::New(CcTest::isolate(), 1));
     }
@@ -1096,8 +1096,10 @@ TEST(Regress3941_Reads) {
   {
     // Optimize.
     SimpleContext context;
-    context.Check("function f() { return x; }", EXPECT_RESULT,
-                  Undefined(CcTest::isolate()));
+    context.Check(
+        "function f() { return x; };"
+        "%PrepareFunctionForOptimization(f);",
+        EXPECT_RESULT, Undefined(CcTest::isolate()));
     for (int i = 0; i < 4; i++) {
       context.Check("f()", EXPECT_EXCEPTION);
     }

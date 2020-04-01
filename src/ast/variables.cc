@@ -5,8 +5,8 @@
 #include "src/ast/variables.h"
 
 #include "src/ast/scopes.h"
-#include "src/globals.h"
-#include "src/objects-inl.h"
+#include "src/common/globals.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -28,6 +28,20 @@ bool Variable::IsGlobalObjectProperty() const {
   // activation frame.
   return (IsDynamicVariableMode(mode()) || mode() == VariableMode::kVar) &&
          scope_ != nullptr && scope_->is_script_scope();
+}
+
+bool Variable::IsReplGlobalLet() const {
+  return scope()->is_repl_mode_scope() && mode() == VariableMode::kLet;
+}
+
+void Variable::RewriteLocationForRepl() {
+  DCHECK(scope_->is_repl_mode_scope());
+
+  if (mode() == VariableMode::kLet) {
+    DCHECK_EQ(location(), VariableLocation::CONTEXT);
+    bit_field_ =
+        LocationField::update(bit_field_, VariableLocation::REPL_GLOBAL);
+  }
 }
 
 }  // namespace internal

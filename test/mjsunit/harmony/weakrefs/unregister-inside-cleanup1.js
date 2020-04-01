@@ -8,7 +8,8 @@ let cleanup_call_count = 0;
 let cleanup_holdings_count = 0;
 let cleanup = function(iter) {
   // Unregister before we've iterated through the holdings.
-  fg.unregister(key);
+  let success = fg.unregister(key);
+  assertTrue(success);
 
   for (wc of iter) {
     ++cleanup_holdings_count;
@@ -16,9 +17,9 @@ let cleanup = function(iter) {
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
+let fg = new FinalizationRegistry(cleanup);
 let key = {"k": "the key"};
-// Create an object and register it in the FinalizationGroup. The object needs
+// Create an object and register it in the FinalizationRegistry. The object needs
 // to be inside a closure so that we can reliably kill them!
 
 (function() {

@@ -12,9 +12,10 @@
 #include <set>
 #include <string>
 
-#include "src/objects.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects.h"
+#include "torque-generated/field-offsets-tq.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -28,9 +29,9 @@ namespace internal {
 
 class JSV8BreakIterator : public JSObject {
  public:
-  V8_WARN_UNUSED_RESULT static MaybeHandle<JSV8BreakIterator> Initialize(
-      Isolate* isolate, Handle<JSV8BreakIterator> break_iterator,
-      Handle<Object> input_locales, Handle<Object> input_options);
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSV8BreakIterator> New(
+      Isolate* isolate, Handle<Map> map, Handle<Object> input_locales,
+      Handle<Object> input_options, const char* service);
 
   static Handle<JSObject> ResolvedOptions(
       Isolate* isolate, Handle<JSV8BreakIterator> break_iterator);
@@ -50,12 +51,6 @@ class JSV8BreakIterator : public JSObject {
   static String BreakType(Isolate* isolate,
                           Handle<JSV8BreakIterator> break_iterator);
 
-  enum class Type { CHARACTER, WORD, SENTENCE, LINE, COUNT };
-  inline void set_type(Type type);
-  inline Type type() const;
-
-  Handle<String> TypeAsString() const;
-
   DECL_CAST(JSV8BreakIterator)
   DECL_PRINTER(JSV8BreakIterator)
   DECL_VERIFIER(JSV8BreakIterator)
@@ -69,24 +64,11 @@ class JSV8BreakIterator : public JSObject {
   DECL_ACCESSORS(bound_current, Object)
   DECL_ACCESSORS(bound_break_type, Object)
 
-// Layout description.
-#define BREAK_ITERATOR_FIELDS(V)        \
-  /* Pointer fields. */                 \
-  V(kLocaleOffset, kTaggedSize)         \
-  V(kTypeOffset, kTaggedSize)           \
-  V(kBreakIteratorOffset, kTaggedSize)  \
-  V(kUnicodeStringOffset, kTaggedSize)  \
-  V(kBoundAdoptTextOffset, kTaggedSize) \
-  V(kBoundFirstOffset, kTaggedSize)     \
-  V(kBoundNextOffset, kTaggedSize)      \
-  V(kBoundCurrentOffset, kTaggedSize)   \
-  V(kBoundBreakTypeOffset, kTaggedSize) \
-  /* Total Size */                      \
-  V(kSize, 0)
+  // Layout description.
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JS_V8_BREAK_ITERATOR_FIELDS)
 
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize, BREAK_ITERATOR_FIELDS)
-#undef BREAK_ITERATOR_FIELDS
-
+ private:
   OBJECT_CONSTRUCTORS(JSV8BreakIterator, JSObject);
 };
 

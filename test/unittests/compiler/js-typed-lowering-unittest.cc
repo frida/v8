@@ -3,14 +3,14 @@
 // found in the LICENSE file.
 
 #include "src/compiler/js-typed-lowering.h"
-#include "src/code-factory.h"
+#include "src/codegen/code-factory.h"
 #include "src/compiler/access-builder.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/operator-properties.h"
-#include "src/isolate-inl.h"
+#include "src/execution/isolate-inl.h"
 #include "test/unittests/compiler/compiler-test-utils.h"
 #include "test/unittests/compiler/graph-unittest.h"
 #include "test/unittests/compiler/node-test-utils.h"
@@ -47,16 +47,9 @@ class JSTypedLoweringTest : public TypedGraphTest {
     JSGraph jsgraph(isolate(), graph(), common(), javascript(), &simplified,
                     &machine);
     // TODO(titzer): mock the GraphReducer here for better unit testing.
-    GraphReducer graph_reducer(zone(), graph());
+    GraphReducer graph_reducer(zone(), graph(), tick_counter());
     JSTypedLowering reducer(&graph_reducer, &jsgraph, broker(), zone());
     return reducer.Reduce(node);
-  }
-
-  Handle<JSArrayBuffer> NewArrayBuffer(void* bytes, size_t byte_length) {
-    Handle<JSArrayBuffer> buffer =
-        factory()->NewJSArrayBuffer(SharedFlag::kNotShared);
-    JSArrayBuffer::Setup(buffer, isolate(), true, bytes, byte_length);
-    return buffer;
   }
 
   JSOperatorBuilder* javascript() { return &javascript_; }
@@ -181,8 +174,7 @@ TEST_F(JSTypedLoweringTest, JSStrictEqualWithTheHole) {
     Reduction r = Reduce(
         graph()->NewNode(javascript()->StrictEqual(CompareOperationHint::kAny),
                          lhs, the_hole, context, effect, control));
-    ASSERT_TRUE(r.Changed());
-    EXPECT_THAT(r.replacement(), IsFalseConstant());
+    ASSERT_FALSE(r.Changed());
   }
 }
 
@@ -322,12 +314,13 @@ TEST_F(JSTypedLoweringTest, JSLoadContext) {
       Reduction const r2 = Reduce(graph()->NewNode(
           javascript()->LoadContext(1, index, immutable), context, effect));
       ASSERT_TRUE(r2.Changed());
-      EXPECT_THAT(r2.replacement(),
-                  IsLoadField(AccessBuilder::ForContextSlot(index),
-                              IsLoadField(AccessBuilder::ForContextSlot(
-                                              Context::PREVIOUS_INDEX),
-                                          context, effect, graph()->start()),
-                              _, graph()->start()));
+      EXPECT_THAT(
+          r2.replacement(),
+          IsLoadField(AccessBuilder::ForContextSlot(index),
+                      IsLoadField(AccessBuilder::ForContextSlotKnownPointer(
+                                      Context::PREVIOUS_INDEX),
+                                  context, effect, graph()->start()),
+                      _, graph()->start()));
     }
   }
 }
@@ -357,12 +350,13 @@ TEST_F(JSTypedLoweringTest, JSStoreContext) {
           Reduce(graph()->NewNode(javascript()->StoreContext(1, index), value,
                                   context, effect, control));
       ASSERT_TRUE(r2.Changed());
-      EXPECT_THAT(r2.replacement(),
-                  IsStoreField(AccessBuilder::ForContextSlot(index),
-                               IsLoadField(AccessBuilder::ForContextSlot(
-                                               Context::PREVIOUS_INDEX),
-                                           context, effect, graph()->start()),
-                               value, _, control));
+      EXPECT_THAT(
+          r2.replacement(),
+          IsStoreField(AccessBuilder::ForContextSlot(index),
+                       IsLoadField(AccessBuilder::ForContextSlotKnownPointer(
+                                       Context::PREVIOUS_INDEX),
+                                   context, effect, graph()->start()),
+                       value, _, control));
     }
   }
 }
@@ -373,7 +367,7 @@ TEST_F(JSTypedLoweringTest, JSStoreContext) {
 
 
 TEST_F(JSTypedLoweringTest, JSLoadNamedStringLength) {
-  VectorSlotPair feedback;
+  FeedbackSource feedback;
   Handle<Name> name = factory()->length_string();
   Node* const receiver = Parameter(Type::String(), 0);
   Node* const context = UndefinedConstant();

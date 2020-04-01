@@ -11,13 +11,26 @@ namespace v8 {
 namespace internal {
 namespace wasm {
 
-// All the tiers of WASM execution.
+// All the tiers of Wasm execution.
 enum class ExecutionTier : int8_t {
   kNone,
   kInterpreter,
   kLiftoff,
   kTurbofan,
 };
+
+inline const char* ExecutionTierToString(ExecutionTier tier) {
+  switch (tier) {
+    case ExecutionTier::kTurbofan:
+      return "turbofan";
+    case ExecutionTier::kLiftoff:
+      return "liftoff";
+    case ExecutionTier::kInterpreter:
+      return "interpreter";
+    case ExecutionTier::kNone:
+      return "none";
+  }
+}
 
 }  // namespace wasm
 }  // namespace internal

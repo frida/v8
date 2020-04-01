@@ -4,10 +4,11 @@
 
 #include "src/snapshot/serializer-common.h"
 
-#include "src/external-reference-table.h"
-#include "src/objects-inl.h"
+#include "src/codegen/external-reference-table.h"
 #include "src/objects/foreign-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
+#include "third_party/zlib/zlib.h"
 
 namespace v8 {
 namespace internal {
@@ -99,7 +100,6 @@ void SerializedData::AllocateData(uint32_t size) {
   data_ = NewArray<byte>(size);
   size_ = size;
   owns_data_ = true;
-  DCHECK(IsAligned(reinterpret_cast<intptr_t>(data_), kPointerAlignment));
 }
 
 // static
@@ -115,34 +115,45 @@ void SerializerDeserializer::Iterate(Isolate* isolate, RootVisitor* visitor) {
   std::vector<Object>* cache = isolate->partial_snapshot_cache();
   for (size_t i = 0;; ++i) {
     // Extend the array ready to get a value when deserializing.
-    if (cache->size() <= i) cache->push_back(Smi::kZero);
+    if (cache->size() <= i) cache->push_back(Smi::zero());
     // During deserialization, the visitor populates the partial snapshot cache
     // and eventually terminates the cache with undefined.
     visitor->VisitRootPointer(Root::kPartialSnapshotCache, nullptr,
                               FullObjectSlot(&cache->at(i)));
-    if (cache->at(i)->IsUndefined(isolate)) break;
+    if (cache->at(i).IsUndefined(isolate)) break;
   }
 }
 
 bool SerializerDeserializer::CanBeDeferred(HeapObject o) {
-  return !o->IsString() && !o->IsScript() && !o->IsJSTypedArray();
+  return !o.IsString() && !o.IsScript() && !o.IsJSTypedArray();
 }
 
 void SerializerDeserializer::RestoreExternalReferenceRedirectors(
     const std::vector<AccessorInfo>& accessor_infos) {
   // Restore wiped accessor infos.
   for (AccessorInfo info : accessor_infos) {
-    Foreign::cast(info->js_getter())
-        ->set_foreign_address(info->redirected_getter());
+    Foreign::cast(info.js_getter())
+        .set_foreign_address(info.redirected_getter());
   }
 }
 
 void SerializerDeserializer::RestoreExternalReferenceRedirectors(
     const std::vector<CallHandlerInfo>& call_handler_infos) {
   for (CallHandlerInfo info : call_handler_infos) {
-    Foreign::cast(info->js_callback())
-        ->set_foreign_address(info->redirected_callback());
+    Foreign::cast(info.js_callback())
+        .set_foreign_address(info.redirected_callback());
   }
+}
+
+uint32_t Checksum(Vector<const byte> payload) {
+#ifdef MEMORY_SANITIZER
+  // Computing the checksum includes padding bytes for objects like strings.
+  // Mark every object as initialized in the code serializer.
+  MSAN_MEMORY_IS_INITIALIZED(payload.begin(), payload.length());
+#endif  // MEMORY_SANITIZER
+  // Priming the adler32 call so it can see what CPU features are available.
+  adler32(0, NULL, 0);
+  return static_cast<uint32_t>(adler32(0, payload.begin(), payload.length()));
 }
 
 }  // namespace internal

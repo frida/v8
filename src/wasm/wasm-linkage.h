@@ -5,9 +5,9 @@
 #ifndef V8_WASM_WASM_LINKAGE_H_
 #define V8_WASM_WASM_LINKAGE_H_
 
-#include "src/assembler-arch.h"
-#include "src/machine-type.h"
-#include "src/signature.h"
+#include "src/codegen/assembler-arch.h"
+#include "src/codegen/machine-type.h"
+#include "src/codegen/signature.h"
 #include "src/wasm/value-type.h"
 
 namespace v8 {
@@ -15,7 +15,7 @@ namespace internal {
 namespace wasm {
 
 // TODO(wasm): optimize calling conventions to be both closer to C++ (to
-// reduce adapter costs for fast WASM <-> C++ calls) and to be more efficient
+// reduce adapter costs for fast Wasm <-> C++ calls) and to be more efficient
 // in general.
 
 #if V8_TARGET_ARCH_IA32

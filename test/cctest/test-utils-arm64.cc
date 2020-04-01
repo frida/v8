@@ -27,11 +27,11 @@
 
 #include "test/cctest/test-utils-arm64.h"
 
-#include "src/arm64/assembler-arm64-inl.h"
-#include "src/arm64/utils-arm64.h"
 #include "src/base/template-utils.h"
-#include "src/macro-assembler-inl.h"
-#include "src/v8.h"
+#include "src/codegen/arm64/assembler-arm64-inl.h"
+#include "src/codegen/arm64/utils-arm64.h"
+#include "src/codegen/macro-assembler-inl.h"
+#include "src/init/v8.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -205,9 +205,11 @@ bool EqualNzcv(uint32_t expected, uint32_t result) {
   return true;
 }
 
-
-bool EqualRegisters(const RegisterDump* a, const RegisterDump* b) {
-  for (unsigned i = 0; i < kNumberOfRegisters; i++) {
+bool EqualV8Registers(const RegisterDump* a, const RegisterDump* b) {
+  CPURegList available_regs = kCallerSaved;
+  available_regs.Combine(kCalleeSaved);
+  while (!available_regs.IsEmpty()) {
+    int i = available_regs.PopLowestIndex().code();
     if (a->xreg(i) != b->xreg(i)) {
       printf("x%d\t Expected 0x%016" PRIx64 "\t Found 0x%016" PRIx64 "\n",
              i, a->xreg(i), b->xreg(i));
@@ -287,9 +289,9 @@ void Clobber(MacroAssembler* masm, RegList reg_list, uint64_t const value) {
     if (reg_list & (1ULL << i)) {
       Register xn = Register::Create(i, kXRegSizeInBits);
       // We should never write into sp here.
-      CHECK(!xn.Is(sp));
+      CHECK_NE(xn, sp);
       if (!xn.IsZero()) {
-        if (!first.IsValid()) {
+        if (!first.is_valid()) {
           // This is the first register we've hit, so construct the literal.
           __ Mov(xn, value);
           first = xn;
@@ -309,7 +311,7 @@ void ClobberFP(MacroAssembler* masm, RegList reg_list, double const value) {
   for (unsigned i = 0; i < kNumberOfVRegisters; i++) {
     if (reg_list & (1ULL << i)) {
       VRegister dn = VRegister::Create(i, kDRegSizeInBits);
-      if (!first.IsValid()) {
+      if (!first.is_valid()) {
         // This is the first register we've hit, so construct the literal.
         __ Fmov(dn, value);
         first = dn;

@@ -3,10 +3,8 @@
 // found in the LICENSE file.
 
 // Used for encoding f32 and double constants to bits.
-let f32_view = new Float32Array(1);
-let f32_bytes_view = new Uint8Array(f32_view.buffer);
-let f64_view = new Float64Array(1);
-let f64_bytes_view = new Uint8Array(f64_view.buffer);
+let byte_view = new Uint8Array(8);
+let data_view = new DataView(byte_view.buffer);
 
 // The bytes function receives one of
 //  - several arguments, each of which is either a number or a string of length
@@ -47,7 +45,7 @@ var kWasmV3 = 0;
 
 var kHeaderSize = 8;
 var kPageSize = 65536;
-var kSpecMaxPages = 65535;
+var kSpecMaxPages = 65536;
 var kMaxVarInt32Size = 5;
 var kMaxVarInt64Size = 10;
 
@@ -67,7 +65,7 @@ let kElementSectionCode = 9;     // Elements section
 let kCodeSectionCode = 10;       // Function code
 let kDataSectionCode = 11;       // Data segments
 let kDataCountSectionCode = 12;  // Data segment count (between Element & Code)
-let kExceptionSectionCode = 13;  // Exception section (between Global & Export)
+let kExceptionSectionCode = 13;  // Exception section (between Memory & Global)
 
 // Name section types
 let kModuleNameCode = 0;
@@ -84,6 +82,9 @@ let kSharedHasMaximumFlag = 3;
 let kActiveNoIndex = 0;
 let kPassive = 1;
 let kActiveWithIndex = 2;
+let kDeclarative = 3;
+let kPassiveWithElements = 5;
+let kDeclarativeWithElements = 7;
 
 // Function declaration flags
 let kDeclFunctionName   = 0x01;
@@ -100,7 +101,8 @@ let kWasmF64 = 0x7c;
 let kWasmS128 = 0x7b;
 let kWasmAnyRef = 0x6f;
 let kWasmAnyFunc = 0x70;
-let kWasmExceptRef = 0x68;
+let kWasmNullRef = 0x6e;
+let kWasmExnRef = 0x68;
 
 let kExternalFunction = 0;
 let kExternalTable = 1;
@@ -150,17 +152,17 @@ let kSig_f_d = makeSig([kWasmF64], [kWasmF32]);
 let kSig_d_d = makeSig([kWasmF64], [kWasmF64]);
 let kSig_r_r = makeSig([kWasmAnyRef], [kWasmAnyRef]);
 let kSig_a_a = makeSig([kWasmAnyFunc], [kWasmAnyFunc]);
-let kSig_e_e = makeSig([kWasmExceptRef], [kWasmExceptRef]);
+let kSig_e_e = makeSig([kWasmExnRef], [kWasmExnRef]);
 let kSig_i_r = makeSig([kWasmAnyRef], [kWasmI32]);
 let kSig_v_r = makeSig([kWasmAnyRef], []);
 let kSig_v_a = makeSig([kWasmAnyFunc], []);
-let kSig_v_e = makeSig([kWasmExceptRef], []);
+let kSig_v_e = makeSig([kWasmExnRef], []);
 let kSig_v_rr = makeSig([kWasmAnyRef, kWasmAnyRef], []);
 let kSig_v_aa = makeSig([kWasmAnyFunc, kWasmAnyFunc], []);
 let kSig_r_v = makeSig([], [kWasmAnyRef]);
 let kSig_a_v = makeSig([], [kWasmAnyFunc]);
 let kSig_a_i = makeSig([kWasmI32], [kWasmAnyFunc]);
-let kSig_e_v = makeSig([], [kWasmExceptRef]);
+let kSig_e_v = makeSig([], [kWasmExnRef]);
 
 function makeSig(params, results) {
   return {params: params, results: results};
@@ -209,13 +211,14 @@ let kExprReturnCall = 0x12;
 let kExprReturnCallIndirect = 0x13;
 let kExprDrop = 0x1a;
 let kExprSelect = 0x1b;
-let kExprGetLocal = 0x20;
-let kExprSetLocal = 0x21;
-let kExprTeeLocal = 0x22;
-let kExprGetGlobal = 0x23;
-let kExprSetGlobal = 0x24;
-let kExprGetTable = 0x25;
-let kExprSetTable = 0x26;
+let kExprSelectWithType = 0x1c;
+let kExprLocalGet = 0x20;
+let kExprLocalSet = 0x21;
+let kExprLocalTee = 0x22;
+let kExprGlobalGet = 0x23;
+let kExprGlobalSet = 0x24;
+let kExprTableGet = 0x25;
+let kExprTableSet = 0x26;
 let kExprI32LoadMem = 0x28;
 let kExprI64LoadMem = 0x29;
 let kExprF32LoadMem = 0x2a;
@@ -390,6 +393,9 @@ let kExprMemoryFill = 0x0b;
 let kExprTableInit = 0x0c;
 let kExprElemDrop = 0x0d;
 let kExprTableCopy = 0x0e;
+let kExprTableGrow = 0x0f;
+let kExprTableSize = 0x10;
+let kExprTableFill = 0x11;
 
 // Atomic opcodes.
 let kExprAtomicNotify = 0x00;
@@ -461,12 +467,22 @@ let kExprI64AtomicCompareExchange16U = 0x4d;
 let kExprI64AtomicCompareExchange32U = 0x4e;
 
 // Simd opcodes.
+let kExprS128LoadMem = 0x00;
+let kExprS128StoreMem = 0x01;
+let kExprI32x4Splat = 0x0c;
+let kExprF32x4Splat = 0x12;
+let kExprI32x4Eq = 0x2c;
+let kExprS1x8AnyTrue = 0x63;
+let kExprS1x4AllTrue = 0x75;
+let kExprI32x4Add = 0x79;
 let kExprF32x4Min = 0x9e;
+let kExprS8x16LoadSplat = 0xc2;
 
 // Compilation hint constants.
 let kCompilationHintStrategyDefault = 0x00;
 let kCompilationHintStrategyLazy = 0x01;
 let kCompilationHintStrategyEager = 0x02;
+let kCompilationHintStrategyLazyBaselineEagerTopTier = 0x03;
 let kCompilationHintTierDefault = 0x00;
 let kCompilationHintTierInterpreter = 0x01;
 let kCompilationHintTierBaseline = 0x02;
@@ -485,6 +501,8 @@ let kTrapUnalignedAccess      = 9;
 let kTrapDataSegmentDropped   = 10;
 let kTrapElemSegmentDropped   = 11;
 let kTrapTableOutOfBounds     = 12;
+let kTrapBrOnExnNullRef       = 13;
+let kTrapRethrowNullRef       = 14;
 
 let kTrapMsgs = [
   "unreachable",
@@ -499,7 +517,9 @@ let kTrapMsgs = [
   "operation does not support unaligned accesses",
   "data segment has been dropped",
   "element segment has been dropped",
-  "table access out of bounds"
+  "table access out of bounds",
+  "br_on_exn on nullref value",
+  "rethrowing nullref value"
 ];
 
 function assertTraps(trap, code) {
@@ -548,7 +568,7 @@ class Binary {
     this.buffer[this.length++] = val >> 24;
   }
 
-  emit_leb(val, max_len) {
+  emit_leb_u(val, max_len) {
     this.ensure_space(max_len);
     for (let i = 0; i < max_len; ++i) {
       let v = val & 0xff;
@@ -563,11 +583,11 @@ class Binary {
   }
 
   emit_u32v(val) {
-    this.emit_leb(val, kMaxVarInt32Size);
+    this.emit_leb_u(val, kMaxVarInt32Size);
   }
 
   emit_u64v(val) {
-    this.emit_leb(val, kMaxVarInt64Size);
+    this.emit_leb_u(val, kMaxVarInt64Size);
   }
 
   emit_bytes(data) {
@@ -621,6 +641,7 @@ class WasmFunctionBuilder {
     this.body = [];
     this.locals = [];
     this.local_names = [];
+    this.body_offset = undefined;  // Not valid until module is serialized.
   }
 
   numLocalNames() {
@@ -791,8 +812,9 @@ class WasmModuleBuilder {
   }
 
   addTable(type, initial_size, max_size = undefined) {
-    if (type != kWasmAnyRef && type != kWasmAnyFunc) {
-      throw new Error('Tables must be of type kWasmAnyRef or kWasmAnyFunc');
+    if (type != kWasmAnyRef && type != kWasmAnyFunc && type != kWasmNullRef && type != kWasmExnRef) {
+      throw new Error(
+          'Tables must be of type kWasmAnyRef, kWasmAnyFunc, kWasmNullRef or kWasmExnRef');
     }
     let table = new WasmTableBuilder(this, type, initial_size, max_size);
     table.index = this.tables.length + this.num_imported_tables;
@@ -842,12 +864,12 @@ class WasmModuleBuilder {
     return this;
   }
 
-  addImportedTable(module, name, initial, maximum) {
+  addImportedTable(module, name, initial, maximum, type) {
     if (this.tables.length != 0) {
       throw new Error('Imported tables must be declared before local ones');
     }
     let o = {module: module, name: name, kind: kExternalTable, initial: initial,
-             maximum: maximum};
+             maximum: maximum, type: type || kWasmAnyFunctionTypeForm};
     this.imports.push(o);
     return this.num_imported_tables++;
   }
@@ -893,33 +915,27 @@ class WasmModuleBuilder {
     this.exports.push({name: name, kind: kExternalMemory, index: 0});
   }
 
-  addElementSegment(table, base, is_global, array, is_import = false) {
-    if (this.tables.length + this.num_imported_tables == 0) {
-      this.addTable(kWasmAnyFunc, 0);
-    }
-    this.element_segments.push({table: table, base: base, is_global: is_global,
-                                    array: array, is_active: true});
-
-    // As a testing convenience, update the table length when adding an element
-    // segment. If the table is imported, we can't do this because we don't
-    // know how long the table actually is. If |is_global| is true, then the
-    // base is a global index, instead of an integer offset, so we can't update
-    // the table then either.
-    if (!(is_import || is_global)) {
-      var length = base + array.length;
-      if (length > this.tables[0].initial_size) {
-        this.tables[0].initial_size = length;
-      }
-      if (this.tables[0].has_max &&
-          length > this.tables[0].max_size) {
-        this.tables[0].max_size = length;
-      }
-    }
+  addElementSegment(table, base, is_global, array) {
+    this.element_segments.push({
+      table: table,
+      base: base,
+      is_global: is_global,
+      array: array,
+      is_active: true,
+      is_declarative: false
+    });
     return this;
   }
 
   addPassiveElementSegment(array, is_import = false) {
-    this.element_segments.push({array: array, is_active: false});
+    this.element_segments.push(
+        {array: array, is_active: false, is_declarative: false});
+    return this;
+  }
+
+  addDeclarativeElementSegment(array, is_import = false) {
+    this.element_segments.push(
+        {array: array, is_active: false, is_declarative: true});
     return this;
   }
 
@@ -931,7 +947,15 @@ class WasmModuleBuilder {
     if (this.tables.length == 0) {
       this.addTable(kWasmAnyFunc, 0);
     }
-    return this.addElementSegment(0, this.tables[0].initial_size, false, array);
+    // Adjust the table to the correct size.
+    let table = this.tables[0];
+    const base = table.initial_size;
+    const table_size = base + array.length;
+    table.initial_size = table_size;
+    if (table.has_max && table_size > table.max_size) {
+      table.max_size = table_size;
+    }
+    return this.addElementSegment(0, base, false, array);
   }
 
   setTableBounds(min, max = undefined) {
@@ -998,7 +1022,7 @@ class WasmModuleBuilder {
             section.emit_u32v(imp.initial); // initial
             if (has_max) section.emit_u32v(imp.maximum); // maximum
           } else if (imp.kind == kExternalTable) {
-            section.emit_u8(kWasmAnyFunctionTypeForm);
+            section.emit_u8(imp.type);
             var has_max = (typeof imp.maximum) != "undefined";
             section.emit_u8(has_max ? 1 : 0); // flags
             section.emit_u32v(imp.initial); // initial
@@ -1056,6 +1080,18 @@ class WasmModuleBuilder {
       });
     }
 
+    // Add event section.
+    if (wasm.exceptions.length > 0) {
+      if (debug) print("emitting events @ " + binary.length);
+      binary.emit_section(kExceptionSectionCode, section => {
+        section.emit_u32v(wasm.exceptions.length);
+        for (let type of wasm.exceptions) {
+          section.emit_u32v(kExceptionAttribute);
+          section.emit_u32v(type);
+        }
+      });
+    }
+
     // Add global section.
     if (wasm.globals.length > 0) {
       if (debug) print ("emitting globals @ " + binary.length);
@@ -1077,38 +1113,34 @@ class WasmModuleBuilder {
               break;
             case kWasmF32:
               section.emit_u8(kExprF32Const);
-              f32_view[0] = global.init;
-              section.emit_bytes(f32_bytes_view);
+              data_view.setFloat32(0, global.init, true);
+              section.emit_bytes(byte_view.subarray(0, 4));
               break;
             case kWasmF64:
               section.emit_u8(kExprF64Const);
-              f64_view[0] = global.init;
-              section.emit_bytes(f64_bytes_view);
+              data_view.setFloat64(0, global.init, true);
+              section.emit_bytes(byte_view);
               break;
-            case kWasmAnyRef:
             case kWasmAnyFunc:
-            case kWasmExceptRef:
+            case kWasmAnyRef:
+            case kWasmNullRef:
+              if (global.function_index !== undefined) {
+                section.emit_u8(kExprRefFunc);
+                section.emit_u32v(global.function_index);
+              } else {
+                section.emit_u8(kExprRefNull);
+              }
+              break;
+            case kWasmExnRef:
               section.emit_u8(kExprRefNull);
               break;
             }
           } else {
             // Emit a global-index initializer.
-            section.emit_u8(kExprGetGlobal);
+            section.emit_u8(kExprGlobalGet);
             section.emit_u32v(global.init_index);
           }
           section.emit_u8(kExprEnd);  // end of init expression
-        }
-      });
-    }
-
-    // Add exceptions.
-    if (wasm.exceptions.length > 0) {
-      if (debug) print("emitting exceptions @ " + binary.length);
-      binary.emit_section(kExceptionSectionCode, section => {
-        section.emit_u32v(wasm.exceptions.length);
-        for (let type of wasm.exceptions) {
-          section.emit_u32v(kExceptionAttribute);
-          section.emit_u32v(type);
         }
       });
     }
@@ -1158,19 +1190,33 @@ class WasmModuleBuilder {
               section.emit_u32v(init.table);
             }
             if (init.is_global) {
-              section.emit_u8(kExprGetGlobal);
+              section.emit_u8(kExprGlobalGet);
             } else {
               section.emit_u8(kExprI32Const);
             }
             section.emit_u32v(init.base);
             section.emit_u8(kExprEnd);
+            if (init.table != 0) {
+              section.emit_u8(kExternalFunction);
+            }
+            section.emit_u32v(init.array.length);
+            for (let index of init.array) {
+              section.emit_u32v(index);
+            }
+          } else if (
+              init.is_declarative &&
+              init.array.every(index => index !== null)) {
+            section.emit_u8(kDeclarative);
+            section.emit_u8(kExternalFunction);
             section.emit_u32v(init.array.length);
             for (let index of init.array) {
               section.emit_u32v(index);
             }
           } else {
-            // Passive segment.
-            section.emit_u8(kPassive);  // flags
+            // Passive or declarative segment with elements.
+            section.emit_u8(
+                init.is_declarative ? kDeclarativeWithElements :
+                                      kPassiveWithElements);  // flags
             section.emit_u8(kWasmAnyFunc);
             section.emit_u32v(init.array.length);
             for (let index of init.array) {
@@ -1233,6 +1279,7 @@ class WasmModuleBuilder {
     if (wasm.functions.length > 0) {
       // emit function bodies
       if (debug) print("emitting code @ " + binary.length);
+      let section_length = 0;
       binary.emit_section(kCodeSectionCode, section => {
         section.emit_u32v(wasm.functions.length);
         let header = new Binary;
@@ -1262,8 +1309,11 @@ class WasmModuleBuilder {
             if (l.anyfunc_count > 0) {
               local_decls.push({count: l.anyfunc_count, type: kWasmAnyFunc});
             }
+            if (l.nullref_count > 0) {
+              local_decls.push({count: l.nullref_count, type: kWasmNullRef});
+            }
             if (l.except_count > 0) {
-              local_decls.push({count: l.except_count, type: kWasmExceptRef});
+              local_decls.push({count: l.except_count, type: kWasmExnRef});
             }
           }
 
@@ -1275,9 +1325,15 @@ class WasmModuleBuilder {
 
           section.emit_u32v(header.length + func.body.length);
           section.emit_bytes(header.trunc_buffer());
+          // Set to section offset for now, will update.
+          func.body_offset = section.length;
           section.emit_bytes(func.body);
         }
+        section_length = section.length;
       });
+      for (let func of wasm.functions) {
+        func.body_offset += binary.length - section_length;
+      }
     }
 
     // Add data segments.
@@ -1290,7 +1346,7 @@ class WasmModuleBuilder {
             section.emit_u8(0);  // linear memory index 0 / flags
             if (seg.is_global) {
               // initializer is a global variable
-              section.emit_u8(kExprGetGlobal);
+              section.emit_u8(kExprGlobalGet);
               section.emit_u32v(seg.addr);
             } else {
               // initializer is a constant
@@ -1384,28 +1440,39 @@ class WasmModuleBuilder {
   }
 }
 
-function wasmI32Const(val) {
-  let bytes = [kExprI32Const];
-  for (let i = 0; i < 4; ++i) {
-    bytes.push(0x80 | ((val >> (7 * i)) & 0x7f));
+function wasmSignedLeb(val, max_len = 5) {
+  let res = [];
+  for (let i = 0; i < max_len; ++i) {
+    let v = val & 0x7f;
+    // If {v} sign-extended from 7 to 32 bits is equal to val, we are done.
+    if (((v << 25) >> 25) == val) {
+      res.push(v);
+      return res;
+    }
+    res.push(v | 0x80);
+    val = val >> 7;
   }
-  bytes.push((val >> (7 * 4)) & 0x7f);
-  return bytes;
+  throw new Error(
+      'Leb value <' + val + '> exceeds maximum length of ' + max_len);
+}
+
+function wasmI32Const(val) {
+  return [kExprI32Const, ...wasmSignedLeb(val, 5)];
 }
 
 function wasmF32Const(f) {
-  f32_view[0] = f;
+  // Write in little-endian order at offset 0.
+  data_view.setFloat32(0, f, true);
   return [
-    kExprF32Const, f32_bytes_view[0], f32_bytes_view[1], f32_bytes_view[2],
-    f32_bytes_view[3]
+    kExprF32Const, byte_view[0], byte_view[1], byte_view[2], byte_view[3]
   ];
 }
 
 function wasmF64Const(f) {
-  f64_view[0] = f;
+  // Write in little-endian order at offset 0.
+  data_view.setFloat64(0, f, true);
   return [
-    kExprF64Const, f64_bytes_view[0], f64_bytes_view[1], f64_bytes_view[2],
-    f64_bytes_view[3], f64_bytes_view[4], f64_bytes_view[5], f64_bytes_view[6],
-    f64_bytes_view[7]
+    kExprF64Const, byte_view[0], byte_view[1], byte_view[2],
+    byte_view[3], byte_view[4], byte_view[5], byte_view[6], byte_view[7]
   ];
 }

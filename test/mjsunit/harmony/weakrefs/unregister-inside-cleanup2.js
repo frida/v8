@@ -9,14 +9,16 @@ let cleanup_holdings_count = 0;
 let cleanup = function(iter) {
   for (holdings of iter) {
     assertEquals(holdings, "holdings");
-    fg.unregister(key);
+    let success = fg.unregister(key);
+    assertFalse(success);
+
     ++cleanup_holdings_count;
   }
   ++cleanup_call_count;
 }
 
-let fg = new FinalizationGroup(cleanup);
-// Create an object and register it in the FinalizationGroup. The object needs to be inside
+let fg = new FinalizationRegistry(cleanup);
+// Create an object and register it in the FinalizationRegistry. The object needs to be inside
 // a closure so that we can reliably kill them!
 let key = {"k": "this is the key"};
 

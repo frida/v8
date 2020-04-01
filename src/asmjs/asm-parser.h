@@ -11,7 +11,7 @@
 #include "src/asmjs/asm-scanner.h"
 #include "src/asmjs/asm-types.h"
 #include "src/base/enum-set.h"
-#include "src/vector.h"
+#include "src/utils/vector.h"
 #include "src/wasm/wasm-module-builder.h"
 #include "src/zone/zone-containers.h"
 
@@ -154,9 +154,9 @@ class AsmJsParser {
   template <typename T>
   class CachedVector final : public ZoneVector<T> {
    public:
-    explicit CachedVector(CachedVectors<T>& cache)
-        : ZoneVector<T>(cache.zone()), cache_(&cache) {
-      cache.fill(this);
+    explicit CachedVector(CachedVectors<T>* cache)
+        : ZoneVector<T>(cache->zone()), cache_(cache) {
+      cache->fill(this);
     }
     ~CachedVector() { cache_->reuse(this); }
 
@@ -248,6 +248,10 @@ class AsmJsParser {
 
   inline bool Peek(AsmJsScanner::token_t token) {
     return scanner_.Token() == token;
+  }
+
+  inline bool PeekForZero() {
+    return (scanner_.IsUnsigned() && scanner_.AsUnsigned() == 0);
   }
 
   inline bool Check(AsmJsScanner::token_t token) {

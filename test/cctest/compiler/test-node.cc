@@ -36,15 +36,28 @@ static Operator dummy_operator3(IrOpcode::kParameter, Operator::kNoWrite,
 
 namespace {
 
-typedef std::multiset<Node*, std::less<Node*>> NodeMSet;
-
+using NodeMSet = std::multiset<Node*, std::less<Node*>>;
 
 void CheckUseChain(Node* node, Node** uses, int use_count) {
   // Check ownership.
   if (use_count == 1) CHECK(node->OwnedBy(uses[0]));
   if (use_count > 1) {
+    Node* first_use = uses[0];
+    bool different_uses = false;
     for (int i = 0; i < use_count; i++) {
-      CHECK(!node->OwnedBy(uses[i]));
+      if (uses[i] != first_use) {
+        different_uses = true;
+        break;
+      }
+    }
+    if (different_uses) {
+      // If there are different uses, check that node is not owned by any use.
+      for (int i = 0; i < use_count; i++) {
+        CHECK(!node->OwnedBy(uses[i]));
+      }
+    } else {
+      // If all uses are the same, check that node is owned by that use.
+      CHECK(node->OwnedBy(first_use));
     }
   }
 

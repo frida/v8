@@ -4,24 +4,28 @@
 
 #include "src/interpreter/bytecode-generator.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/ast/ast-source-ranges.h"
 #include "src/ast/scopes.h"
 #include "src/builtins/builtins-constructor.h"
-#include "src/compiler.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/unoptimized-compilation-info.h"
 #include "src/interpreter/bytecode-flags.h"
 #include "src/interpreter/bytecode-jump-table.h"
 #include "src/interpreter/bytecode-label.h"
 #include "src/interpreter/bytecode-register-allocator.h"
+#include "src/interpreter/bytecode-register.h"
 #include "src/interpreter/control-flow-builders.h"
-#include "src/objects-inl.h"
+#include "src/logging/log.h"
+#include "src/logging/off-thread-logger.h"
 #include "src/objects/debug-objects.h"
 #include "src/objects/literal-objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "src/objects/template-objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/token.h"
-#include "src/unoptimized-compilation-info.h"
+#include "src/utils/ostreams.h"
 
 namespace v8 {
 namespace internal {
@@ -407,10 +411,7 @@ class BytecodeGenerator::ControlScopeForIteration final
                            LoopBuilder* loop_builder)
       : ControlScope(generator),
         statement_(statement),
-        loop_builder_(loop_builder) {
-    generator->loop_depth_++;
-  }
-  ~ControlScopeForIteration() override { generator()->loop_depth_--; }
+        loop_builder_(loop_builder) {}
 
  protected:
   bool Execute(Command command, Statement* statement,
@@ -722,57 +723,72 @@ class BytecodeGenerator::TestResultScope final : public ExpressionResultScope {
   DISALLOW_COPY_AND_ASSIGN(TestResultScope);
 };
 
-// Used to build a list of global declaration initial value pairs.
-class BytecodeGenerator::GlobalDeclarationsBuilder final : public ZoneObject {
+// Used to build a list of toplevel declaration data.
+class BytecodeGenerator::TopLevelDeclarationsBuilder final : public ZoneObject {
  public:
-  explicit GlobalDeclarationsBuilder(Zone* zone)
-      : declarations_(0, zone),
-        constant_pool_entry_(0),
-        has_constant_pool_entry_(false) {}
-
-  void AddFunctionDeclaration(const AstRawString* name, FeedbackSlot slot,
-                              int feedback_cell_index, FunctionLiteral* func) {
-    DCHECK(!slot.IsInvalid());
-    declarations_.push_back(Declaration(name, slot, feedback_cell_index, func));
-  }
-
-  void AddUndefinedDeclaration(const AstRawString* name, FeedbackSlot slot) {
-    DCHECK(!slot.IsInvalid());
-    declarations_.push_back(Declaration(name, slot));
-  }
-
+  template <typename LocalIsolate>
   Handle<FixedArray> AllocateDeclarations(UnoptimizedCompilationInfo* info,
+                                          BytecodeGenerator* generator,
                                           Handle<Script> script,
-                                          Isolate* isolate) {
+                                          LocalIsolate* isolate) {
     DCHECK(has_constant_pool_entry_);
+
+    Handle<FixedArray> data =
+        isolate->factory()->NewFixedArray(entry_slots_, AllocationType::kOld);
+
     int array_index = 0;
-    Handle<FixedArray> data = isolate->factory()->NewFixedArray(
-        static_cast<int>(declarations_.size() * 4), AllocationType::kOld);
-    for (const Declaration& declaration : declarations_) {
-      FunctionLiteral* func = declaration.func;
-      Handle<Object> initial_value;
-      if (func == nullptr) {
-        initial_value = isolate->factory()->undefined_value();
-      } else {
-        initial_value = Compiler::GetSharedFunctionInfo(func, script, isolate);
+    if (info->scope()->is_module_scope()) {
+      for (Declaration* decl : *info->scope()->declarations()) {
+        Variable* var = decl->var();
+        if (!var->is_used()) continue;
+        if (var->location() != VariableLocation::MODULE) continue;
+#ifdef DEBUG
+        int start = array_index;
+#endif
+        if (decl->IsFunctionDeclaration()) {
+          FunctionLiteral* f = static_cast<FunctionDeclaration*>(decl)->fun();
+          Handle<SharedFunctionInfo> sfi(
+              Compiler::GetSharedFunctionInfo(f, script, isolate));
+          // Return a null handle if any initial values can't be created. Caller
+          // will set stack overflow.
+          if (sfi.is_null()) return Handle<FixedArray>();
+          data->set(array_index++, *sfi);
+          int literal_index = generator->GetCachedCreateClosureSlot(f);
+          data->set(array_index++, Smi::FromInt(literal_index));
+          DCHECK(var->IsExport());
+          data->set(array_index++, Smi::FromInt(var->index()));
+          DCHECK_EQ(start + kModuleFunctionDeclarationSize, array_index);
+        } else if (var->IsExport() && var->binding_needs_init()) {
+          data->set(array_index++, Smi::FromInt(var->index()));
+          DCHECK_EQ(start + kModuleVariableDeclarationSize, array_index);
+        }
       }
-
-      // Return a null handle if any initial values can't be created. Caller
-      // will set stack overflow.
-      if (initial_value.is_null()) return Handle<FixedArray>();
-
-      data->set(array_index++, *declaration.name->string());
-      data->set(array_index++, Smi::FromInt(declaration.slot.ToInt()));
-      Object undefined_or_literal_slot;
-      if (declaration.feedback_cell_index_for_function == -1) {
-        undefined_or_literal_slot = ReadOnlyRoots(isolate).undefined_value();
-      } else {
-        undefined_or_literal_slot =
-            Smi::FromInt(declaration.feedback_cell_index_for_function);
+    } else {
+      for (Declaration* decl : *info->scope()->declarations()) {
+        Variable* var = decl->var();
+        if (!var->is_used()) continue;
+        if (var->location() != VariableLocation::UNALLOCATED) continue;
+#ifdef DEBUG
+        int start = array_index;
+#endif
+        if (decl->IsVariableDeclaration()) {
+          data->set(array_index++, *var->raw_name()->string());
+          DCHECK_EQ(start + kGlobalVariableDeclarationSize, array_index);
+        } else {
+          FunctionLiteral* f = static_cast<FunctionDeclaration*>(decl)->fun();
+          Handle<SharedFunctionInfo> sfi(
+              Compiler::GetSharedFunctionInfo(f, script, isolate));
+          // Return a null handle if any initial values can't be created. Caller
+          // will set stack overflow.
+          if (sfi.is_null()) return Handle<FixedArray>();
+          data->set(array_index++, *sfi);
+          int literal_index = generator->GetCachedCreateClosureSlot(f);
+          data->set(array_index++, Smi::FromInt(literal_index));
+          DCHECK_EQ(start + kGlobalFunctionDeclarationSize, array_index);
+        }
       }
-      data->set(array_index++, undefined_or_literal_slot);
-      data->set(array_index++, *initial_value);
     }
+    DCHECK_EQ(array_index, data->length());
     return data;
   }
 
@@ -782,40 +798,38 @@ class BytecodeGenerator::GlobalDeclarationsBuilder final : public ZoneObject {
   }
 
   void set_constant_pool_entry(size_t constant_pool_entry) {
-    DCHECK(!empty());
+    DCHECK(has_top_level_declaration());
     DCHECK(!has_constant_pool_entry_);
     constant_pool_entry_ = constant_pool_entry;
     has_constant_pool_entry_ = true;
   }
 
-  bool empty() { return declarations_.empty(); }
+  void record_global_variable_declaration() {
+    entry_slots_ += kGlobalVariableDeclarationSize;
+  }
+  void record_global_function_declaration() {
+    entry_slots_ += kGlobalFunctionDeclarationSize;
+  }
+  void record_module_variable_declaration() {
+    entry_slots_ += kModuleVariableDeclarationSize;
+  }
+  void record_module_function_declaration() {
+    entry_slots_ += kModuleFunctionDeclarationSize;
+  }
+  bool has_top_level_declaration() { return entry_slots_ > 0; }
+  bool processed() { return processed_; }
+  void mark_processed() { processed_ = true; }
 
  private:
-  struct Declaration {
-    Declaration() : slot(FeedbackSlot::Invalid()), func(nullptr) {}
-    Declaration(const AstRawString* name, FeedbackSlot slot,
-                int feedback_cell_index, FunctionLiteral* func)
-        : name(name),
-          slot(slot),
-          feedback_cell_index_for_function(feedback_cell_index),
-          func(func) {}
-    Declaration(const AstRawString* name, FeedbackSlot slot)
-        : name(name),
-          slot(slot),
-          feedback_cell_index_for_function(-1),
-          func(nullptr) {}
+  const int kGlobalVariableDeclarationSize = 1;
+  const int kGlobalFunctionDeclarationSize = 2;
+  const int kModuleVariableDeclarationSize = 1;
+  const int kModuleFunctionDeclarationSize = 3;
 
-    const AstRawString* name;
-    FeedbackSlot slot;
-    // Only valid for function declarations. Specifies the index into the
-    // closure_feedback_cell array used when creating closures of this
-    // function.
-    int feedback_cell_index_for_function;
-    FunctionLiteral* func;
-  };
-  ZoneVector<Declaration> declarations_;
-  size_t constant_pool_entry_;
-  bool has_constant_pool_entry_;
+  size_t constant_pool_entry_ = 0;
+  int entry_slots_ = 0;
+  bool has_constant_pool_entry_ = false;
+  bool processed_ = false;
 };
 
 class BytecodeGenerator::CurrentScope final {
@@ -915,6 +929,103 @@ class BytecodeGenerator::IteratorRecord final {
   Register next_;
 };
 
+class BytecodeGenerator::OptionalChainNullLabelScope final {
+ public:
+  explicit OptionalChainNullLabelScope(BytecodeGenerator* bytecode_generator)
+      : bytecode_generator_(bytecode_generator),
+        labels_(bytecode_generator->zone()) {
+    prev_ = bytecode_generator_->optional_chaining_null_labels_;
+    bytecode_generator_->optional_chaining_null_labels_ = &labels_;
+  }
+
+  ~OptionalChainNullLabelScope() {
+    bytecode_generator_->optional_chaining_null_labels_ = prev_;
+  }
+
+  BytecodeLabels* labels() { return &labels_; }
+
+ private:
+  BytecodeGenerator* bytecode_generator_;
+  BytecodeLabels labels_;
+  BytecodeLabels* prev_;
+};
+
+// LoopScope delimits the scope of {loop}, from its header to its final jump.
+// It should be constructed iff a (conceptual) back edge should be produced. In
+// the case of creating a LoopBuilder but never emitting the loop, it is valid
+// to skip the creation of LoopScope.
+class BytecodeGenerator::LoopScope final {
+ public:
+  explicit LoopScope(BytecodeGenerator* bytecode_generator, LoopBuilder* loop)
+      : bytecode_generator_(bytecode_generator),
+        parent_loop_scope_(bytecode_generator_->current_loop_scope()),
+        loop_builder_(loop) {
+    loop_builder_->LoopHeader();
+    bytecode_generator_->set_current_loop_scope(this);
+    bytecode_generator_->loop_depth_++;
+  }
+
+  ~LoopScope() {
+    bytecode_generator_->loop_depth_--;
+    bytecode_generator_->set_current_loop_scope(parent_loop_scope_);
+    DCHECK_GE(bytecode_generator_->loop_depth_, 0);
+    loop_builder_->JumpToHeader(
+        bytecode_generator_->loop_depth_,
+        parent_loop_scope_ ? parent_loop_scope_->loop_builder_ : nullptr);
+  }
+
+ private:
+  BytecodeGenerator* const bytecode_generator_;
+  LoopScope* const parent_loop_scope_;
+  LoopBuilder* const loop_builder_;
+};
+
+namespace {
+
+template <typename PropertyT>
+struct Accessors : public ZoneObject {
+  Accessors() : getter(nullptr), setter(nullptr) {}
+  PropertyT* getter;
+  PropertyT* setter;
+};
+
+// A map from property names to getter/setter pairs allocated in the zone that
+// also provides a way of accessing the pairs in the order they were first
+// added so that the generated bytecode is always the same.
+template <typename PropertyT>
+class AccessorTable
+    : public base::TemplateHashMap<Literal, Accessors<PropertyT>,
+                                   bool (*)(void*, void*),
+                                   ZoneAllocationPolicy> {
+ public:
+  explicit AccessorTable(Zone* zone)
+      : base::TemplateHashMap<Literal, Accessors<PropertyT>,
+                              bool (*)(void*, void*), ZoneAllocationPolicy>(
+            Literal::Match, ZoneAllocationPolicy(zone)),
+        zone_(zone) {}
+
+  Accessors<PropertyT>* LookupOrInsert(Literal* key) {
+    auto it = this->find(key, true, ZoneAllocationPolicy(zone_));
+    if (it->second == nullptr) {
+      it->second = new (zone_) Accessors<PropertyT>();
+      ordered_accessors_.push_back({key, it->second});
+    }
+    return it->second;
+  }
+
+  const std::vector<std::pair<Literal*, Accessors<PropertyT>*>>&
+  ordered_accessors() {
+    return ordered_accessors_;
+  }
+
+ private:
+  std::vector<std::pair<Literal*, Accessors<PropertyT>*>> ordered_accessors_;
+
+  Zone* zone_;
+};
+
+}  // namespace
+
 #ifdef DEBUG
 
 static bool IsInEagerLiterals(
@@ -942,9 +1053,8 @@ BytecodeGenerator::BytecodeGenerator(
       current_scope_(info->scope()),
       eager_inner_literals_(eager_inner_literals),
       feedback_slot_cache_(new (zone()) FeedbackSlotCache(zone())),
-      globals_builder_(new (zone()) GlobalDeclarationsBuilder(zone())),
+      top_level_builder_(new (zone()) TopLevelDeclarationsBuilder()),
       block_coverage_builder_(nullptr),
-      global_declarations_(0, zone()),
       function_literals_(0, zone()),
       native_function_literals_(0, zone()),
       object_literals_(0, zone()),
@@ -955,10 +1065,12 @@ BytecodeGenerator::BytecodeGenerator(
       execution_context_(nullptr),
       execution_result_(nullptr),
       incoming_new_target_or_generator_(),
+      optional_chaining_null_labels_(nullptr),
       dummy_feedback_slot_(feedback_spec(), FeedbackSlotKind::kCompareOp),
       generator_jump_table_(nullptr),
       suspend_count_(0),
       loop_depth_(0),
+      current_loop_scope_(nullptr),
       catch_prediction_(HandlerTable::UNCAUGHT) {
   DCHECK_EQ(closure_scope(), closure_scope()->GetClosureScope());
   if (info->has_source_range_map()) {
@@ -967,22 +1079,49 @@ BytecodeGenerator::BytecodeGenerator(
   }
 }
 
+namespace {
+
+template <typename Isolate>
+struct NullContextScopeHelper;
+
+template <>
+struct NullContextScopeHelper<Isolate> {
+  using Type = NullContextScope;
+};
+
+template <>
+struct NullContextScopeHelper<OffThreadIsolate> {
+  class DummyNullContextScope {
+   public:
+    explicit DummyNullContextScope(OffThreadIsolate*) {}
+  };
+  using Type = DummyNullContextScope;
+};
+
+template <typename Isolate>
+using NullContextScopeFor = typename NullContextScopeHelper<Isolate>::Type;
+
+}  // namespace
+
+template <typename LocalIsolate>
 Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
-    Isolate* isolate, Handle<Script> script) {
+    LocalIsolate* isolate, Handle<Script> script) {
   DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
 #ifdef DEBUG
   // Unoptimized compilation should be context-independent. Verify that we don't
   // access the native context by nulling it out during finalization.
-  SaveAndSwitchContext save(isolate, Context());
+  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
 #endif
 
   AllocateDeferredConstants(isolate, script);
 
   if (block_coverage_builder_) {
-    info()->set_coverage_info(
-        isolate->factory()->NewCoverageInfo(block_coverage_builder_->slots()));
+    Handle<CoverageInfo> coverage_info =
+        isolate->factory()->NewCoverageInfo(block_coverage_builder_->slots());
+    info()->set_coverage_info(coverage_info);
     if (FLAG_trace_block_coverage) {
-      info()->coverage_info()->Print(info()->literal()->GetDebugName());
+      StdoutStream os;
+      coverage_info->CoverageInfoPrint(os, info()->literal()->GetDebugName());
     }
   }
 
@@ -997,15 +1136,53 @@ Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
   return bytecode_array;
 }
 
-void BytecodeGenerator::AllocateDeferredConstants(Isolate* isolate,
+template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
+    Isolate* isolate, Handle<Script> script);
+template Handle<BytecodeArray> BytecodeGenerator::FinalizeBytecode(
+    OffThreadIsolate* isolate, Handle<Script> script);
+
+template <typename LocalIsolate>
+Handle<ByteArray> BytecodeGenerator::FinalizeSourcePositionTable(
+    LocalIsolate* isolate) {
+  DCHECK_EQ(ThreadId::Current(), isolate->thread_id());
+#ifdef DEBUG
+  // Unoptimized compilation should be context-independent. Verify that we don't
+  // access the native context by nulling it out during finalization.
+  NullContextScopeFor<LocalIsolate> null_context_scope(isolate);
+#endif
+
+  Handle<ByteArray> source_position_table =
+      builder()->ToSourcePositionTable(isolate);
+
+  LOG_CODE_EVENT(isolate,
+                 CodeLinePosInfoRecordEvent(
+                     info_->bytecode_array()->GetFirstBytecodeAddress(),
+                     *source_position_table));
+
+  return source_position_table;
+}
+
+template Handle<ByteArray> BytecodeGenerator::FinalizeSourcePositionTable(
+    Isolate* isolate);
+template Handle<ByteArray> BytecodeGenerator::FinalizeSourcePositionTable(
+    OffThreadIsolate* isolate);
+
+#ifdef DEBUG
+int BytecodeGenerator::CheckBytecodeMatches(BytecodeArray bytecode) {
+  return builder()->CheckBytecodeMatches(bytecode);
+}
+#endif
+
+template <typename LocalIsolate>
+void BytecodeGenerator::AllocateDeferredConstants(LocalIsolate* isolate,
                                                   Handle<Script> script) {
-  // Build global declaration pair arrays.
-  for (GlobalDeclarationsBuilder* globals_builder : global_declarations_) {
-    Handle<FixedArray> declarations =
-        globals_builder->AllocateDeclarations(info(), script, isolate);
+  if (top_level_builder()->has_top_level_declaration()) {
+    // Build global declaration pair array.
+    Handle<FixedArray> declarations = top_level_builder()->AllocateDeclarations(
+        info(), this, script, isolate);
     if (declarations.is_null()) return SetStackOverflow();
     builder()->SetDeferredConstantPoolEntry(
-        globals_builder->constant_pool_entry(), declarations);
+        top_level_builder()->constant_pool_entry(), declarations);
   }
 
   // Find or build shared function infos.
@@ -1020,6 +1197,9 @@ void BytecodeGenerator::AllocateDeferredConstants(Isolate* isolate,
   // Find or build shared function infos for the native function templates.
   for (std::pair<NativeFunctionLiteral*, size_t> literal :
        native_function_literals_) {
+    // This should only happen for main-thread compilations.
+    DCHECK((std::is_same<Isolate, v8::internal::Isolate>::value));
+
     NativeFunctionLiteral* expr = literal.first;
     v8::Isolate* v8_isolate = reinterpret_cast<v8::Isolate*>(isolate);
 
@@ -1075,6 +1255,18 @@ void BytecodeGenerator::AllocateDeferredConstants(Isolate* isolate,
   }
 }
 
+template void BytecodeGenerator::AllocateDeferredConstants(
+    Isolate* isolate, Handle<Script> script);
+template void BytecodeGenerator::AllocateDeferredConstants(
+    OffThreadIsolate* isolate, Handle<Script> script);
+
+namespace {
+bool NeedsContextInitialization(DeclarationScope* scope) {
+  return scope->NeedsContext() && !scope->is_script_scope() &&
+         !scope->is_module_scope();
+}
+}  // namespace
+
 void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit) {
   DisallowHeapAllocation no_allocation;
   DisallowHandleAllocation no_handles;
@@ -1092,11 +1284,14 @@ void BytecodeGenerator::GenerateBytecode(uintptr_t stack_limit) {
 
   AllocateTopLevelRegisters();
 
+  builder()->EmitFunctionStartSourcePosition(
+      info()->literal()->start_position());
+
   if (info()->literal()->CanSuspend()) {
     BuildGeneratorPrologue();
   }
 
-  if (closure_scope()->NeedsContext()) {
+  if (NeedsContextInitialization(closure_scope())) {
     // Push a new inner context scope for the function.
     BuildNewLocalActivationContext();
     ContextScope local_function_context(this, closure_scope());
@@ -1128,7 +1323,8 @@ void BytecodeGenerator::GenerateBytecodeBody() {
 
   // Create a generator object if necessary and initialize the
   // {.generator_object} variable.
-  if (IsResumableFunction(info()->literal()->kind())) {
+  FunctionLiteral* literal = info()->literal();
+  if (IsResumableFunction(literal->kind())) {
     BuildGeneratorObjectVariableInitialization();
   }
 
@@ -1146,24 +1342,35 @@ void BytecodeGenerator::GenerateBytecodeBody() {
     }
   }
 
+  // Increment the function-scope block coverage counter.
+  BuildIncrementBlockCoverageCounterIfEnabled(literal, SourceRangeKind::kBody);
+
   // Visit declarations within the function scope.
-  VisitDeclarations(closure_scope()->declarations());
+  if (closure_scope()->is_script_scope()) {
+    VisitGlobalDeclarations(closure_scope()->declarations());
+  } else if (closure_scope()->is_module_scope()) {
+    VisitModuleDeclarations(closure_scope()->declarations());
+  } else {
+    VisitDeclarations(closure_scope()->declarations());
+  }
 
   // Emit initializing assignments for module namespace imports (if any).
   VisitModuleNamespaceImports();
 
-  // Perform a stack-check before the body.
-  builder()->StackCheck(info()->literal()->start_position());
-
   // The derived constructor case is handled in VisitCallSuper.
-  if (IsBaseConstructor(function_kind()) &&
-      info()->literal()->requires_instance_members_initializer()) {
-    BuildInstanceMemberInitialization(Register::function_closure(),
-                                      builder()->Receiver());
+  if (IsBaseConstructor(function_kind())) {
+    if (literal->class_scope_has_private_brand()) {
+      BuildPrivateBrandInitialization(builder()->Receiver());
+    }
+
+    if (literal->requires_instance_members_initializer()) {
+      BuildInstanceMemberInitialization(Register::function_closure(),
+                                        builder()->Receiver());
+    }
   }
 
   // Visit statements in the function body.
-  VisitStatements(info()->literal()->body());
+  VisitStatements(literal->body());
 
   // Emit an implicit return instruction in case control flow can fall off the
   // end of the function without an explicit return being present on all paths.
@@ -1239,13 +1446,9 @@ void BytecodeGenerator::VisitVariableDeclaration(VariableDeclaration* decl) {
   if (!variable->is_used()) return;
 
   switch (variable->location()) {
-    case VariableLocation::UNALLOCATED: {
-      DCHECK(!variable->binding_needs_init());
-      FeedbackSlot slot =
-          GetCachedLoadGlobalICSlot(NOT_INSIDE_TYPEOF, variable);
-      globals_builder()->AddUndefinedDeclaration(variable->raw_name(), slot);
-      break;
-    }
+    case VariableLocation::UNALLOCATED:
+    case VariableLocation::MODULE:
+      UNREACHABLE();
     case VariableLocation::LOCAL:
       if (variable->binding_needs_init()) {
         Register destination(builder()->Local(variable->index()));
@@ -1258,6 +1461,9 @@ void BytecodeGenerator::VisitVariableDeclaration(VariableDeclaration* decl) {
         builder()->LoadTheHole().StoreAccumulatorInRegister(destination);
       }
       break;
+    case VariableLocation::REPL_GLOBAL:
+      // REPL let's are stored in script contexts. They get initialized
+      // with the hole the same way as normal context allocated variables.
     case VariableLocation::CONTEXT:
       if (variable->binding_needs_init()) {
         DCHECK_EQ(0, execution_context()->ContextChainDepth(variable->scope()));
@@ -1277,13 +1483,6 @@ void BytecodeGenerator::VisitVariableDeclaration(VariableDeclaration* decl) {
           .CallRuntime(Runtime::kDeclareEvalVar, name);
       break;
     }
-    case VariableLocation::MODULE:
-      if (variable->IsExport() && variable->binding_needs_init()) {
-        builder()->LoadTheHole();
-        BuildVariableAssignment(variable, Token::INIT, HoleCheckMode::kElided);
-      }
-      // Nothing to do for imports.
-      break;
   }
 }
 
@@ -1296,21 +1495,16 @@ void BytecodeGenerator::VisitFunctionDeclaration(FunctionDeclaration* decl) {
   if (!variable->is_used()) return;
 
   switch (variable->location()) {
-    case VariableLocation::UNALLOCATED: {
-      FeedbackSlot slot =
-          GetCachedLoadGlobalICSlot(NOT_INSIDE_TYPEOF, variable);
-      int literal_index = GetCachedCreateClosureSlot(decl->fun());
-      globals_builder()->AddFunctionDeclaration(variable->raw_name(), slot,
-                                                literal_index, decl->fun());
-      AddToEagerLiteralsIfEager(decl->fun());
-      break;
-    }
+    case VariableLocation::UNALLOCATED:
+    case VariableLocation::MODULE:
+      UNREACHABLE();
     case VariableLocation::PARAMETER:
     case VariableLocation::LOCAL: {
       VisitFunctionLiteral(decl->fun());
       BuildVariableAssignment(variable, Token::INIT, HoleCheckMode::kElided);
       break;
     }
+    case VariableLocation::REPL_GLOBAL:
     case VariableLocation::CONTEXT: {
       DCHECK_EQ(0, execution_context()->ContextChainDepth(variable->scope()));
       VisitFunctionLiteral(decl->fun());
@@ -1328,15 +1522,10 @@ void BytecodeGenerator::VisitFunctionDeclaration(FunctionDeclaration* decl) {
           Runtime::kDeclareEvalFunction, args);
       break;
     }
-    case VariableLocation::MODULE:
-      DCHECK_EQ(variable->mode(), VariableMode::kLet);
-      DCHECK(variable->IsExport());
-      VisitForAccumulatorValue(decl->fun());
-      BuildVariableAssignment(variable, Token::INIT, HoleCheckMode::kElided);
-      break;
   }
-  DCHECK_IMPLIES(decl->fun()->ShouldEagerCompile(),
-                 IsInEagerLiterals(decl->fun(), *eager_inner_literals_));
+  DCHECK_IMPLIES(
+      eager_inner_literals_ != nullptr && decl->fun()->ShouldEagerCompile(),
+      IsInEagerLiterals(decl->fun(), *eager_inner_literals_));
 }
 
 void BytecodeGenerator::VisitModuleNamespaceImports() {
@@ -1345,7 +1534,8 @@ void BytecodeGenerator::VisitModuleNamespaceImports() {
   RegisterAllocationScope register_scope(this);
   Register module_request = register_allocator()->NewRegister();
 
-  ModuleDescriptor* descriptor = closure_scope()->AsModuleScope()->module();
+  SourceTextModuleDescriptor* descriptor =
+      closure_scope()->AsModuleScope()->module();
   for (auto entry : descriptor->namespace_imports()) {
     builder()
         ->LoadLiteral(Smi::FromInt(entry->module_request))
@@ -1356,32 +1546,76 @@ void BytecodeGenerator::VisitModuleNamespaceImports() {
   }
 }
 
-void BytecodeGenerator::VisitDeclarations(Declaration::List* declarations) {
+void BytecodeGenerator::BuildDeclareCall(Runtime::FunctionId id) {
+  if (!top_level_builder()->has_top_level_declaration()) return;
+  DCHECK(!top_level_builder()->processed());
+
+  top_level_builder()->set_constant_pool_entry(
+      builder()->AllocateDeferredConstantPoolEntry());
+
+  // Emit code to declare globals.
+  RegisterList args = register_allocator()->NewRegisterList(2);
+  builder()
+      ->LoadConstantPoolEntry(top_level_builder()->constant_pool_entry())
+      .StoreAccumulatorInRegister(args[0])
+      .MoveRegister(Register::function_closure(), args[1])
+      .CallRuntime(id, args);
+
+  top_level_builder()->mark_processed();
+}
+
+void BytecodeGenerator::VisitModuleDeclarations(Declaration::List* decls) {
   RegisterAllocationScope register_scope(this);
-  DCHECK(globals_builder()->empty());
+  for (Declaration* decl : *decls) {
+    Variable* var = decl->var();
+    if (!var->is_used()) continue;
+    if (var->location() == VariableLocation::MODULE) {
+      if (decl->IsFunctionDeclaration()) {
+        DCHECK(var->IsExport());
+        FunctionDeclaration* f = static_cast<FunctionDeclaration*>(decl);
+        AddToEagerLiteralsIfEager(f->fun());
+        top_level_builder()->record_module_function_declaration();
+      } else if (var->IsExport() && var->binding_needs_init()) {
+        DCHECK(decl->IsVariableDeclaration());
+        top_level_builder()->record_module_variable_declaration();
+      }
+    } else {
+      RegisterAllocationScope register_scope(this);
+      Visit(decl);
+    }
+  }
+  BuildDeclareCall(Runtime::kDeclareModuleExports);
+}
+
+void BytecodeGenerator::VisitGlobalDeclarations(Declaration::List* decls) {
+  RegisterAllocationScope register_scope(this);
+  for (Declaration* decl : *decls) {
+    Variable* var = decl->var();
+    DCHECK(var->is_used());
+    if (var->location() == VariableLocation::UNALLOCATED) {
+      // var or function.
+      if (decl->IsFunctionDeclaration()) {
+        top_level_builder()->record_global_function_declaration();
+        FunctionDeclaration* f = static_cast<FunctionDeclaration*>(decl);
+        AddToEagerLiteralsIfEager(f->fun());
+      } else {
+        top_level_builder()->record_global_variable_declaration();
+      }
+    } else {
+      // let or const. Handled in NewScriptContext.
+      DCHECK(decl->IsVariableDeclaration());
+      DCHECK(IsLexicalVariableMode(var->mode()));
+    }
+  }
+
+  BuildDeclareCall(Runtime::kDeclareGlobals);
+}
+
+void BytecodeGenerator::VisitDeclarations(Declaration::List* declarations) {
   for (Declaration* decl : *declarations) {
     RegisterAllocationScope register_scope(this);
     Visit(decl);
   }
-  if (globals_builder()->empty()) return;
-
-  globals_builder()->set_constant_pool_entry(
-      builder()->AllocateDeferredConstantPoolEntry());
-  int encoded_flags = DeclareGlobalsEvalFlag::encode(info()->is_eval());
-
-  // Emit code to declare globals.
-  RegisterList args = register_allocator()->NewRegisterList(3);
-  builder()
-      ->LoadConstantPoolEntry(globals_builder()->constant_pool_entry())
-      .StoreAccumulatorInRegister(args[0])
-      .LoadLiteral(Smi::FromInt(encoded_flags))
-      .StoreAccumulatorInRegister(args[1])
-      .MoveRegister(Register::function_closure(), args[2])
-      .CallRuntime(Runtime::kDeclareGlobals, args);
-
-  // Push and reset globals builder.
-  global_declarations_.push_back(globals_builder());
-  globals_builder_ = new (zone()) GlobalDeclarationsBuilder(zone());
 }
 
 void BytecodeGenerator::VisitStatements(
@@ -1533,7 +1767,7 @@ void BytecodeGenerator::BuildTryCatch(
 
   // Preserve the context in a dedicated register, so that it can be restored
   // when the handler is entered by the stack-unwinding machinery.
-  // TODO(mstarzinger): Be smarter about register allocation.
+  // TODO(ignition): Be smarter about register allocation.
   Register context = register_allocator()->NewRegister();
   builder()->MoveRegister(Register::current_context(), context);
 
@@ -1584,7 +1818,7 @@ void BytecodeGenerator::BuildTryFinally(
 
   // Preserve the context in a dedicated register, so that it can be restored
   // when the handler is entered by the stack-unwinding machinery.
-  // TODO(mstarzinger): Be smarter about register allocation.
+  // TODO(ignition): Be smarter about register allocation.
   Register context = register_allocator()->NewRegister();
   builder()->MoveRegister(Register::current_context(), context);
 
@@ -1626,7 +1860,6 @@ void BytecodeGenerator::VisitIterationBody(IterationStatement* stmt,
                                            LoopBuilder* loop_builder) {
   loop_builder->LoopBody();
   ControlScopeForIteration execution_control(this, stmt, loop_builder);
-  builder()->StackCheck(stmt->position());
   Visit(stmt->body());
   loop_builder->BindContinueTarget();
 }
@@ -1634,20 +1867,22 @@ void BytecodeGenerator::VisitIterationBody(IterationStatement* stmt,
 void BytecodeGenerator::VisitDoWhileStatement(DoWhileStatement* stmt) {
   LoopBuilder loop_builder(builder(), block_coverage_builder_, stmt);
   if (stmt->cond()->ToBooleanIsFalse()) {
+    // Since we know that the condition is false, we don't create a loop.
+    // Therefore, we don't create a LoopScope (and thus we don't create a header
+    // and a JumpToHeader). However, we still need to iterate once through the
+    // body.
     VisitIterationBody(stmt, &loop_builder);
   } else if (stmt->cond()->ToBooleanIsTrue()) {
-    loop_builder.LoopHeader();
+    LoopScope loop_scope(this, &loop_builder);
     VisitIterationBody(stmt, &loop_builder);
-    loop_builder.JumpToHeader(loop_depth_);
   } else {
-    loop_builder.LoopHeader();
+    LoopScope loop_scope(this, &loop_builder);
     VisitIterationBody(stmt, &loop_builder);
     builder()->SetExpressionAsStatementPosition(stmt->cond());
     BytecodeLabels loop_backbranch(zone());
     VisitForTest(stmt->cond(), &loop_backbranch, loop_builder.break_labels(),
                  TestFallthrough::kThen);
     loop_backbranch.Bind(builder());
-    loop_builder.JumpToHeader(loop_depth_);
   }
 }
 
@@ -1659,7 +1894,7 @@ void BytecodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
     return;
   }
 
-  loop_builder.LoopHeader();
+  LoopScope loop_scope(this, &loop_builder);
   if (!stmt->cond()->ToBooleanIsTrue()) {
     builder()->SetExpressionAsStatementPosition(stmt->cond());
     BytecodeLabels loop_body(zone());
@@ -1668,22 +1903,21 @@ void BytecodeGenerator::VisitWhileStatement(WhileStatement* stmt) {
     loop_body.Bind(builder());
   }
   VisitIterationBody(stmt, &loop_builder);
-  loop_builder.JumpToHeader(loop_depth_);
 }
 
 void BytecodeGenerator::VisitForStatement(ForStatement* stmt) {
-  LoopBuilder loop_builder(builder(), block_coverage_builder_, stmt);
-
   if (stmt->init() != nullptr) {
     Visit(stmt->init());
   }
+
+  LoopBuilder loop_builder(builder(), block_coverage_builder_, stmt);
   if (stmt->cond() && stmt->cond()->ToBooleanIsFalse()) {
     // If the condition is known to be false there is no need to generate
     // body, next or condition blocks. Init block should be generated.
     return;
   }
 
-  loop_builder.LoopHeader();
+  LoopScope loop_scope(this, &loop_builder);
   if (stmt->cond() && !stmt->cond()->ToBooleanIsTrue()) {
     builder()->SetExpressionAsStatementPosition(stmt->cond());
     BytecodeLabels loop_body(zone());
@@ -1696,7 +1930,6 @@ void BytecodeGenerator::VisitForStatement(ForStatement* stmt) {
     builder()->SetStatementPosition(stmt->next());
     Visit(stmt->next());
   }
-  loop_builder.JumpToHeader(loop_depth_);
 }
 
 void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
@@ -1706,14 +1939,13 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
     return;
   }
 
-  BytecodeLabel subject_null_label, subject_undefined_label;
+  BytecodeLabel subject_undefined_label;
   FeedbackSlot slot = feedback_spec()->AddForInSlot();
 
   // Prepare the state for executing ForIn.
   builder()->SetExpressionAsStatementPosition(stmt->subject());
   VisitForAccumulatorValue(stmt->subject());
-  builder()->JumpIfUndefined(&subject_undefined_label);
-  builder()->JumpIfNull(&subject_null_label);
+  builder()->JumpIfUndefinedOrNull(&subject_undefined_label);
   Register receiver = register_allocator()->NewRegister();
   builder()->ToObject(receiver);
 
@@ -1731,7 +1963,7 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
   // The loop
   {
     LoopBuilder loop_builder(builder(), block_coverage_builder_, stmt);
-    loop_builder.LoopHeader();
+    LoopScope loop_scope(this, &loop_builder);
     builder()->SetExpressionAsStatementPosition(stmt->each());
     builder()->ForInContinue(index, cache_length);
     loop_builder.BreakIfFalse(ToBooleanMode::kAlreadyBoolean);
@@ -1753,9 +1985,7 @@ void BytecodeGenerator::VisitForInStatement(ForInStatement* stmt) {
     VisitIterationBody(stmt, &loop_builder);
     builder()->ForInStep(index);
     builder()->StoreAccumulatorInRegister(index);
-    loop_builder.JumpToHeader(loop_depth_);
   }
-  builder()->Bind(&subject_null_label);
   builder()->Bind(&subject_undefined_label);
 }
 
@@ -1806,7 +2036,7 @@ void BytecodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
         Register next_result = register_allocator()->NewRegister();
 
         LoopBuilder loop_builder(builder(), block_coverage_builder_, stmt);
-        loop_builder.LoopHeader();
+        LoopScope loop_scope(this, &loop_builder);
 
         builder()->LoadTrue().StoreAccumulatorInRegister(done);
 
@@ -1838,8 +2068,6 @@ void BytecodeGenerator::VisitForOfStatement(ForOfStatement* stmt) {
         BuildAssignment(lhs_data, Token::ASSIGN, LookupHoistingMode::kNormal);
 
         VisitIterationBody(stmt, &loop_builder);
-
-        loop_builder.JumpToHeader(loop_depth_);
       },
       // Finally block.
       [&](Register iteration_continuation_token) {
@@ -1937,6 +2165,71 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
   VisitDeclarations(expr->scope()->declarations());
   Register class_constructor = register_allocator()->NewRegister();
 
+  // Create the class brand symbol and store it on the context during class
+  // evaluation. This will be stored in the instance later in the constructor.
+  // We do this early so that invalid access to private methods or accessors
+  // in computed property keys throw.
+  if (expr->scope()->brand() != nullptr) {
+    Register brand = register_allocator()->NewRegister();
+    const AstRawString* class_name =
+        expr->scope()->class_variable() != nullptr
+            ? expr->scope()->class_variable()->raw_name()
+            : ast_string_constants()->empty_string();
+    builder()
+        ->LoadLiteral(class_name)
+        .StoreAccumulatorInRegister(brand)
+        .CallRuntime(Runtime::kCreatePrivateBrandSymbol, brand);
+    BuildVariableAssignment(expr->scope()->brand(), Token::INIT,
+                            HoleCheckMode::kElided);
+  }
+
+  AccessorTable<ClassLiteral::Property> private_accessors(zone());
+  for (int i = 0; i < expr->private_members()->length(); i++) {
+    ClassLiteral::Property* property = expr->private_members()->at(i);
+    DCHECK(property->is_private());
+    switch (property->kind()) {
+      case ClassLiteral::Property::FIELD: {
+        // Initialize the private field variables early.
+        // Create the private name symbols for fields during class
+        // evaluation and store them on the context. These will be
+        // used as keys later during instance or static initialization.
+        RegisterAllocationScope private_name_register_scope(this);
+        Register private_name = register_allocator()->NewRegister();
+        VisitForRegisterValue(property->key(), private_name);
+        builder()
+            ->LoadLiteral(property->key()->AsLiteral()->AsRawPropertyName())
+            .StoreAccumulatorInRegister(private_name)
+            .CallRuntime(Runtime::kCreatePrivateNameSymbol, private_name);
+        DCHECK_NOT_NULL(property->private_name_var());
+        BuildVariableAssignment(property->private_name_var(), Token::INIT,
+                                HoleCheckMode::kElided);
+        break;
+      }
+      case ClassLiteral::Property::METHOD: {
+        // We can initialize the private methods and accessors later so that the
+        // home objects can be assigned right after the creation of the
+        // closures, and those are guarded by the brand checks.
+        break;
+      }
+      // Collect private accessors into a table to merge the creation of
+      // those closures later.
+      case ClassLiteral::Property::GETTER: {
+        Literal* key = property->key()->AsLiteral();
+        DCHECK_NULL(private_accessors.LookupOrInsert(key)->getter);
+        private_accessors.LookupOrInsert(key)->getter = property;
+        break;
+      }
+      case ClassLiteral::Property::SETTER: {
+        Literal* key = property->key()->AsLiteral();
+        DCHECK_NULL(private_accessors.LookupOrInsert(key)->setter);
+        private_accessors.LookupOrInsert(key)->setter = property;
+        break;
+      }
+      default:
+        UNREACHABLE();
+    }
+  }
+
   {
     RegisterAllocationScope register_scope(this);
     RegisterList args = register_allocator()->NewGrowableRegisterList();
@@ -1959,8 +2252,8 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
         .StoreAccumulatorInRegister(class_boilerplate);
 
     // Create computed names and method values nodes to store into the literal.
-    for (int i = 0; i < expr->properties()->length(); i++) {
-      ClassLiteral::Property* property = expr->properties()->at(i);
+    for (int i = 0; i < expr->public_members()->length(); i++) {
+      ClassLiteral::Property* property = expr->public_members()->at(i);
       if (property->is_computed_name()) {
         Register key = register_allocator()->GrowRegisterList(&args);
 
@@ -1993,19 +2286,9 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
         }
       }
 
+      DCHECK(!property->is_private());
+
       if (property->kind() == ClassLiteral::Property::FIELD) {
-        if (property->is_private()) {
-          RegisterAllocationScope private_name_register_scope(this);
-          Register private_name = register_allocator()->NewRegister();
-          VisitForRegisterValue(property->key(), private_name);
-          builder()
-              ->LoadLiteral(property->key()->AsLiteral()->AsRawPropertyName())
-              .StoreAccumulatorInRegister(private_name)
-              .CallRuntime(Runtime::kCreatePrivateNameSymbol, private_name);
-          DCHECK_NOT_NULL(property->private_name_var());
-          BuildVariableAssignment(property->private_name_var(), Token::INIT,
-                                  HoleCheckMode::kElided);
-        }
         // We don't compute field's value here, but instead do it in the
         // initializer function.
         continue;
@@ -2021,12 +2304,55 @@ void BytecodeGenerator::BuildClassLiteral(ClassLiteral* expr, Register name) {
   builder()->StoreAccumulatorInRegister(prototype);
 
   // Assign to class variable.
-  if (expr->class_variable() != nullptr) {
-    DCHECK(expr->class_variable()->IsStackLocal() ||
-           expr->class_variable()->IsContextSlot());
+  Variable* class_variable = expr->scope()->class_variable();
+  if (class_variable != nullptr && class_variable->is_used()) {
+    DCHECK(class_variable->IsStackLocal() || class_variable->IsContextSlot());
     builder()->LoadAccumulatorWithRegister(class_constructor);
-    BuildVariableAssignment(expr->class_variable(), Token::INIT,
+    BuildVariableAssignment(class_variable, Token::INIT,
                             HoleCheckMode::kElided);
+  }
+
+  // Create the closures of private methods, and store the home object for
+  // any private methods that need them.
+  if (expr->has_private_methods()) {
+    for (int i = 0; i < expr->private_members()->length(); i++) {
+      ClassLiteral::Property* property = expr->private_members()->at(i);
+      if (property->kind() != ClassLiteral::Property::METHOD) {
+        continue;
+      }
+      RegisterAllocationScope register_scope(this);
+      VisitForAccumulatorValue(property->value());
+      BuildVariableAssignment(property->private_name_var(), Token::INIT,
+                              HoleCheckMode::kElided);
+      Register home_object = property->private_name_var()->is_static()
+                                 ? class_constructor
+                                 : prototype;
+      if (property->NeedsHomeObjectOnClassPrototype()) {
+        Register func = register_allocator()->NewRegister();
+        builder()->StoreAccumulatorInRegister(func);
+        VisitSetHomeObject(func, home_object, property);
+      }
+    }
+  }
+
+  // Define private accessors, using only a single call to the runtime for
+  // each pair of corresponding getters and setters, in the order the first
+  // component is declared. Store the home objects if necessary.
+  for (auto accessors : private_accessors.ordered_accessors()) {
+    RegisterAllocationScope inner_register_scope(this);
+    RegisterList accessors_reg = register_allocator()->NewRegisterList(2);
+    ClassLiteral::Property* getter = accessors.second->getter;
+    ClassLiteral::Property* setter = accessors.second->setter;
+    bool is_static =
+        getter != nullptr ? getter->is_static() : setter->is_static();
+    Register home_object = is_static ? class_constructor : prototype;
+    VisitLiteralAccessor(home_object, getter, accessors_reg[0]);
+    VisitLiteralAccessor(home_object, setter, accessors_reg[1]);
+    builder()->CallRuntime(Runtime::kCreatePrivateAccessors, accessors_reg);
+    Variable* var = getter != nullptr ? getter->private_name_var()
+                                      : setter->private_name_var();
+    DCHECK_NOT_NULL(var);
+    BuildVariableAssignment(var, Token::INIT, HoleCheckMode::kElided);
   }
 
   if (expr->instance_members_initializer_function() != nullptr) {
@@ -2110,6 +2436,10 @@ void BytecodeGenerator::VisitInitializeClassMembersStatement(
 
   for (int i = 0; i < stmt->fields()->length(); i++) {
     ClassLiteral::Property* property = stmt->fields()->at(i);
+    // Private methods are not initialized in the
+    // InitializeClassMembersStatement.
+    DCHECK_IMPLIES(property->is_private(),
+                   property->kind() == ClassLiteral::Property::FIELD);
 
     if (property->is_computed_name()) {
       DCHECK_EQ(property->kind(), ClassLiteral::Property::FIELD);
@@ -2120,8 +2450,7 @@ void BytecodeGenerator::VisitInitializeClassMembersStatement(
       // variable at class definition time.
       BuildVariableLoad(var, HoleCheckMode::kElided);
       builder()->StoreAccumulatorInRegister(key);
-    } else if (property->kind() == ClassLiteral::Property::FIELD &&
-               property->is_private()) {
+    } else if (property->is_private()) {
       Variable* private_name_var = property->private_name_var();
       DCHECK_NOT_NULL(private_name_var);
       BuildVariableLoad(private_name_var, HoleCheckMode::kElided);
@@ -2141,6 +2470,34 @@ void BytecodeGenerator::VisitInitializeClassMembersStatement(
             : Runtime::kAddPrivateField;
     builder()->CallRuntime(function_id, args);
   }
+}
+
+void BytecodeGenerator::BuildInvalidPropertyAccess(MessageTemplate tmpl,
+                                                   Property* property) {
+  RegisterAllocationScope register_scope(this);
+  const AstRawString* name = property->key()->AsVariableProxy()->raw_name();
+  RegisterList args = register_allocator()->NewRegisterList(2);
+  builder()
+      ->LoadLiteral(Smi::FromEnum(tmpl))
+      .StoreAccumulatorInRegister(args[0])
+      .LoadLiteral(name)
+      .StoreAccumulatorInRegister(args[1])
+      .CallRuntime(Runtime::kNewTypeError, args)
+      .Throw();
+}
+
+void BytecodeGenerator::BuildPrivateBrandInitialization(Register receiver) {
+  RegisterList brand_args = register_allocator()->NewRegisterList(3);
+  Variable* brand = info()->scope()->outer_scope()->AsClassScope()->brand();
+  int depth = execution_context()->ContextChainDepth(brand->scope());
+  ContextScope* class_context = execution_context()->Previous(depth);
+
+  BuildVariableLoad(brand, HoleCheckMode::kElided);
+  builder()
+      ->StoreAccumulatorInRegister(brand_args[1])
+      .MoveRegister(receiver, brand_args[0])
+      .MoveRegister(class_context->reg(), brand_args[2])
+      .CallRuntime(Runtime::kAddPrivateBrand, brand_args);
 }
 
 void BytecodeGenerator::BuildInstanceMemberInitialization(Register constructor,
@@ -2171,11 +2528,6 @@ void BytecodeGenerator::VisitNativeFunctionLiteral(
   uint8_t flags = CreateClosureFlags::Encode(false, false, false);
   builder()->CreateClosure(entry, index, flags);
   native_function_literals_.push_back(std::make_pair(expr, entry));
-}
-
-void BytecodeGenerator::VisitDoExpression(DoExpression* expr) {
-  VisitBlock(expr->block());
-  VisitVariableProxy(expr->result());
 }
 
 void BytecodeGenerator::VisitConditional(Conditional* expr) {
@@ -2297,13 +2649,6 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
     RegisterAllocationScope register_scope(this);
     Expression* property = expr->properties()->first()->value();
     Register from_value = VisitForRegisterValue(property);
-
-    BytecodeLabels clone_object(zone());
-    builder()->JumpIfUndefined(clone_object.New());
-    builder()->JumpIfNull(clone_object.New());
-    builder()->ToObject(from_value);
-
-    clone_object.Bind(builder());
     int clone_index = feedback_index(feedback_spec()->AddCloneObjectSlot());
     builder()->CloneObject(from_value, flags, clone_index);
     builder()->StoreAccumulatorInRegister(literal);
@@ -2322,7 +2667,7 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
   }
 
   // Store computed values into the literal.
-  AccessorTable accessor_table(zone());
+  AccessorTable<ObjectLiteral::Property> accessor_table(zone());
   for (; property_index < expr->properties()->length(); property_index++) {
     ObjectLiteral::Property* property = expr->properties()->at(property_index);
     if (property->is_computed_name()) break;
@@ -2391,12 +2736,12 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
       }
       case ObjectLiteral::Property::GETTER:
         if (property->emit_store()) {
-          accessor_table.lookup(key)->second->getter = property;
+          accessor_table.LookupOrInsert(key)->getter = property;
         }
         break;
       case ObjectLiteral::Property::SETTER:
         if (property->emit_store()) {
-          accessor_table.lookup(key)->second->setter = property;
+          accessor_table.LookupOrInsert(key)->setter = property;
         }
         break;
     }
@@ -2404,14 +2749,13 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
 
   // Define accessors, using only a single call to the runtime for each pair of
   // corresponding getters and setters.
-  for (AccessorTable::Iterator it = accessor_table.begin();
-       it != accessor_table.end(); ++it) {
+  for (auto accessors : accessor_table.ordered_accessors()) {
     RegisterAllocationScope inner_register_scope(this);
     RegisterList args = register_allocator()->NewRegisterList(5);
     builder()->MoveRegister(literal, args[0]);
-    VisitForRegisterValue(it->first, args[1]);
-    VisitObjectLiteralAccessor(literal, it->second->getter, args[2]);
-    VisitObjectLiteralAccessor(literal, it->second->setter, args[3]);
+    VisitForRegisterValue(accessors.first, args[1]);
+    VisitLiteralAccessor(literal, accessors.second->getter, args[2]);
+    VisitLiteralAccessor(literal, accessors.second->setter, args[3]);
     builder()
         ->LoadLiteral(Smi::FromInt(NONE))
         .StoreAccumulatorInRegister(args[4])
@@ -2504,7 +2848,7 @@ void BytecodeGenerator::VisitObjectLiteral(ObjectLiteral* expr) {
         builder()->MoveRegister(literal, args[0]);
         builder()->SetExpressionPosition(property->value());
         VisitForRegisterValue(property->value(), args[1]);
-        builder()->CallRuntime(Runtime::kCopyDataProperties, args);
+        builder()->CallRuntime(Runtime::kInlineCopyDataProperties, args);
         break;
       }
       case ObjectLiteral::Property::PROTOTYPE:
@@ -2537,7 +2881,7 @@ void BytecodeGenerator::BuildFillArrayWithIterator(
   DCHECK(value.is_valid());
 
   LoopBuilder loop_builder(builder(), nullptr, nullptr);
-  loop_builder.LoopHeader();
+  LoopScope loop_scope(this, &loop_builder);
 
   // Call the iterator's .next() method. Break from the loop if the `done`
   // property is truthy, otherwise load the value from the iterator result and
@@ -2560,7 +2904,6 @@ void BytecodeGenerator::BuildFillArrayWithIterator(
       .UnaryOperation(Token::INC, feedback_index(index_slot))
       .StoreAccumulatorInRegister(index);
   loop_builder.BindContinueTarget();
-  loop_builder.JumpToHeader(loop_depth_);
 }
 
 void BytecodeGenerator::BuildCreateArrayLiteral(
@@ -2722,19 +3065,6 @@ void BytecodeGenerator::VisitArrayLiteral(ArrayLiteral* expr) {
   BuildCreateArrayLiteral(expr->values(), expr);
 }
 
-void BytecodeGenerator::VisitStoreInArrayLiteral(StoreInArrayLiteral* expr) {
-  builder()->SetExpressionAsStatementPosition(expr);
-  RegisterAllocationScope register_scope(this);
-  Register array = register_allocator()->NewRegister();
-  Register index = register_allocator()->NewRegister();
-  VisitForRegisterValue(expr->array(), array);
-  VisitForRegisterValue(expr->index(), index);
-  VisitForAccumulatorValue(expr->value());
-  builder()->StoreInArrayLiteral(
-      array, index,
-      feedback_index(feedback_spec()->AddStoreInArrayLiteralICSlot()));
-}
-
 void BytecodeGenerator::VisitVariableProxy(VariableProxy* proxy) {
   builder()->SetExpressionPosition(proxy);
   BuildVariableLoad(proxy->var(), proxy->hole_check_mode());
@@ -2823,7 +3153,9 @@ void BytecodeGenerator::BuildVariableLoad(Variable* variable,
         case VariableMode::kDynamicGlobal: {
           int depth =
               current_scope()->ContextChainLengthUntilOutermostSloppyEval();
-          FeedbackSlot slot = GetCachedLoadGlobalICSlot(typeof_mode, variable);
+          // TODO(1008414): Add back caching here when bug is fixed properly.
+          FeedbackSlot slot = feedback_spec()->AddLoadGlobalICSlot(typeof_mode);
+
           builder()->LoadLookupGlobalSlot(variable->raw_name(), typeof_mode,
                                           feedback_index(slot), depth);
           break;
@@ -2839,6 +3171,13 @@ void BytecodeGenerator::BuildVariableLoad(Variable* variable,
       if (hole_check_mode == HoleCheckMode::kRequired) {
         BuildThrowIfHole(variable);
       }
+      break;
+    }
+    case VariableLocation::REPL_GLOBAL: {
+      DCHECK(variable->IsReplGlobalLet());
+      FeedbackSlot slot = GetCachedLoadGlobalICSlot(typeof_mode, variable);
+      builder()->LoadGlobal(variable->raw_name(), feedback_index(slot),
+                            typeof_mode);
       break;
     }
   }
@@ -2877,7 +3216,8 @@ void BytecodeGenerator::BuildAsyncReturn(int source_position) {
         .StoreAccumulatorInRegister(args[2])  // done
         .CallRuntime(Runtime::kInlineAsyncGeneratorResolve, args);
   } else {
-    DCHECK(IsAsyncFunction(info()->literal()->kind()));
+    DCHECK(IsAsyncFunction(info()->literal()->kind()) ||
+           IsAsyncModule(info()->literal()->kind()));
     RegisterList args = register_allocator()->NewRegisterList(3);
     builder()
         ->MoveRegister(generator_object(), args[0])  // generator
@@ -2903,6 +3243,7 @@ void BytecodeGenerator::BuildThrowIfHole(Variable* variable) {
 
 void BytecodeGenerator::BuildHoleCheckForVariableAssignment(Variable* variable,
                                                             Token::Value op) {
+  DCHECK(!IsPrivateMethodOrAccessorVariableMode(variable->mode()));
   if (variable->is_this() && variable->mode() == VariableMode::kConst &&
       op == Token::INIT) {
     // Perform an initialization check for 'this'. 'this' variable is the
@@ -3021,6 +3362,33 @@ void BytecodeGenerator::BuildVariableAssignment(
       builder()->StoreModuleVariable(variable->index(), depth);
       break;
     }
+    case VariableLocation::REPL_GLOBAL: {
+      // A let declaration like 'let x = 7' is effectively translated to:
+      //   <top of the script>:
+      //     ScriptContext.x = TheHole;
+      //   ...
+      //   <where the actual 'let' is>:
+      //     ScriptContextTable.x = 7; // no hole check
+      //
+      // The ScriptContext slot for 'x' that we store to here is not
+      // necessarily the ScriptContext of this script, but rather the
+      // first ScriptContext that has a slot for name 'x'.
+      DCHECK(variable->IsReplGlobalLet());
+      if (op == Token::INIT) {
+        RegisterList store_args = register_allocator()->NewRegisterList(2);
+        builder()
+            ->StoreAccumulatorInRegister(store_args[1])
+            .LoadLiteral(variable->raw_name())
+            .StoreAccumulatorInRegister(store_args[0]);
+        builder()->CallRuntime(Runtime::kStoreGlobalNoHoleCheckForReplLet,
+                               store_args);
+      } else {
+        FeedbackSlot slot =
+            GetCachedStoreGlobalICSlot(language_mode(), variable);
+        builder()->StoreGlobal(variable->raw_name(), feedback_index(slot));
+      }
+      break;
+    }
   }
 }
 
@@ -3087,6 +3455,13 @@ BytecodeGenerator::AssignmentLhsData::NamedSuperProperty(
 }
 // static
 BytecodeGenerator::AssignmentLhsData
+BytecodeGenerator::AssignmentLhsData::PrivateMethodOrAccessor(
+    AssignType type, Property* property) {
+  return AssignmentLhsData(type, property, RegisterList(), Register(),
+                           Register(), nullptr, nullptr);
+}
+// static
+BytecodeGenerator::AssignmentLhsData
 BytecodeGenerator::AssignmentLhsData::KeyedSuperProperty(
     RegisterList super_property_args) {
   return AssignmentLhsData(KEYED_SUPER_PROPERTY, nullptr, super_property_args,
@@ -3115,6 +3490,13 @@ BytecodeGenerator::AssignmentLhsData BytecodeGenerator::PrepareAssignmentLhs(
       Register object = VisitForRegisterValue(property->obj());
       Register key = VisitForRegisterValue(property->key());
       return AssignmentLhsData::KeyedProperty(object, key);
+    }
+    case PRIVATE_METHOD:
+    case PRIVATE_GETTER_ONLY:
+    case PRIVATE_SETTER_ONLY:
+    case PRIVATE_GETTER_AND_SETTER: {
+      DCHECK(!property->IsSuperAccess());
+      return AssignmentLhsData::PrivateMethodOrAccessor(assign_type, property);
     }
     case NAMED_SUPER_PROPERTY: {
       AccumulatorPreservingScope scope(this, accumulator_preserving_mode);
@@ -3150,15 +3532,16 @@ BytecodeGenerator::AssignmentLhsData BytecodeGenerator::PrepareAssignmentLhs(
 
 // Build the iteration finalizer called in the finally block of an iteration
 // protocol execution. This closes the iterator if needed, and suppresses any
-// exception it throws if necessary.
+// exception it throws if necessary, including the exception when the return
+// method is not callable.
 //
 // In pseudo-code, this builds:
 //
 // if (!done) {
 //   let method = iterator.return
 //   if (method !== null && method !== undefined) {
-//     if (typeof(method) !== "function") throw TypeError
 //     try {
+//       if (typeof(method) !== "function") throw TypeError
 //       let return_val = method.call(iterator)
 //       if (!%IsObject(return_val)) throw TypeError
 //     } catch (e) {
@@ -3187,36 +3570,37 @@ void BytecodeGenerator::BuildFinalizeIteration(
                           ast_string_constants()->return_string(),
                           feedback_index(feedback_spec()->AddLoadICSlot()))
       .StoreAccumulatorInRegister(method)
-      .JumpIfUndefined(iterator_is_done.New())
-      .JumpIfNull(iterator_is_done.New());
-
-  //     if (typeof(method) !== "function") throw TypeError
-  BytecodeLabel if_callable;
-  builder()
-      ->CompareTypeOf(TestTypeOfFlags::LiteralFlag::kFunction)
-      .JumpIfTrue(ToBooleanMode::kAlreadyBoolean, &if_callable);
-  {
-    // throw %NewTypeError(kReturnMethodNotCallable)
-    RegisterAllocationScope register_scope(this);
-    RegisterList new_type_error_args = register_allocator()->NewRegisterList(2);
-    builder()
-        ->LoadLiteral(Smi::FromEnum(MessageTemplate::kReturnMethodNotCallable))
-        .StoreAccumulatorInRegister(new_type_error_args[0])
-        .LoadLiteral(ast_string_constants()->empty_string())
-        .StoreAccumulatorInRegister(new_type_error_args[1])
-        .CallRuntime(Runtime::kNewTypeError, new_type_error_args)
-        .Throw();
-  }
-  builder()->Bind(&if_callable);
+      .JumpIfUndefinedOrNull(iterator_is_done.New());
 
   {
     RegisterAllocationScope register_scope(this);
     BuildTryCatch(
         // try {
+        //   if (typeof(method) !== "function") throw TypeError
         //   let return_val = method.call(iterator)
         //   if (!%IsObject(return_val)) throw TypeError
         // }
         [&]() {
+          BytecodeLabel if_callable;
+          builder()
+              ->CompareTypeOf(TestTypeOfFlags::LiteralFlag::kFunction)
+              .JumpIfTrue(ToBooleanMode::kAlreadyBoolean, &if_callable);
+          {
+            // throw %NewTypeError(kReturnMethodNotCallable)
+            RegisterAllocationScope register_scope(this);
+            RegisterList new_type_error_args =
+                register_allocator()->NewRegisterList(2);
+            builder()
+                ->LoadLiteral(
+                    Smi::FromEnum(MessageTemplate::kReturnMethodNotCallable))
+                .StoreAccumulatorInRegister(new_type_error_args[0])
+                .LoadLiteral(ast_string_constants()->empty_string())
+                .StoreAccumulatorInRegister(new_type_error_args[1])
+                .CallRuntime(Runtime::kNewTypeError, new_type_error_args)
+                .Throw();
+          }
+          builder()->Bind(&if_callable);
+
           RegisterList args(iterator.object());
           builder()->CallProperty(
               method, args, feedback_index(feedback_spec()->AddCallICSlot()));
@@ -3494,22 +3878,6 @@ void BytecodeGenerator::BuildDestructuringObjectAssignment(
     LookupHoistingMode lookup_hoisting_mode) {
   RegisterAllocationScope scope(this);
 
-  // if (value === null || value === undefined)
-  //   throw new TypeError(kNonCoercible);
-  //
-  // TODO(leszeks): Eliminate check if value is known to be non-null (e.g.
-  // an object literal).
-  BytecodeLabel is_null_or_undefined, not_null_or_undefined;
-  builder()
-      ->JumpIfNull(&is_null_or_undefined)
-      .JumpIfNotUndefined(&not_null_or_undefined);
-
-  {
-    builder()->Bind(&is_null_or_undefined);
-    builder()->SetExpressionPosition(pattern);
-    builder()->CallRuntime(Runtime::kThrowPatternAssignmentNonCoercible);
-  }
-
   // Store the assignment value in a register.
   Register value;
   RegisterList rest_runtime_callargs;
@@ -3520,7 +3888,34 @@ void BytecodeGenerator::BuildDestructuringObjectAssignment(
   } else {
     value = register_allocator()->NewRegister();
   }
-  builder()->Bind(&not_null_or_undefined).StoreAccumulatorInRegister(value);
+  builder()->StoreAccumulatorInRegister(value);
+
+  // if (value === null || value === undefined)
+  //   throw new TypeError(kNonCoercible);
+  //
+  // Since the first property access on null/undefined will also trigger a
+  // TypeError, we can elide this check. The exception is when there are no
+  // properties and no rest property (this is an empty literal), or when the
+  // first property is a computed name and accessing it can have side effects.
+  //
+  // TODO(leszeks): Also eliminate this check if the value is known to be
+  // non-null (e.g. an object literal).
+  if (pattern->properties()->is_empty() ||
+      (pattern->properties()->at(0)->is_computed_name() &&
+       pattern->properties()->at(0)->kind() != ObjectLiteralProperty::SPREAD)) {
+    BytecodeLabel is_null_or_undefined, not_null_or_undefined;
+    builder()
+        ->JumpIfUndefinedOrNull(&is_null_or_undefined)
+        .Jump(&not_null_or_undefined);
+
+    {
+      builder()->Bind(&is_null_or_undefined);
+      builder()->SetExpressionPosition(pattern);
+      builder()->CallRuntime(Runtime::kThrowPatternAssignmentNonCoercible,
+                             value);
+    }
+    builder()->Bind(&not_null_or_undefined);
+  }
 
   int i = 0;
   for (ObjectLiteralProperty* pattern_property : *pattern->properties()) {
@@ -3667,6 +4062,31 @@ void BytecodeGenerator::BuildAssignment(
                        lhs_data.super_property_args());
       break;
     }
+    case PRIVATE_METHOD: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateMethodWrite,
+                                 lhs_data.expr()->AsProperty());
+      break;
+    }
+    case PRIVATE_GETTER_ONLY: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateSetterAccess,
+                                 lhs_data.expr()->AsProperty());
+      break;
+    }
+    case PRIVATE_SETTER_ONLY:
+    case PRIVATE_GETTER_AND_SETTER: {
+      Register value = register_allocator()->NewRegister();
+      builder()->StoreAccumulatorInRegister(value);
+      Property* property = lhs_data.expr()->AsProperty();
+      Register object = VisitForRegisterValue(property->obj());
+      Register key = VisitForRegisterValue(property->key());
+      BuildPrivateBrandCheck(property, object,
+                             MessageTemplate::kInvalidPrivateMemberWrite);
+      BuildPrivateSetterAccess(object, key, value);
+      if (!execution_result()->IsEffect()) {
+        builder()->LoadAccumulatorWithRegister(value);
+      }
+      break;
+    }
   }
 }
 
@@ -3712,7 +4132,16 @@ void BytecodeGenerator::VisitCompoundAssignment(CompoundAssignment* expr) {
                              lhs_data.super_property_args().Truncate(3));
       break;
     }
+    case PRIVATE_METHOD:
+    case PRIVATE_GETTER_ONLY:
+    case PRIVATE_SETTER_ONLY:
+    case PRIVATE_GETTER_AND_SETTER: {
+      // ({ #foo: name } = obj) is currently syntactically invalid.
+      UNREACHABLE();
+      break;
+    }
   }
+
   BinaryOperation* binop = expr->AsCompoundAssignment()->binary_operation();
   FeedbackSlot slot = feedback_spec()->AddBinaryOpICSlot();
   if (expr->value()->IsSmiLiteral()) {
@@ -3734,6 +4163,12 @@ void BytecodeGenerator::VisitCompoundAssignment(CompoundAssignment* expr) {
 // in the accumulator. When the generator is resumed, the sent value is loaded
 // in the accumulator.
 void BytecodeGenerator::BuildSuspendPoint(int position) {
+  // Because we eliminate jump targets in dead code, we also eliminate resumes
+  // when the suspend is not emitted because otherwise the below call to Bind
+  // would start a new basic block and the code would be considered alive.
+  if (builder()->RemainderOfBlockIsDead()) {
+    return;
+  }
   const int suspend_id = suspend_count_++;
 
   RegisterList registers = register_allocator()->AllLiveRegisters();
@@ -3857,7 +4292,10 @@ void BytecodeGenerator::VisitYield(Yield* expr) {
 //           break;
 //         case kReturn:
 //           let iteratorReturn = iterator.return;
-//           if (IS_NULL_OR_UNDEFINED(iteratorReturn)) return input;
+//           if (IS_NULL_OR_UNDEFINED(iteratorReturn)) {
+//             if (IS_ASYNC_GENERATOR) input = await input;
+//             return input;
+//           }
 //           output = iteratorReturn.[[Call]](iterator, «input»);
 //           break;
 //         case kThrow:
@@ -3929,8 +4367,8 @@ void BytecodeGenerator::VisitYieldStar(YieldStar* expr) {
       //   - One for awaiting the iterator result yielded by the delegated
       //     iterator
 
-      LoopBuilder loop(builder(), nullptr, nullptr);
-      loop.LoopHeader();
+      LoopBuilder loop_builder(builder(), nullptr, nullptr);
+      LoopScope loop_scope(this, &loop_builder);
 
       {
         BytecodeLabels after_switch(zone());
@@ -3965,6 +4403,8 @@ void BytecodeGenerator::VisitYieldStar(YieldStar* expr) {
           no_return_method.Bind(builder());
           builder()->LoadAccumulatorWithRegister(input);
           if (iterator_type == IteratorType::kAsync) {
+            // Await input.
+            BuildAwait(expr->position());
             execution_control()->AsyncReturnAccumulator();
           } else {
             execution_control()->ReturnAccumulator();
@@ -4009,7 +4449,7 @@ void BytecodeGenerator::VisitYieldStar(YieldStar* expr) {
           output, ast_string_constants()->done_string(),
           feedback_index(feedback_spec()->AddLoadICSlot()));
 
-      loop.BreakIfTrue(ToBooleanMode::kConvertToBoolean);
+      loop_builder.BreakIfTrue(ToBooleanMode::kConvertToBoolean);
 
       // Suspend the current generator.
       if (iterator_type == IteratorType::kNormal) {
@@ -4040,8 +4480,7 @@ void BytecodeGenerator::VisitYieldStar(YieldStar* expr) {
                         generator_object())
           .StoreAccumulatorInRegister(resume_mode);
 
-      loop.BindContinueTarget();
-      loop.JumpToHeader(loop_depth_);
+      loop_builder.BindContinueTarget();
     }
   }
 
@@ -4076,7 +4515,8 @@ void BytecodeGenerator::BuildAwait(int position) {
   // multiple debug events for the same uncaught exception. There is no point
   // in the body of an async function where catch prediction is
   // HandlerTable::UNCAUGHT.
-  DCHECK(catch_prediction() != HandlerTable::UNCAUGHT);
+  DCHECK(catch_prediction() != HandlerTable::UNCAUGHT ||
+         info()->scope()->is_repl_mode_scope());
 
   {
     // Await(operand) and suspend.
@@ -4140,7 +4580,14 @@ void BytecodeGenerator::VisitThrow(Throw* expr) {
 }
 
 void BytecodeGenerator::VisitPropertyLoad(Register obj, Property* property) {
+  if (property->is_optional_chain_link()) {
+    DCHECK_NOT_NULL(optional_chaining_null_labels_);
+    builder()->LoadAccumulatorWithRegister(obj).JumpIfUndefinedOrNull(
+        optional_chaining_null_labels_->New());
+  }
+
   AssignType property_kind = Property::GetAssignType(property);
+
   switch (property_kind) {
     case NON_PROPERTY:
       UNREACHABLE();
@@ -4164,6 +4611,104 @@ void BytecodeGenerator::VisitPropertyLoad(Register obj, Property* property) {
     case KEYED_SUPER_PROPERTY:
       VisitKeyedSuperPropertyLoad(property, Register::invalid_value());
       break;
+    case PRIVATE_SETTER_ONLY: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateGetterAccess,
+                                 property);
+      break;
+    }
+    case PRIVATE_GETTER_ONLY:
+    case PRIVATE_GETTER_AND_SETTER: {
+      Register key = VisitForRegisterValue(property->key());
+      BuildPrivateBrandCheck(property, obj,
+                             MessageTemplate::kInvalidPrivateMemberRead);
+      BuildPrivateGetterAccess(obj, key);
+      break;
+    }
+    case PRIVATE_METHOD: {
+      BuildPrivateBrandCheck(property, obj,
+                             MessageTemplate::kInvalidPrivateMemberRead);
+      // In the case of private methods, property->key() is the function to be
+      // loaded (stored in a context slot), so load this directly.
+      VisitForAccumulatorValue(property->key());
+      break;
+    }
+  }
+}
+
+void BytecodeGenerator::BuildPrivateGetterAccess(Register object,
+                                                 Register accessor_pair) {
+  RegisterAllocationScope scope(this);
+  Register accessor = register_allocator()->NewRegister();
+  RegisterList args = register_allocator()->NewRegisterList(1);
+
+  builder()
+      ->CallRuntime(Runtime::kLoadPrivateGetter, accessor_pair)
+      .StoreAccumulatorInRegister(accessor)
+      .MoveRegister(object, args[0])
+      .CallProperty(accessor, args,
+                    feedback_index(feedback_spec()->AddCallICSlot()));
+}
+
+void BytecodeGenerator::BuildPrivateSetterAccess(Register object,
+                                                 Register accessor_pair,
+                                                 Register value) {
+  RegisterAllocationScope scope(this);
+  Register accessor = register_allocator()->NewRegister();
+  RegisterList args = register_allocator()->NewRegisterList(2);
+
+  builder()
+      ->CallRuntime(Runtime::kLoadPrivateSetter, accessor_pair)
+      .StoreAccumulatorInRegister(accessor)
+      .MoveRegister(object, args[0])
+      .MoveRegister(value, args[1])
+      .CallProperty(accessor, args,
+                    feedback_index(feedback_spec()->AddCallICSlot()));
+}
+
+void BytecodeGenerator::BuildPrivateBrandCheck(Property* property,
+                                               Register object,
+                                               MessageTemplate tmpl) {
+  Variable* private_name = property->key()->AsVariableProxy()->var();
+  DCHECK(IsPrivateMethodOrAccessorVariableMode(private_name->mode()));
+  ClassScope* scope = private_name->scope()->AsClassScope();
+  if (private_name->is_static()) {
+    // For static private methods, the only valid receiver is the class.
+    // Load the class constructor.
+    if (scope->class_variable() == nullptr) {
+      // If the static private method has not been used used in source
+      // code (either explicitly or through the presence of eval), but is
+      // accessed by the debugger at runtime, reference to the class variable
+      // is not available since it was not be context-allocated. Therefore we
+      // can't build a branch check, and throw an ReferenceError as if the
+      // method was optimized away.
+      // TODO(joyee): get a reference to the class constructor through
+      // something other than scope->class_variable() in this scenario.
+      RegisterAllocationScope register_scope(this);
+      RegisterList args = register_allocator()->NewRegisterList(2);
+      builder()
+          ->LoadLiteral(Smi::FromEnum(
+              MessageTemplate::
+                  kInvalidUnusedPrivateStaticMethodAccessedByDebugger))
+          .StoreAccumulatorInRegister(args[0])
+          .LoadLiteral(private_name->raw_name())
+          .StoreAccumulatorInRegister(args[1])
+          .CallRuntime(Runtime::kNewError, args)
+          .Throw();
+    } else {
+      BuildVariableLoadForAccumulatorValue(scope->class_variable(),
+                                           HoleCheckMode::kElided);
+      BytecodeLabel return_check;
+      builder()->CompareReference(object).JumpIfTrue(
+          ToBooleanMode::kAlreadyBoolean, &return_check);
+      BuildInvalidPropertyAccess(tmpl, property);
+      builder()->Bind(&return_check);
+    }
+  } else {
+    BuildVariableLoadForAccumulatorValue(scope->brand(),
+                                         HoleCheckMode::kElided);
+    builder()->SetExpressionPosition(property);
+    builder()->LoadKeyedProperty(
+        object, feedback_index(feedback_spec()->AddKeyedLoadICSlot()));
   }
 }
 
@@ -4215,6 +4760,21 @@ void BytecodeGenerator::VisitKeyedSuperPropertyLoad(Property* property,
   }
 }
 
+template <typename ExpressionFunc>
+void BytecodeGenerator::BuildOptionalChain(ExpressionFunc expression_func) {
+  BytecodeLabel done;
+  OptionalChainNullLabelScope label_scope(this);
+  expression_func();
+  builder()->Jump(&done);
+  label_scope.labels()->Bind(builder());
+  builder()->LoadUndefined();
+  builder()->Bind(&done);
+}
+
+void BytecodeGenerator::VisitOptionalChain(OptionalChain* expr) {
+  BuildOptionalChain([&]() { VisitForAccumulatorValue(expr->expression()); });
+}
+
 void BytecodeGenerator::VisitProperty(Property* expr) {
   AssignType property_kind = Property::GetAssignType(expr);
   if (property_kind != NAMED_SUPER_PROPERTY &&
@@ -4224,11 +4784,6 @@ void BytecodeGenerator::VisitProperty(Property* expr) {
   } else {
     VisitPropertyLoad(Register::invalid_value(), expr);
   }
-}
-
-void BytecodeGenerator::VisitResolvedProperty(ResolvedProperty* expr) {
-  // Handled by VisitCall().
-  UNREACHABLE();
 }
 
 void BytecodeGenerator::VisitArguments(const ZonePtrList<Expression>* args,
@@ -4268,17 +4823,11 @@ void BytecodeGenerator::VisitCall(Call* expr) {
   // the semantics of the underlying call type.
   switch (call_type) {
     case Call::NAMED_PROPERTY_CALL:
-    case Call::KEYED_PROPERTY_CALL: {
+    case Call::KEYED_PROPERTY_CALL:
+    case Call::PRIVATE_CALL: {
       Property* property = callee_expr->AsProperty();
       VisitAndPushIntoRegisterList(property->obj(), &args);
       VisitPropertyLoadForRegister(args.last_register(), property, callee);
-      break;
-    }
-    case Call::RESOLVED_PROPERTY_CALL: {
-      ResolvedProperty* resolved = callee_expr->AsResolvedProperty();
-      VisitAndPushIntoRegisterList(resolved->object(), &args);
-      VisitForAccumulatorValue(resolved->property());
-      builder()->StoreAccumulatorInRegister(callee);
       break;
     }
     case Call::GLOBAL_CALL: {
@@ -4343,16 +4892,31 @@ void BytecodeGenerator::VisitCall(Call* expr) {
       builder()->StoreAccumulatorInRegister(callee);
       break;
     }
+    case Call::NAMED_OPTIONAL_CHAIN_PROPERTY_CALL:
+    case Call::KEYED_OPTIONAL_CHAIN_PROPERTY_CALL: {
+      OptionalChain* chain = callee_expr->AsOptionalChain();
+      Property* property = chain->expression()->AsProperty();
+      BuildOptionalChain([&]() {
+        VisitAndPushIntoRegisterList(property->obj(), &args);
+        VisitPropertyLoadForRegister(args.last_register(), property, callee);
+      });
+      break;
+    }
     case Call::SUPER_CALL:
       UNREACHABLE();
-      break;
+  }
+
+  if (expr->is_optional_chain_link()) {
+    DCHECK_NOT_NULL(optional_chaining_null_labels_);
+    builder()->LoadAccumulatorWithRegister(callee).JumpIfUndefinedOrNull(
+        optional_chaining_null_labels_->New());
   }
 
   // Evaluate all arguments to the function call and store in sequential args
   // registers.
   VisitArguments(expr->arguments(), &args);
-  int reciever_arg_count = implicit_undefined_receiver ? 0 : 1;
-  CHECK_EQ(reciever_arg_count + expr->arguments()->length(),
+  int receiver_arg_count = implicit_undefined_receiver ? 0 : 1;
+  CHECK_EQ(receiver_arg_count + expr->arguments()->length(),
            args.register_count());
 
   // Resolve callee for a potential direct eval call. This block will mutate the
@@ -4362,7 +4926,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
     // Set up arguments for ResolvePossiblyDirectEval by copying callee, source
     // strings and function closure, and loading language and
     // position.
-    Register first_arg = args[reciever_arg_count];
+    Register first_arg = args[receiver_arg_count];
     RegisterList runtime_call_args = register_allocator()->NewRegisterList(6);
     builder()
         ->MoveRegister(callee, runtime_call_args[0])
@@ -4391,8 +4955,7 @@ void BytecodeGenerator::VisitCall(Call* expr) {
     DCHECK(!implicit_undefined_receiver);
     builder()->CallNoFeedback(callee, args);
   } else if (call_type == Call::NAMED_PROPERTY_CALL ||
-             call_type == Call::KEYED_PROPERTY_CALL ||
-             call_type == Call::RESOLVED_PROPERTY_CALL) {
+             call_type == Call::KEYED_PROPERTY_CALL) {
     DCHECK(!implicit_undefined_receiver);
     builder()->CallProperty(callee, args,
                             feedback_index(feedback_spec()->AddCallICSlot()));
@@ -4475,6 +5038,13 @@ void BytecodeGenerator::VisitCallSuper(Call* expr) {
     BuildVariableAssignment(var, Token::INIT, HoleCheckMode::kRequired);
   }
 
+  Register instance = register_allocator()->NewRegister();
+  builder()->StoreAccumulatorInRegister(instance);
+
+  if (info()->literal()->class_scope_has_private_brand()) {
+    BuildPrivateBrandInitialization(instance);
+  }
+
   // The derived constructor has the correct bit set always, so we
   // don't emit code to load and call the initializer if not
   // required.
@@ -4487,11 +5057,10 @@ void BytecodeGenerator::VisitCallSuper(Call* expr) {
   // if required.
   if (info()->literal()->requires_instance_members_initializer() ||
       !IsDerivedConstructor(info()->literal()->kind())) {
-    Register instance = register_allocator()->NewRegister();
-    builder()->StoreAccumulatorInRegister(instance);
     BuildInstanceMemberInitialization(this_function, instance);
-    builder()->LoadAccumulatorWithRegister(instance);
   }
+
+  builder()->LoadAccumulatorWithRegister(instance);
 }
 
 void BytecodeGenerator::VisitCallNew(CallNew* expr) {
@@ -4599,9 +5168,33 @@ void BytecodeGenerator::VisitDelete(UnaryOperation* unary) {
     // Delete of an object property is allowed both in sloppy
     // and strict modes.
     Property* property = expr->AsProperty();
+    DCHECK(!property->IsPrivateReference());
     Register object = VisitForRegisterValue(property->obj());
     VisitForAccumulatorValue(property->key());
     builder()->Delete(object, language_mode());
+  } else if (expr->IsOptionalChain()) {
+    Expression* expr_inner = expr->AsOptionalChain()->expression();
+    if (expr_inner->IsProperty()) {
+      Property* property = expr_inner->AsProperty();
+      DCHECK(!property->IsPrivateReference());
+      BytecodeLabel done;
+      OptionalChainNullLabelScope label_scope(this);
+      VisitForAccumulatorValue(property->obj());
+      if (property->is_optional_chain_link()) {
+        builder()->JumpIfUndefinedOrNull(label_scope.labels()->New());
+      }
+      Register object = register_allocator()->NewRegister();
+      builder()->StoreAccumulatorInRegister(object);
+      VisitForAccumulatorValue(property->key());
+      builder()->Delete(object, language_mode());
+      builder()->Jump(&done);
+      label_scope.labels()->Bind(builder());
+      builder()->LoadTrue();
+      builder()->Bind(&done);
+    } else {
+      VisitForEffect(expr);
+      builder()->LoadTrue();
+    }
   } else if (expr->IsVariableProxy() &&
              !expr->AsVariableProxy()->is_new_target()) {
     // Delete of an unqualified identifier is allowed in sloppy mode but is
@@ -4611,7 +5204,8 @@ void BytecodeGenerator::VisitDelete(UnaryOperation* unary) {
     switch (variable->location()) {
       case VariableLocation::PARAMETER:
       case VariableLocation::LOCAL:
-      case VariableLocation::CONTEXT: {
+      case VariableLocation::CONTEXT:
+      case VariableLocation::REPL_GLOBAL: {
         // Deleting local var/let/const, context variables, and arguments
         // does not have any effect.
         builder()->LoadFalse();
@@ -4632,7 +5226,9 @@ void BytecodeGenerator::VisitDelete(UnaryOperation* unary) {
             .CallRuntime(Runtime::kDeleteLookupSlot, name_reg);
         break;
       }
-      default:
+      case VariableLocation::MODULE:
+        // Modules are always in strict mode and unqualified identifers are not
+        // allowed in strict mode.
         UNREACHABLE();
     }
   } else {
@@ -4706,6 +5302,29 @@ void BytecodeGenerator::VisitCountOperation(CountOperation* expr) {
       builder()->CallRuntime(Runtime::kLoadKeyedFromSuper, load_super_args);
       break;
     }
+    case PRIVATE_METHOD: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateMethodWrite,
+                                 property);
+      return;
+    }
+    case PRIVATE_GETTER_ONLY: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateSetterAccess,
+                                 property);
+      return;
+    }
+    case PRIVATE_SETTER_ONLY: {
+      BuildInvalidPropertyAccess(MessageTemplate::kInvalidPrivateGetterAccess,
+                                 property);
+      return;
+    }
+    case PRIVATE_GETTER_AND_SETTER: {
+      object = VisitForRegisterValue(property->obj());
+      key = VisitForRegisterValue(property->key());
+      BuildPrivateBrandCheck(property, object,
+                             MessageTemplate::kInvalidPrivateMemberRead);
+      BuildPrivateGetterAccess(object, key);
+      break;
+    }
   }
 
   // Save result for postfix expressions.
@@ -4772,6 +5391,20 @@ void BytecodeGenerator::VisitCountOperation(CountOperation* expr) {
           .CallRuntime(Runtime::kStoreKeyedToSuper, super_property_args);
       break;
     }
+    case PRIVATE_SETTER_ONLY:
+    case PRIVATE_GETTER_ONLY:
+    case PRIVATE_METHOD: {
+      UNREACHABLE();
+    }
+    case PRIVATE_GETTER_AND_SETTER: {
+      Register value = register_allocator()->NewRegister();
+      builder()->StoreAccumulatorInRegister(value);
+      BuildPrivateSetterAccess(object, key, value);
+      if (!execution_result()->IsEffect()) {
+        builder()->LoadAccumulatorWithRegister(value);
+      }
+      break;
+    }
   }
 
   // Restore old value for postfix expressions.
@@ -4791,6 +5424,9 @@ void BytecodeGenerator::VisitBinaryOperation(BinaryOperation* binop) {
     case Token::AND:
       VisitLogicalAndExpression(binop);
       break;
+    case Token::NULLISH:
+      VisitNullishExpression(binop);
+      break;
     default:
       VisitArithmeticExpression(binop);
       break;
@@ -4807,6 +5443,9 @@ void BytecodeGenerator::VisitNaryOperation(NaryOperation* expr) {
       break;
     case Token::AND:
       VisitNaryLogicalAndExpression(expr);
+      break;
+    case Token::NULLISH:
+      VisitNaryNullishExpression(expr);
       break;
     default:
       VisitNaryArithmeticExpression(expr);
@@ -4950,30 +5589,29 @@ void BytecodeGenerator::VisitImportCallExpression(ImportCallExpression* expr) {
 }
 
 void BytecodeGenerator::BuildGetIterator(IteratorType hint) {
-  RegisterList args = register_allocator()->NewRegisterList(1);
-  Register method = register_allocator()->NewRegister();
-  Register obj = args[0];
-
   if (hint == IteratorType::kAsync) {
+    RegisterAllocationScope scope(this);
+
+    Register obj = register_allocator()->NewRegister();
+    Register method = register_allocator()->NewRegister();
+
     // Set method to GetMethod(obj, @@asyncIterator)
     builder()->StoreAccumulatorInRegister(obj).LoadAsyncIteratorProperty(
         obj, feedback_index(feedback_spec()->AddLoadICSlot()));
 
-    BytecodeLabel async_iterator_undefined, async_iterator_null, done;
-    // TODO(ignition): Add a single opcode for JumpIfNullOrUndefined
-    builder()->JumpIfUndefined(&async_iterator_undefined);
-    builder()->JumpIfNull(&async_iterator_null);
+    BytecodeLabel async_iterator_undefined, done;
+    builder()->JumpIfUndefinedOrNull(&async_iterator_undefined);
 
     // Let iterator be Call(method, obj)
     builder()->StoreAccumulatorInRegister(method).CallProperty(
-        method, args, feedback_index(feedback_spec()->AddCallICSlot()));
+        method, RegisterList(obj),
+        feedback_index(feedback_spec()->AddCallICSlot()));
 
     // If Type(iterator) is not Object, throw a TypeError exception.
     builder()->JumpIfJSReceiver(&done);
     builder()->CallRuntime(Runtime::kThrowSymbolAsyncIteratorInvalid);
 
     builder()->Bind(&async_iterator_undefined);
-    builder()->Bind(&async_iterator_null);
     // If method is undefined,
     //     Let syncMethod be GetMethod(obj, @@iterator)
     builder()
@@ -4982,7 +5620,7 @@ void BytecodeGenerator::BuildGetIterator(IteratorType hint) {
         .StoreAccumulatorInRegister(method);
 
     //     Let syncIterator be Call(syncMethod, obj)
-    builder()->CallProperty(method, args,
+    builder()->CallProperty(method, RegisterList(obj),
                             feedback_index(feedback_spec()->AddCallICSlot()));
 
     // Return CreateAsyncFromSyncIterator(syncIterator)
@@ -4993,16 +5631,20 @@ void BytecodeGenerator::BuildGetIterator(IteratorType hint) {
 
     builder()->Bind(&done);
   } else {
-    // Let method be GetMethod(obj, @@iterator).
-    builder()
-        ->StoreAccumulatorInRegister(obj)
-        .LoadIteratorProperty(obj,
-                              feedback_index(feedback_spec()->AddLoadICSlot()))
-        .StoreAccumulatorInRegister(method);
+    {
+      RegisterAllocationScope scope(this);
 
-    // Let iterator be Call(method, obj).
-    builder()->CallProperty(method, args,
-                            feedback_index(feedback_spec()->AddCallICSlot()));
+      Register obj = register_allocator()->NewRegister();
+      int load_feedback_index =
+          feedback_index(feedback_spec()->AddLoadICSlot());
+      int call_feedback_index =
+          feedback_index(feedback_spec()->AddCallICSlot());
+
+      // Let method be GetMethod(obj, @@iterator) and
+      // iterator be Call(method, obj).
+      builder()->StoreAccumulatorInRegister(obj).GetIterator(
+          obj, load_feedback_index, call_feedback_index);
+    }
 
     // If Type(iterator) is not Object, throw a TypeError exception.
     BytecodeLabel no_type_error;
@@ -5063,8 +5705,7 @@ void BytecodeGenerator::BuildCallIteratorMethod(Register iterator,
   FeedbackSlot slot = feedback_spec()->AddLoadICSlot();
   builder()
       ->LoadNamedProperty(iterator, method_name, feedback_index(slot))
-      .JumpIfUndefined(if_notcalled->New())
-      .JumpIfNull(if_notcalled->New())
+      .JumpIfUndefinedOrNull(if_notcalled->New())
       .StoreAccumulatorInRegister(method)
       .CallProperty(method, receiver_and_args,
                     feedback_index(feedback_spec()->AddCallICSlot()))
@@ -5197,14 +5838,16 @@ void BytecodeGenerator::VisitNaryCommaExpression(NaryOperation* expr) {
 void BytecodeGenerator::VisitLogicalTestSubExpression(
     Token::Value token, Expression* expr, BytecodeLabels* then_labels,
     BytecodeLabels* else_labels, int coverage_slot) {
-  DCHECK(token == Token::OR || token == Token::AND);
+  DCHECK(token == Token::OR || token == Token::AND || token == Token::NULLISH);
 
   BytecodeLabels test_next(zone());
   if (token == Token::OR) {
     VisitForTest(expr, then_labels, &test_next, TestFallthrough::kElse);
-  } else {
-    DCHECK_EQ(Token::AND, token);
+  } else if (token == Token::AND) {
     VisitForTest(expr, &test_next, else_labels, TestFallthrough::kThen);
+  } else {
+    DCHECK_EQ(Token::NULLISH, token);
+    VisitForNullishTest(expr, then_labels, &test_next, else_labels);
   }
   test_next.Bind(builder());
 
@@ -5214,7 +5857,7 @@ void BytecodeGenerator::VisitLogicalTestSubExpression(
 void BytecodeGenerator::VisitLogicalTest(Token::Value token, Expression* left,
                                          Expression* right,
                                          int right_coverage_slot) {
-  DCHECK(token == Token::OR || token == Token::AND);
+  DCHECK(token == Token::OR || token == Token::AND || token == Token::NULLISH);
   TestResultScope* test_result = execution_result()->AsTest();
   BytecodeLabels* then_labels = test_result->then_labels();
   BytecodeLabels* else_labels = test_result->else_labels();
@@ -5229,7 +5872,7 @@ void BytecodeGenerator::VisitLogicalTest(Token::Value token, Expression* left,
 void BytecodeGenerator::VisitNaryLogicalTest(
     Token::Value token, NaryOperation* expr,
     const NaryCodeCoverageSlots* coverage_slots) {
-  DCHECK(token == Token::OR || token == Token::AND);
+  DCHECK(token == Token::OR || token == Token::AND || token == Token::NULLISH);
   DCHECK_GT(expr->subsequent_length(), 0);
 
   TestResultScope* test_result = execution_result()->AsTest();
@@ -5278,6 +5921,27 @@ bool BytecodeGenerator::VisitLogicalAndSubExpression(Expression* expr,
     TypeHint type_hint = VisitForAccumulatorValue(expr);
     builder()->JumpIfFalse(ToBooleanModeFromTypeHint(type_hint),
                            end_labels->New());
+  }
+
+  BuildIncrementBlockCoverageCounterIfEnabled(coverage_slot);
+
+  return false;
+}
+
+bool BytecodeGenerator::VisitNullishSubExpression(Expression* expr,
+                                                  BytecodeLabels* end_labels,
+                                                  int coverage_slot) {
+  if (expr->IsLiteralButNotNullOrUndefined()) {
+    VisitForAccumulatorValue(expr);
+    end_labels->Bind(builder());
+    return true;
+  } else if (!expr->IsNullOrUndefinedLiteral()) {
+    VisitForAccumulatorValue(expr);
+    BytecodeLabel is_null_or_undefined;
+    builder()
+        ->JumpIfUndefinedOrNull(&is_null_or_undefined)
+        .Jump(end_labels->New());
+    builder()->Bind(&is_null_or_undefined);
   }
 
   BuildIncrementBlockCoverageCounterIfEnabled(coverage_slot);
@@ -5407,49 +6071,91 @@ void BytecodeGenerator::VisitNaryLogicalAndExpression(NaryOperation* expr) {
   }
 }
 
+void BytecodeGenerator::VisitNullishExpression(BinaryOperation* binop) {
+  Expression* left = binop->left();
+  Expression* right = binop->right();
+
+  int right_coverage_slot =
+      AllocateBlockCoverageSlotIfEnabled(binop, SourceRangeKind::kRight);
+
+  if (execution_result()->IsTest()) {
+    TestResultScope* test_result = execution_result()->AsTest();
+    if (left->IsLiteralButNotNullOrUndefined() && left->ToBooleanIsTrue()) {
+      builder()->Jump(test_result->NewThenLabel());
+    } else if (left->IsNullOrUndefinedLiteral() &&
+               right->IsNullOrUndefinedLiteral()) {
+      BuildIncrementBlockCoverageCounterIfEnabled(right_coverage_slot);
+      builder()->Jump(test_result->NewElseLabel());
+    } else {
+      VisitLogicalTest(Token::NULLISH, left, right, right_coverage_slot);
+    }
+    test_result->SetResultConsumedByTest();
+  } else {
+    BytecodeLabels end_labels(zone());
+    if (VisitNullishSubExpression(left, &end_labels, right_coverage_slot)) {
+      return;
+    }
+    VisitForAccumulatorValue(right);
+    end_labels.Bind(builder());
+  }
+}
+
+void BytecodeGenerator::VisitNaryNullishExpression(NaryOperation* expr) {
+  Expression* first = expr->first();
+  DCHECK_GT(expr->subsequent_length(), 0);
+
+  NaryCodeCoverageSlots coverage_slots(this, expr);
+
+  if (execution_result()->IsTest()) {
+    TestResultScope* test_result = execution_result()->AsTest();
+    if (first->IsLiteralButNotNullOrUndefined() && first->ToBooleanIsTrue()) {
+      builder()->Jump(test_result->NewThenLabel());
+    } else {
+      VisitNaryLogicalTest(Token::NULLISH, expr, &coverage_slots);
+    }
+    test_result->SetResultConsumedByTest();
+  } else {
+    BytecodeLabels end_labels(zone());
+    if (VisitNullishSubExpression(first, &end_labels,
+                                  coverage_slots.GetSlotFor(0))) {
+      return;
+    }
+    for (size_t i = 0; i < expr->subsequent_length() - 1; ++i) {
+      if (VisitNullishSubExpression(expr->subsequent(i), &end_labels,
+                                    coverage_slots.GetSlotFor(i + 1))) {
+        return;
+      }
+    }
+    // We have to visit the last value even if it's nullish, because we need its
+    // actual value.
+    VisitForAccumulatorValue(expr->subsequent(expr->subsequent_length() - 1));
+    end_labels.Bind(builder());
+  }
+}
+
 void BytecodeGenerator::BuildNewLocalActivationContext() {
   ValueResultScope value_execution_result(this);
   Scope* scope = closure_scope();
   DCHECK_EQ(current_scope(), closure_scope());
 
   // Create the appropriate context.
-  if (scope->is_script_scope()) {
-    Register scope_reg = register_allocator()->NewRegister();
-    builder()
-        ->LoadLiteral(scope)
-        .StoreAccumulatorInRegister(scope_reg)
-        .CallRuntime(Runtime::kNewScriptContext, scope_reg);
-  } else if (scope->is_module_scope()) {
-    // We don't need to do anything for the outer script scope.
-    DCHECK(scope->outer_scope()->is_script_scope());
-
-    // A JSFunction representing a module is called with the module object as
-    // its sole argument.
-    RegisterList args = register_allocator()->NewRegisterList(2);
-    builder()
-        ->MoveRegister(builder()->Parameter(0), args[0])
-        .LoadLiteral(scope)
-        .StoreAccumulatorInRegister(args[1])
-        .CallRuntime(Runtime::kPushModuleContext, args);
-  } else {
-    DCHECK(scope->is_function_scope() || scope->is_eval_scope());
-    int slot_count = scope->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
-    if (slot_count <= ConstructorBuiltins::MaximumFunctionContextSlots()) {
-      switch (scope->scope_type()) {
-        case EVAL_SCOPE:
-          builder()->CreateEvalContext(scope, slot_count);
-          break;
-        case FUNCTION_SCOPE:
-          builder()->CreateFunctionContext(scope, slot_count);
-          break;
-        default:
-          UNREACHABLE();
-      }
-    } else {
-      Register arg = register_allocator()->NewRegister();
-      builder()->LoadLiteral(scope).StoreAccumulatorInRegister(arg).CallRuntime(
-          Runtime::kNewFunctionContext, arg);
+  DCHECK(scope->is_function_scope() || scope->is_eval_scope());
+  int slot_count = scope->num_heap_slots() - Context::MIN_CONTEXT_SLOTS;
+  if (slot_count <= ConstructorBuiltins::MaximumFunctionContextSlots()) {
+    switch (scope->scope_type()) {
+      case EVAL_SCOPE:
+        builder()->CreateEvalContext(scope, slot_count);
+        break;
+      case FUNCTION_SCOPE:
+        builder()->CreateFunctionContext(scope, slot_count);
+        break;
+      default:
+        UNREACHABLE();
     }
+  } else {
+    Register arg = register_allocator()->NewRegister();
+    builder()->LoadLiteral(scope).StoreAccumulatorInRegister(arg).CallRuntime(
+        Runtime::kNewFunctionContext, arg);
   }
 }
 
@@ -5504,8 +6210,9 @@ void BytecodeGenerator::BuildNewLocalCatchContext(Scope* scope) {
   builder()->CreateCatchContext(exception, scope);
 }
 
-void BytecodeGenerator::VisitObjectLiteralAccessor(
-    Register home_object, ObjectLiteralProperty* property, Register value_out) {
+void BytecodeGenerator::VisitLiteralAccessor(Register home_object,
+                                             LiteralProperty* property,
+                                             Register value_out) {
   if (property == nullptr) {
     builder()->LoadNull().StoreAccumulatorInRegister(value_out);
   } else {
@@ -5582,8 +6289,9 @@ void BytecodeGenerator::BuildGeneratorObjectVariableInitialization() {
   RegisterAllocationScope register_scope(this);
   RegisterList args = register_allocator()->NewRegisterList(2);
   Runtime::FunctionId function_id =
-      (IsAsyncFunction(info()->literal()->kind()) &&
-       !IsAsyncGeneratorFunction(info()->literal()->kind()))
+      ((IsAsyncFunction(info()->literal()->kind()) &&
+        !IsAsyncGeneratorFunction(info()->literal()->kind())) ||
+       IsAsyncModule(info()->literal()->kind()))
           ? Runtime::kInlineAsyncFunctionEnter
           : Runtime::kInlineCreateJSGeneratorObject;
   builder()
@@ -5749,6 +6457,25 @@ void BytecodeGenerator::VisitForTest(Expression* expr,
     BuildTest(ToBooleanModeFromTypeHint(type_hint), then_labels, else_labels,
               fallthrough);
   }
+}
+
+// Visits the expression |expr| for testing its nullish value and jumping to the
+// |then| or |other| label depending on value and short-circuit semantics
+void BytecodeGenerator::VisitForNullishTest(Expression* expr,
+                                            BytecodeLabels* then_labels,
+                                            BytecodeLabels* test_next_labels,
+                                            BytecodeLabels* else_labels) {
+  // Nullish short circuits on undefined or null, otherwise we fall back to
+  // BuildTest with no fallthrough.
+  // TODO(joshualitt): We should do this in a TestResultScope.
+  TypeHint type_hint = VisitForAccumulatorValue(expr);
+  ToBooleanMode mode = ToBooleanModeFromTypeHint(type_hint);
+
+  // Skip the nullish shortcircuit if we already have a boolean.
+  if (mode != ToBooleanMode::kAlreadyBoolean) {
+    builder()->JumpIfUndefinedOrNull(test_next_labels->New());
+  }
+  BuildTest(mode, then_labels, else_labels, TestFallthrough::kNone);
 }
 
 void BytecodeGenerator::VisitInSameTestExecutionScope(Expression* expr) {

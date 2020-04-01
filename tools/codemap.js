@@ -140,7 +140,7 @@ CodeMap.prototype.addStaticCode = function(
 CodeMap.prototype.markPages_ = function(start, end) {
   for (var addr = start; addr <= end;
        addr += CodeMap.PAGE_SIZE) {
-    this.pages_[addr >>> CodeMap.PAGE_ALIGNMENT] = 1;
+    this.pages_[(addr / CodeMap.PAGE_SIZE)|0] = 1;
   }
 };
 
@@ -178,15 +178,6 @@ CodeMap.prototype.findInTree_ = function(tree, addr) {
   return node && this.isAddressBelongsTo_(addr, node) ? node : null;
 };
 
-/**
- * Embedded builtins are located in the shared library but should be attributed
- * according to the dynamically generated code-create events.
- *
- * @private
- */
-CodeMap.prototype.isIsolateIndependentBuiltin_ = function(entry) {
-  return entry.type == "CPP" && /v8_\w*embedded_blob_/.test(entry.name);
-};
 
 /**
  * Finds a code entry that contains the specified address. Both static and
@@ -196,7 +187,7 @@ CodeMap.prototype.isIsolateIndependentBuiltin_ = function(entry) {
  * @param {number} addr Address.
  */
 CodeMap.prototype.findAddress = function(addr) {
-  var pageAddr = addr >>> CodeMap.PAGE_ALIGNMENT;
+  var pageAddr = (addr / CodeMap.PAGE_SIZE)|0;
   if (pageAddr in this.pages_) {
     // Static code entries can contain "holes" of unnamed code.
     // In this case, the whole library is assigned to this address.
@@ -205,10 +196,7 @@ CodeMap.prototype.findAddress = function(addr) {
       result = this.findInTree_(this.libraries_, addr);
       if (!result) return null;
     }
-    if (!this.isIsolateIndependentBuiltin_(result.value)) {
-      // Embedded builtins are handled in the following dynamic section.
-      return { entry : result.value, offset : addr - result.key };
-    }
+    return { entry : result.value, offset : addr - result.key };
   }
   var min = this.dynamics_.findMin();
   var max = this.dynamics_.findMax();

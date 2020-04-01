@@ -5,10 +5,10 @@
 #ifndef V8_REGEXP_REGEXP_AST_H_
 #define V8_REGEXP_REGEXP_AST_H_
 
-#include "src/objects.h"
 #include "src/objects/js-regexp.h"
+#include "src/objects/objects.h"
 #include "src/objects/string.h"
-#include "src/utils.h"
+#include "src/utils/utils.h"
 #include "src/zone/zone-containers.h"
 #include "src/zone/zone.h"
 
@@ -50,7 +50,7 @@ class RegExpVisitor {
 // A simple closed interval.
 class Interval {
  public:
-  Interval() : from_(kNone), to_(kNone) {}
+  Interval() : from_(kNone), to_(kNone - 1) {}  // '- 1' for branchless size().
   Interval(int from, int to) : from_(from), to_(to) {}
   Interval Union(Interval that) {
     if (that.from_ == kNone)
@@ -60,12 +60,16 @@ class Interval {
     else
       return Interval(Min(from_, that.from_), Max(to_, that.to_));
   }
+
   bool Contains(int value) { return (from_ <= value) && (value <= to_); }
   bool is_empty() { return from_ == kNone; }
   int from() const { return from_; }
   int to() const { return to_; }
+  int size() const { return to_ - from_ + 1; }
+
   static Interval Empty() { return Interval(); }
-  static const int kNone = -1;
+
+  static constexpr int kNone = -1;
 
  private:
   int from_;
@@ -268,12 +272,13 @@ class RegExpAlternative final : public RegExpTree {
 class RegExpAssertion final : public RegExpTree {
  public:
   enum AssertionType {
-    START_OF_LINE,
-    START_OF_INPUT,
-    END_OF_LINE,
-    END_OF_INPUT,
-    BOUNDARY,
-    NON_BOUNDARY
+    START_OF_LINE = 0,
+    START_OF_INPUT = 1,
+    END_OF_LINE = 2,
+    END_OF_INPUT = 3,
+    BOUNDARY = 4,
+    NON_BOUNDARY = 5,
+    LAST_TYPE = NON_BOUNDARY,
   };
   RegExpAssertion(AssertionType type, JSRegExp::Flags flags)
       : assertion_type_(type), flags_(flags) {}
@@ -285,7 +290,8 @@ class RegExpAssertion final : public RegExpTree {
   bool IsAnchoredAtEnd() override;
   int min_match() override { return 0; }
   int max_match() override { return 0; }
-  AssertionType assertion_type() { return assertion_type_; }
+  AssertionType assertion_type() const { return assertion_type_; }
+  JSRegExp::Flags flags() const { return flags_; }
 
  private:
   const AssertionType assertion_type_;
@@ -457,7 +463,11 @@ class RegExpQuantifier final : public RegExpTree {
 class RegExpCapture final : public RegExpTree {
  public:
   explicit RegExpCapture(int index)
-      : body_(nullptr), index_(index), name_(nullptr) {}
+      : body_(nullptr),
+        index_(index),
+        min_match_(0),
+        max_match_(0),
+        name_(nullptr) {}
   void* Accept(RegExpVisitor* visitor, void* data) override;
   RegExpNode* ToNode(RegExpCompiler* compiler, RegExpNode* on_success) override;
   static RegExpNode* ToNode(RegExpTree* body, int index,
@@ -467,11 +477,15 @@ class RegExpCapture final : public RegExpTree {
   bool IsAnchoredAtEnd() override;
   Interval CaptureRegisters() override;
   bool IsCapture() override;
-  int min_match() override { return body_->min_match(); }
-  int max_match() override { return body_->max_match(); }
+  int min_match() override { return min_match_; }
+  int max_match() override { return max_match_; }
   RegExpTree* body() { return body_; }
-  void set_body(RegExpTree* body) { body_ = body; }
-  int index() { return index_; }
+  void set_body(RegExpTree* body) {
+    body_ = body;
+    min_match_ = body->min_match();
+    max_match_ = body->max_match();
+  }
+  int index() const { return index_; }
   const ZoneVector<uc16>* name() const { return name_; }
   void set_name(const ZoneVector<uc16>* name) { name_ = name; }
   static int StartRegister(int index) { return index * 2; }
@@ -480,12 +494,17 @@ class RegExpCapture final : public RegExpTree {
  private:
   RegExpTree* body_;
   int index_;
+  int min_match_;
+  int max_match_;
   const ZoneVector<uc16>* name_;
 };
 
 class RegExpGroup final : public RegExpTree {
  public:
-  explicit RegExpGroup(RegExpTree* body) : body_(body) {}
+  explicit RegExpGroup(RegExpTree* body)
+      : body_(body),
+        min_match_(body->min_match()),
+        max_match_(body->max_match()) {}
   void* Accept(RegExpVisitor* visitor, void* data) override;
   RegExpNode* ToNode(RegExpCompiler* compiler,
                      RegExpNode* on_success) override {
@@ -495,13 +514,15 @@ class RegExpGroup final : public RegExpTree {
   bool IsAnchoredAtStart() override { return body_->IsAnchoredAtStart(); }
   bool IsAnchoredAtEnd() override { return body_->IsAnchoredAtEnd(); }
   bool IsGroup() override;
-  int min_match() override { return body_->min_match(); }
-  int max_match() override { return body_->max_match(); }
+  int min_match() override { return min_match_; }
+  int max_match() override { return max_match_; }
   Interval CaptureRegisters() override { return body_->CaptureRegisters(); }
   RegExpTree* body() { return body_; }
 
  private:
   RegExpTree* body_;
+  int min_match_;
+  int max_match_;
 };
 
 class RegExpLookaround final : public RegExpTree {

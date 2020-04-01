@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/hash-seed-inl.h"
 #include "src/interpreter/bytecode-array-builder.h"
 #include "src/interpreter/bytecode-array-iterator.h"
-#include "src/objects-inl.h"
+#include "src/numbers/hash-seed-inl.h"
+#include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "test/unittests/interpreter/bytecode-utils.h"
 #include "test/unittests/test-utils.h"
@@ -53,10 +53,8 @@ TEST_F(BytecodeArrayIteratorTest, IteratesBytecodeArray) {
       .LoadLiteral(zero)
       .StoreAccumulatorInRegister(reg_0)
       .LoadLiteral(smi_0)
-      .StackCheck(0)
       .StoreAccumulatorInRegister(reg_0)
       .LoadLiteral(smi_1)
-      .StackCheck(1)
       .StoreAccumulatorInRegister(reg_1)
       .LoadAccumulatorWithRegister(reg_0)
       .BinaryOperation(Token::Value::ADD, reg_0, 2)
@@ -81,7 +79,8 @@ TEST_F(BytecodeArrayIteratorTest, IteratesBytecodeArray) {
   EXPECT_EQ(iterator.current_bytecode(), Bytecode::kLdaConstant);
   EXPECT_EQ(iterator.current_offset(), offset);
   EXPECT_EQ(iterator.current_operand_scale(), OperandScale::kSingle);
-  EXPECT_EQ(iterator.GetConstantForIndexOperand(0)->Number(), heap_num_0);
+  EXPECT_EQ(iterator.GetConstantForIndexOperand(0, isolate())->Number(),
+            heap_num_0);
   CHECK(!iterator.done());
   offset += Bytecodes::Size(Bytecode::kLdaConstant, OperandScale::kSingle);
   iterator.Advance();
@@ -98,7 +97,8 @@ TEST_F(BytecodeArrayIteratorTest, IteratesBytecodeArray) {
   EXPECT_EQ(iterator.current_bytecode(), Bytecode::kLdaConstant);
   EXPECT_EQ(iterator.current_offset(), offset);
   EXPECT_EQ(iterator.current_operand_scale(), OperandScale::kSingle);
-  EXPECT_EQ(iterator.GetConstantForIndexOperand(0)->Number(), heap_num_1);
+  EXPECT_EQ(iterator.GetConstantForIndexOperand(0, isolate())->Number(),
+            heap_num_1);
   CHECK(!iterator.done());
   offset += Bytecodes::Size(Bytecode::kLdaConstant, OperandScale::kSingle);
   iterator.Advance();
@@ -136,14 +136,6 @@ TEST_F(BytecodeArrayIteratorTest, IteratesBytecodeArray) {
   offset += Bytecodes::Size(Bytecode::kLdaSmi, OperandScale::kSingle);
   iterator.Advance();
 
-  EXPECT_EQ(iterator.current_bytecode(), Bytecode::kStackCheck);
-  EXPECT_EQ(iterator.current_offset(), offset);
-  EXPECT_EQ(iterator.current_operand_scale(), OperandScale::kSingle);
-  EXPECT_EQ(Bytecodes::NumberOfOperands(iterator.current_bytecode()), 0);
-  CHECK(!iterator.done());
-  offset += Bytecodes::Size(Bytecode::kStackCheck, OperandScale::kSingle);
-  iterator.Advance();
-
   EXPECT_EQ(iterator.current_bytecode(), Bytecode::kStar);
   EXPECT_EQ(iterator.current_offset(), offset);
   EXPECT_EQ(iterator.current_operand_scale(), OperandScale::kSingle);
@@ -160,14 +152,6 @@ TEST_F(BytecodeArrayIteratorTest, IteratesBytecodeArray) {
   CHECK(!iterator.done());
   offset += Bytecodes::Size(Bytecode::kLdaSmi, OperandScale::kQuadruple) +
             kPrefixByteSize;
-  iterator.Advance();
-
-  EXPECT_EQ(iterator.current_bytecode(), Bytecode::kStackCheck);
-  EXPECT_EQ(iterator.current_offset(), offset);
-  EXPECT_EQ(iterator.current_operand_scale(), OperandScale::kSingle);
-  EXPECT_EQ(Bytecodes::NumberOfOperands(iterator.current_bytecode()), 0);
-  CHECK(!iterator.done());
-  offset += Bytecodes::Size(Bytecode::kStackCheck, OperandScale::kSingle);
   iterator.Advance();
 
   EXPECT_EQ(iterator.current_bytecode(), Bytecode::kStar);

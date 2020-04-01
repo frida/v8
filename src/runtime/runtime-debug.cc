@@ -4,22 +4,22 @@
 
 #include <vector>
 
-#include "src/arguments-inl.h"
-#include "src/compiler.h"
-#include "src/counters.h"
+#include "src/codegen/compiler.h"
+#include "src/common/globals.h"
 #include "src/debug/debug-coverage.h"
 #include "src/debug/debug-evaluate.h"
 #include "src/debug/debug-frames.h"
 #include "src/debug/debug-scopes.h"
 #include "src/debug/debug.h"
 #include "src/debug/liveedit.h"
-#include "src/frames-inl.h"
-#include "src/globals.h"
+#include "src/execution/arguments-inl.h"
+#include "src/execution/frames-inl.h"
+#include "src/execution/isolate-inl.h"
 #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
 #include "src/interpreter/bytecode-array-accessor.h"
 #include "src/interpreter/bytecodes.h"
 #include "src/interpreter/interpreter.h"
-#include "src/isolate-inl.h"
+#include "src/logging/counters.h"
 #include "src/objects/debug-objects-inl.h"
 #include "src/objects/heap-object-inl.h"
 #include "src/objects/js-collection-inl.h"
@@ -66,16 +66,19 @@ RUNTIME_FUNCTION_RETURN_PAIR(Runtime_DebugBreakOnBytecode) {
   DCHECK(it.frame()->is_interpreted());
   InterpretedFrame* interpreted_frame =
       reinterpret_cast<InterpretedFrame*>(it.frame());
-  SharedFunctionInfo shared = interpreted_frame->function()->shared();
-  BytecodeArray bytecode_array = shared->GetBytecodeArray();
-  int bytecode_offset = interpreted_frame->GetBytecodeOffset();
-  Bytecode bytecode = Bytecodes::FromByte(bytecode_array->get(bytecode_offset));
 
   bool side_effect_check_failed = false;
   if (isolate->debug_execution_mode() == DebugInfo::kSideEffects) {
     side_effect_check_failed =
         !isolate->debug()->PerformSideEffectCheckAtBytecode(interpreted_frame);
   }
+
+  // Make sure to only access these objects after the side effect check, as the
+  // check can allocate on failure.
+  SharedFunctionInfo shared = interpreted_frame->function().shared();
+  BytecodeArray bytecode_array = shared.GetBytecodeArray();
+  int bytecode_offset = interpreted_frame->GetBytecodeOffset();
+  Bytecode bytecode = Bytecodes::FromByte(bytecode_array.get(bytecode_offset));
 
   if (Bytecodes::Returns(bytecode)) {
     // If we are returning (or suspending), reset the bytecode array on the
@@ -98,7 +101,7 @@ RUNTIME_FUNCTION_RETURN_PAIR(Runtime_DebugBreakOnBytecode) {
                     Smi::FromInt(static_cast<uint8_t>(bytecode)));
   }
   Object interrupt_object = isolate->stack_guard()->HandleInterrupts();
-  if (interrupt_object->IsException(isolate)) {
+  if (interrupt_object.IsException(isolate)) {
     return MakePair(interrupt_object,
                     Smi::FromInt(static_cast<uint8_t>(bytecode)));
   }
@@ -112,13 +115,20 @@ RUNTIME_FUNCTION(Runtime_DebugBreakAtEntry) {
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
   USE(function);
 
-  DCHECK(function->shared()->HasDebugInfo());
-  DCHECK(function->shared()->GetDebugInfo()->BreakAtEntry());
+  DCHECK(function->shared().HasDebugInfo());
+  DCHECK(function->shared().GetDebugInfo().BreakAtEntry());
 
-  // Get the top-most JavaScript frame.
+  // Get the top-most JavaScript frame. This is the debug target function.
   JavaScriptFrameIterator it(isolate);
   DCHECK_EQ(*function, it.frame()->function());
-  isolate->debug()->Break(it.frame(), function);
+  // Check whether the next JS frame is closer than the last API entry.
+  // if yes, then the call to the debug target came from JavaScript. Otherwise,
+  // the call to the debug target came from API. Do not break for the latter.
+  it.Advance();
+  if (!it.done() &&
+      it.frame()->fp() < isolate->thread_local_top()->last_api_entry_) {
+    isolate->debug()->Break(it.frame(), function);
+  }
 
   return ReadOnlyRoots(isolate).undefined_value();
 }
@@ -147,7 +157,7 @@ static MaybeHandle<JSArray> GetIteratorInternalProperties(
   Factory* factory = isolate->factory();
   Handle<IteratorType> iterator = Handle<IteratorType>::cast(object);
   const char* kind = nullptr;
-  switch (iterator->map()->instance_type()) {
+  switch (iterator->map().instance_type()) {
     case JS_MAP_KEY_ITERATOR_TYPE:
       kind = "keys";
       break;
@@ -283,8 +293,9 @@ MaybeHandle<JSArray> Runtime::GetInternalProperties(Isolate* isolate,
     result->set(4, *is_revoked_str);
     result->set(5, isolate->heap()->ToBoolean(js_proxy->IsRevoked()));
     return factory->NewJSArrayWithElements(result);
-  } else if (object->IsJSValue()) {
-    Handle<JSValue> js_value = Handle<JSValue>::cast(object);
+  } else if (object->IsJSPrimitiveWrapper()) {
+    Handle<JSPrimitiveWrapper> js_value =
+        Handle<JSPrimitiveWrapper>::cast(object);
 
     Handle<FixedArray> result = factory->NewFixedArray(2);
     Handle<String> primitive_value =
@@ -300,14 +311,14 @@ RUNTIME_FUNCTION(Runtime_GetGeneratorScopeCount) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
 
-  if (!args[0]->IsJSGeneratorObject()) return Smi::kZero;
+  if (!args[0].IsJSGeneratorObject()) return Smi::zero();
 
   // Check arguments.
   CONVERT_ARG_HANDLE_CHECKED(JSGeneratorObject, gen, 0);
 
   // Only inspect suspended generator scopes.
   if (!gen->is_suspended()) {
-    return Smi::kZero;
+    return Smi::zero();
   }
 
   // Count the visible scopes.
@@ -323,7 +334,7 @@ RUNTIME_FUNCTION(Runtime_GetGeneratorScopeDetails) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
 
-  if (!args[0]->IsJSGeneratorObject()) {
+  if (!args[0].IsJSGeneratorObject()) {
     return ReadOnlyRoots(isolate).undefined_value();
   }
 
@@ -448,8 +459,8 @@ RUNTIME_FUNCTION(Runtime_FunctionGetInferredName) {
   DCHECK_EQ(1, args.length());
 
   CONVERT_ARG_CHECKED(Object, f, 0);
-  if (f->IsJSFunction()) {
-    return JSFunction::cast(f)->shared()->inferred_name();
+  if (f.IsJSFunction()) {
+    return JSFunction::cast(f).shared().inferred_name();
   }
   return ReadOnlyRoots(isolate).empty_string();
 }
@@ -483,20 +494,19 @@ int ScriptLinePosition(Handle<Script> script, int line) {
   if (line < 0) return -1;
 
   if (script->type() == Script::TYPE_WASM) {
-    return WasmModuleObject::cast(script->wasm_module_object())
-        ->GetFunctionOffset(line);
+    return GetWasmFunctionOffset(script->wasm_native_module()->module(), line);
   }
 
-  Script::InitLineEnds(script);
+  Script::InitLineEnds(script->GetIsolate(), script);
 
   FixedArray line_ends_array = FixedArray::cast(script->line_ends());
-  const int line_count = line_ends_array->length();
+  const int line_count = line_ends_array.length();
   DCHECK_LT(0, line_count);
 
   if (line == 0) return 0;
   // If line == line_count, we return the first position beyond the last line.
   if (line > line_count) return -1;
-  return Smi::ToInt(line_ends_array->get(line - 1)) + 1;
+  return Smi::ToInt(line_ends_array.get(line - 1)) + 1;
 }
 
 int ScriptLinePositionWithOffset(Handle<Script> script, int line, int offset) {
@@ -578,7 +588,7 @@ bool GetScriptById(Isolate* isolate, int needle, Handle<Script>* result) {
   Script::Iterator iterator(isolate);
   for (Script script = iterator.Next(); !script.is_null();
        script = iterator.Next()) {
-    if (script->id() == needle) {
+    if (script.id() == needle) {
       *result = handle(script, isolate);
       return true;
     }
@@ -687,7 +697,7 @@ RUNTIME_FUNCTION(Runtime_DebugCollectCoverage) {
   int num_scripts = static_cast<int>(coverage->size());
   // Prepare property keys.
   Handle<FixedArray> scripts_array = factory->NewFixedArray(num_scripts);
-  Handle<String> script_string = factory->NewStringFromStaticChars("script");
+  Handle<String> script_string = factory->script_string();
   for (int i = 0; i < num_scripts; i++) {
     const auto& script_data = coverage->at(i);
     HandleScope inner_scope(isolate);
@@ -750,6 +760,23 @@ RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionEntered) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
+RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionSuspended) {
+  DCHECK_EQ(1, args.length());
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(JSPromise, promise, 0);
+  isolate->PopPromise();
+  isolate->OnAsyncFunctionStateChanged(promise, debug::kAsyncFunctionSuspended);
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionResumed) {
+  DCHECK_EQ(1, args.length());
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(JSPromise, promise, 0);
+  isolate->PushPromise(promise);
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
 RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionFinished) {
   DCHECK_EQ(2, args.length());
   HandleScope scope(isolate);
@@ -763,21 +790,13 @@ RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionFinished) {
   return *promise;
 }
 
-RUNTIME_FUNCTION(Runtime_DebugAsyncFunctionSuspended) {
-  DCHECK_EQ(1, args.length());
-  HandleScope scope(isolate);
-  CONVERT_ARG_HANDLE_CHECKED(JSPromise, promise, 0);
-  isolate->OnAsyncFunctionStateChanged(promise, debug::kAsyncFunctionSuspended);
-  return ReadOnlyRoots(isolate).undefined_value();
-}
-
 RUNTIME_FUNCTION(Runtime_LiveEditPatchScript) {
   HandleScope scope(isolate);
   DCHECK_EQ(2, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, script_function, 0);
   CONVERT_ARG_HANDLE_CHECKED(String, new_source, 1);
 
-  Handle<Script> script(Script::cast(script_function->shared()->script()),
+  Handle<Script> script(Script::cast(script_function->shared().script()),
                         isolate);
   v8::debug::LiveEditResult result;
   LiveEdit::PatchScript(isolate, script, new_source, false, &result);
@@ -810,16 +829,31 @@ RUNTIME_FUNCTION(Runtime_LiveEditPatchScript) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
-RUNTIME_FUNCTION(Runtime_PerformSideEffectCheckForObject) {
+RUNTIME_FUNCTION(Runtime_ProfileCreateSnapshotDataBlob) {
   HandleScope scope(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(JSReceiver, object, 0);
+  DCHECK_EQ(0, args.length());
 
-  DCHECK_EQ(isolate->debug_execution_mode(), DebugInfo::kSideEffects);
-  if (!isolate->debug()->PerformSideEffectCheckForObject(object)) {
-    DCHECK(isolate->has_pending_exception());
-    return ReadOnlyRoots(isolate).exception();
+  // Used only by the test/memory/Memory.json benchmark. This creates a snapshot
+  // blob and outputs various statistics around it.
+
+  DCHECK(FLAG_profile_deserialization);
+
+  DisableEmbeddedBlobRefcounting();
+
+  v8::StartupData blob = CreateSnapshotDataBlobInternal(
+      v8::SnapshotCreator::FunctionCodeHandling::kClear, nullptr);
+  delete[] blob.data;
+
+  // Track the embedded blob size as well.
+  {
+    int embedded_blob_size = 0;
+    i::EmbeddedData d = i::EmbeddedData::FromBlob();
+    embedded_blob_size = static_cast<int>(d.size());
+    PrintF("Embedded blob is %d bytes\n", embedded_blob_size);
   }
+
+  FreeCurrentEmbeddedBlob();
+
   return ReadOnlyRoots(isolate).undefined_value();
 }
 

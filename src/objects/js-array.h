@@ -8,7 +8,7 @@
 #include "src/objects/allocation-site.h"
 #include "src/objects/fixed-array.h"
 #include "src/objects/js-objects.h"
-#include "torque-generated/class-definitions-from-dsl.h"
+#include "torque-generated/field-offsets-tq.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -108,7 +108,7 @@ class JSArray : public JSObject {
   static const int kPreallocatedArrayElements = 4;
 
   DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JSARRAY_FIELDS)
+                                TORQUE_GENERATED_JS_ARRAY_FIELDS)
 
   static const int kLengthDescriptorIndex = 0;
 
@@ -122,7 +122,7 @@ class JSArray : public JSObject {
   static const uint32_t kMinJoinStackSize = 2;
 
   static const int kInitialMaxFastElementArray =
-      (kMaxRegularHeapObjectSize - FixedArray::kHeaderSize - kSize -
+      (kMaxRegularHeapObjectSize - FixedArray::kHeaderSize - kHeaderSize -
        AllocationMemento::kSize) >>
       kDoubleSizeLog2;
 
@@ -132,7 +132,8 @@ class JSArray : public JSObject {
   OBJECT_CONSTRUCTORS(JSArray, JSObject);
 };
 
-Handle<Object> CacheInitialJSArrayMaps(Handle<Context> native_context,
+Handle<Object> CacheInitialJSArrayMaps(Isolate* isolate,
+                                       Handle<Context> native_context,
                                        Handle<Map> initial_map);
 
 // The JSArrayIterator describes JavaScript Array Iterators Objects, as
@@ -177,7 +178,10 @@ class JSArrayIterator : public JSObject {
   inline void set_kind(IterationKind kind);
 
   DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JSARRAY_ITERATOR_FIELDS)
+                                TORQUE_GENERATED_JS_ARRAY_ITERATOR_FIELDS)
+
+ private:
+  DECL_INT_ACCESSORS(raw_kind)
 
   OBJECT_CONSTRUCTORS(JSArrayIterator, JSObject);
 };

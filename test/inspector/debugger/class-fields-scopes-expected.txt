@@ -90,8 +90,8 @@ Running test: testScopesPaused
         scopeChain : [
             [0] : {
                 endLocation : {
-                    columnNumber : 3
-                    lineNumber : 15
+                    columnNumber : 13
+                    lineNumber : 14
                     scriptId : <scriptId>
                 }
                 name : run
@@ -102,11 +102,11 @@ Running test: testScopesPaused
                     type : object
                 }
                 startLocation : {
-                    columnNumber : 9
-                    lineNumber : 11
+                    columnNumber : 4
+                    lineNumber : 12
                     scriptId : <scriptId>
                 }
-                type : block
+                type : local
             }
             [1] : {
                 endLocation : {

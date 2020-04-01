@@ -4,6 +4,7 @@
 
 # Use this to run several variants of the tests.
 ALL_VARIANT_FLAGS = {
+  "assert_types": [["--assert-types"]],
   "code_serializer": [["--cache=code"]],
   "default": [[]],
   "future": [["--future"]],
@@ -13,6 +14,7 @@ ALL_VARIANT_FLAGS = {
   "interpreted_regexp": [["--regexp-interpret-all"]],
   "jitless": [["--jitless"]],
   "minor_mc": [["--minor-mc"]],
+  "no_lfa": [["--no-lazy-feedback-allocation"]],
   # No optimization means disable all optimizations. OptimizeFunctionOnNextCall
   # would not force optimization too. It turns into a Nop. Please see
   # https://chromium-review.googlesource.com/c/452620/ for more discussion.
@@ -22,13 +24,18 @@ ALL_VARIANT_FLAGS = {
   "nooptimization": [["--no-opt", "--liftoff", "--no-wasm-tier-up"]],
   "slow_path": [["--force-slow-path"]],
   "stress": [["--stress-opt", "--always-opt", "--no-liftoff",
-              "--no-wasm-tier-up"]],
-  "stress_background_compile": [["--stress-background-compile"]],
-  "stress_incremental_marking":  [["--stress-incremental-marking"]],
+              "--stress-lazy-source-positions"]],
+  "stress_js_bg_compile_wasm_code_gc": [["--stress-background-compile",
+                                         "--stress-wasm-code-gc"]],
+  "stress_incremental_marking": [["--stress-incremental-marking"]],
   # Trigger stress sampling allocation profiler with sample interval = 2^14
   "stress_sampling": [["--stress-sampling-allocation-profiler=16384"]],
   "trusted": [["--no-untrusted-code-mitigations"]],
   "no_wasm_traps": [["--no-wasm-trap-handler"]],
+  "turboprop": [["--turboprop"]],
+  "instruction_scheduling": [["--turbo-instruction-scheduling"]],
+  "stress_instruction_scheduling": [["--turbo-stress-instruction-scheduling"]],
+  "top_level_await": [["--harmony-top-level-await"]],
 }
 
 SLOW_VARIANTS = set([

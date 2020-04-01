@@ -5,9 +5,9 @@
 #include 'src/builtins/builtins-collections-gen.h'
 
 namespace collections {
-  macro LoadKeyValuePairNoSideEffects(implicit context: Context)(o: Object):
-      KeyValuePair
-      labels MayHaveSideEffects {
+  @export
+  macro LoadKeyValuePairNoSideEffects(implicit context: Context)(o: JSAny):
+      KeyValuePair labels MayHaveSideEffects {
     typeswitch (o) {
       case (a: FastJSArray): {
         const length: Smi = a.length;
@@ -28,21 +28,22 @@ namespace collections {
                                   Undefined
             };
           }
-          case (Object): deferred {
+          case (FixedArrayBase): deferred {
             unreachable;
           }
         }
       }
-      case (receiver: JSReceiver): {
+      case (JSReceiver): {
         goto MayHaveSideEffects;
       }
-      case (o: Object): deferred {
-        ThrowTypeError(kIteratorValueNotAnObject, o);
+      case (o: JSAny): deferred {
+        ThrowTypeError(MessageTemplate::kIteratorValueNotAnObject, o);
       }
     }
   }
 
-  transitioning macro LoadKeyValuePair(implicit context: Context)(o: Object):
+  @export
+  transitioning macro LoadKeyValuePair(implicit context: Context)(o: JSAny):
       KeyValuePair {
     try {
       return LoadKeyValuePairNoSideEffects(o) otherwise Generic;

@@ -13,6 +13,8 @@ export class SequenceView extends TextView {
   createViewElement() {
     const pane = document.createElement('div');
     pane.setAttribute('id', "sequence");
+    pane.classList.add("scrollable");
+    pane.setAttribute("tabindex", "0");
     return pane;
   }
 
@@ -98,8 +100,12 @@ export class SequenceView extends TextView {
       const instNodeEl = createElement("div", "instruction-node");
 
       const instId = createElement("div", "instruction-id", instruction.id);
+      const offsets = view.sourceResolver.instructionToPcOffsets(instruction.id);
       instId.classList.add("clickable");
       instId.dataset.instructionId = instruction.id;
+      if (offsets) {
+        instId.setAttribute("title", `This instruction generated gap code at pc-offset 0x${offsets.gap.toString(16)}, code at pc-offset 0x${offsets.arch.toString(16)}, condition handling at pc-offset 0x${offsets.condition.toString(16)}.`);
+      }
       instNodeEl.appendChild(instId);
 
       const instContentsEl = createElement("div", "instruction-contents");
@@ -107,10 +113,11 @@ export class SequenceView extends TextView {
 
       // Print gap moves.
       const gapEl = createElement("div", "gap", "gap");
-      instContentsEl.appendChild(gapEl);
+      let hasGaps = false;
       for (const gap of instruction.gaps) {
         const moves = createElement("div", ["comma-sep-list", "gap-move"]);
         for (const move of gap) {
+          hasGaps = true;
           const moveEl = createElement("div", "move");
           const destinationEl = elementForOperand(move[0], searchInfo);
           moveEl.appendChild(destinationEl);
@@ -121,6 +128,9 @@ export class SequenceView extends TextView {
           moves.appendChild(moveEl);
         }
         gapEl.appendChild(moves);
+      }
+      if (hasGaps) {
+        instContentsEl.appendChild(gapEl);
       }
 
       const instEl = createElement("div", "instruction");
@@ -137,8 +147,12 @@ export class SequenceView extends TextView {
         instEl.appendChild(assignEl);
       }
 
-      const text = instruction.opcode + instruction.flags;
-      const instLabel = createElement("div", "node-label", text);
+      let text = instruction.opcode + instruction.flags;
+      const instLabel = createElement("div", "node-label", text)
+      if (instruction.opcode == "ArchNop" && instruction.outputs.length == 1 && instruction.outputs[0].tooltip) {
+        instLabel.innerText = instruction.outputs[0].tooltip;
+      }
+
       searchInfo.push(text);
       view.addHtmlElementForNodeId(text, instLabel);
       instEl.appendChild(instLabel);

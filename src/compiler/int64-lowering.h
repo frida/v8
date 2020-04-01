@@ -5,11 +5,13 @@
 #ifndef V8_COMPILER_INT64_LOWERING_H_
 #define V8_COMPILER_INT64_LOWERING_H_
 
+#include <memory>
+
+#include "src/common/globals.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/machine-operator.h"
 #include "src/compiler/node-marker.h"
-#include "src/globals.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
@@ -20,11 +22,20 @@ class Signature;
 
 namespace compiler {
 
+// Struct for CallDescriptors that need special lowering.
+struct V8_EXPORT_PRIVATE Int64LoweringSpecialCase {
+  // Map from CallDescriptors that should be replaced, to the replacement
+  // CallDescriptors.
+  std::unordered_map<const CallDescriptor*, const CallDescriptor*> replacements;
+};
+
 class V8_EXPORT_PRIVATE Int64Lowering {
  public:
-  Int64Lowering(Graph* graph, MachineOperatorBuilder* machine,
-                CommonOperatorBuilder* common, Zone* zone,
-                Signature<MachineRepresentation>* signature);
+  Int64Lowering(
+      Graph* graph, MachineOperatorBuilder* machine,
+      CommonOperatorBuilder* common, Zone* zone,
+      Signature<MachineRepresentation>* signature,
+      std::unique_ptr<Int64LoweringSpecialCase> special_case = nullptr);
 
   void LowerGraph();
 
@@ -53,13 +64,16 @@ class V8_EXPORT_PRIVATE Int64Lowering {
   void LowerWord64AtomicBinop(Node* node, const Operator* op);
   void LowerWord64AtomicNarrowOp(Node* node, const Operator* op);
 
+  const CallDescriptor* LowerCallDescriptor(
+      const CallDescriptor* call_descriptor);
+
   void ReplaceNode(Node* old, Node* new_low, Node* new_high);
   bool HasReplacementLow(Node* node);
   Node* GetReplacementLow(Node* node);
   bool HasReplacementHigh(Node* node);
   Node* GetReplacementHigh(Node* node);
   void PreparePhiReplacement(Node* phi);
-  void GetIndexNodes(Node* index, Node*& index_low, Node*& index_high);
+  void GetIndexNodes(Node* index, Node** index_low, Node** index_high);
   void ReplaceNodeWithProjections(Node* node);
   void LowerMemoryBaseAndIndex(Node* node);
 
@@ -77,6 +91,7 @@ class V8_EXPORT_PRIVATE Int64Lowering {
   Replacement* replacements_;
   Signature<MachineRepresentation>* signature_;
   Node* placeholder_;
+  std::unique_ptr<Int64LoweringSpecialCase> special_case_;
 };
 
 }  // namespace compiler

@@ -9,7 +9,7 @@
 #include <set>
 #include <vector>
 
-#include "src/globals.h"
+#include "src/common/globals.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -32,6 +32,8 @@ class V8_EXPORT_PRIVATE ZoneStats final {
       if (zone_ != nullptr) zone_stats_->ReturnZone(zone_);
       zone_ = nullptr;
     }
+
+    ZoneStats* zone_stats() const { return zone_stats_; }
 
    private:
     const char* zone_name_;

@@ -14,13 +14,13 @@
 // https://github.com/python/cpython/blob/master/Objects/listsort.txt
 
 namespace array {
-  class SortState {
-    Compare(implicit context: Context)(x: Object, y: Object): Number {
+  class SortState extends HeapObject {
+    macro Compare(implicit context: Context)(x: JSAny, y: JSAny): Number {
       const sortCompare: CompareBuiltinFn = this.sortComparePtr;
       return sortCompare(context, this.userCmpFn, x, y);
     }
 
-    CheckAccessor(implicit context: Context)() labels Bailout {
+    macro CheckAccessor(implicit context: Context)() labels Bailout {
       const canUseSameAccessorFn: CanUseSameAccessorFn =
           this.canUseSameAccessorFn;
 
@@ -31,10 +31,10 @@ namespace array {
       }
     }
 
-    ResetToGenericAccessor() {
+    macro ResetToGenericAccessor() {
       this.loadFn = Load<GenericElementsAccessor>;
       this.storeFn = Store<GenericElementsAccessor>;
-      this.bailoutStatus = kSuccess;
+      this.deleteFn = Delete<GenericElementsAccessor>;
     }
 
     // The receiver of the Array.p.sort call.
@@ -47,23 +47,20 @@ namespace array {
     initialReceiverLength: Number;
 
     // If the user provided a comparison function, it is stored here.
-    userCmpFn: Undefined | Callable;
+    userCmpFn: Undefined|Callable;
 
     // Function pointer to the comparison function. This can either be a builtin
     // that calls the user-provided comparison function or "SortDefault", which
     // uses ToString and a lexicographical compare.
     sortComparePtr: CompareBuiltinFn;
 
-    // The following three function pointer represent a Accessor/Path.
-    // These are used to Load/Store elements and to check whether to bail to the
-    // baseline GenericElementsAccessor.
+    // The following four function pointer represent a Accessor/Path.
+    // These are used to Load/Store/Delete elements and to check whether
+    // to bail to the baseline GenericElementsAccessor.
     loadFn: LoadFn;
     storeFn: StoreFn;
+    deleteFn: DeleteFn;
     canUseSameAccessorFn: CanUseSameAccessorFn;
-
-    // If this field has the value kFailure, we need to bail to the baseline
-    // GenericElementsAccessor.
-    bailoutStatus: Smi;
 
     // This controls when we get *into* galloping mode. It's initialized to
     // kMinGallop. mergeLow and mergeHigh tend to nudge it higher for random
@@ -90,48 +87,101 @@ namespace array {
 
     // Pointer to the temporary array.
     tempArray: FixedArray;
+
+    // The initialReceiverLength converted and clamped to Smi.
+    sortLength: Smi;
+
+    // The number of undefined that need to be inserted after sorting
+    // when the elements are copied back from the workArray to the receiver.
+    numberOfUndefined: Smi;
+  }
+
+  type FastSmiElements extends ElementsKind;
+  type FastObjectElements extends ElementsKind;
+
+  // With the pre-processing step in Torque, the exact number of elements
+  // to sort is unknown at the time the sort state is created.
+  // The 'length' property is an upper bound (as per spec),
+  // while the actual size of the backing store is a good guess.
+  // After the pre-processing step, the workarray won't change in length.
+  macro CalculateWorkArrayLength(
+      receiver: JSReceiver, initialReceiverLength: Number): intptr {
+    // TODO(szuend): Implement full range sorting, not only up to MaxSmi.
+    //               https://crbug.com/v8/7970.
+    let clampedReceiverLength: uintptr;
+    try {
+      clampedReceiverLength =
+          ChangeSafeIntegerNumberToUintPtr(initialReceiverLength)
+          otherwise UIntPtrOverflow;
+      if (clampedReceiverLength > kSmiMaxValue) {
+        clampedReceiverLength = kSmiMaxValue;
+      }
+    }
+    label UIntPtrOverflow {
+      clampedReceiverLength = kSmiMaxValue;
+    }
+
+    let workArrayLength: intptr = Convert<intptr>(clampedReceiverLength);
+    try {
+      const object = Cast<JSObject>(receiver) otherwise NoJsObject;
+      const elementsLength = Convert<intptr>(object.elements.length);
+
+      // In some cases, elements are only on prototypes, but not on the receiver
+      // itself. Do nothing then, as {workArrayLength} got initialized with the
+      // {length} property.
+      if (elementsLength != 0) {
+        workArrayLength = IntPtrMin(workArrayLength, elementsLength);
+      }
+    }
+    label NoJsObject {}
+
+    return workArrayLength;
   }
 
   transitioning macro NewSortState(implicit context: Context)(
-      receiver: JSReceiver, comparefn: Undefined | Callable,
-      initialReceiverLength: Number, sortLength: Smi,
-      forceGeneric: constexpr bool): SortState {
+      receiver: JSReceiver, comparefn: Undefined|Callable,
+      initialReceiverLength: Number): SortState {
     const sortComparePtr =
         comparefn != Undefined ? SortCompareUserFn : SortCompareDefault;
     const map = receiver.map;
-    let loadFn = Load<GenericElementsAccessor>;
-    let storeFn = Store<GenericElementsAccessor>;
-    let canUseSameAccessorFn = CanUseSameAccessor<GenericElementsAccessor>;
+    let loadFn: LoadFn;
+    let storeFn: StoreFn;
+    let deleteFn: DeleteFn;
+    let canUseSameAccessorFn: CanUseSameAccessorFn;
 
     try {
-      if constexpr (!forceGeneric) {
-        GotoIfForceSlowPath() otherwise Slow;
-        let a: FastJSArray = Cast<FastJSArray>(receiver) otherwise Slow;
+      const a: FastJSArray = Cast<FastJSArray>(receiver) otherwise Slow;
 
-        const elementsKind: ElementsKind = map.elements_kind;
-        if (IsDoubleElementsKind(elementsKind)) {
-          loadFn = Load<FastDoubleElements>;
-          storeFn = Store<FastDoubleElements>;
-          canUseSameAccessorFn = CanUseSameAccessor<FastDoubleElements>;
-        } else if (elementsKind == PACKED_SMI_ELEMENTS) {
-          loadFn = Load<FastPackedSmiElements>;
-          storeFn = Store<FastPackedSmiElements>;
-          canUseSameAccessorFn = CanUseSameAccessor<FastPackedSmiElements>;
-        } else {
-          loadFn = Load<FastSmiOrObjectElements>;
-          storeFn = Store<FastSmiOrObjectElements>;
-          canUseSameAccessorFn = CanUseSameAccessor<FastSmiOrObjectElements>;
-        }
+      // Copy copy-on-write (COW) arrays.
+      array::EnsureWriteableFastElements(a);
+
+      const elementsKind: ElementsKind = map.elements_kind;
+      if (IsDoubleElementsKind(elementsKind)) {
+        loadFn = Load<FastDoubleElements>;
+        storeFn = Store<FastDoubleElements>;
+        deleteFn = Delete<FastDoubleElements>;
+        canUseSameAccessorFn = CanUseSameAccessor<FastDoubleElements>;
+      } else if (IsFastSmiElementsKind(elementsKind)) {
+        loadFn = Load<FastSmiElements>;
+        storeFn = Store<FastSmiElements>;
+        deleteFn = Delete<FastSmiElements>;
+        canUseSameAccessorFn = CanUseSameAccessor<FastSmiElements>;
+      } else {
+        loadFn = Load<FastObjectElements>;
+        storeFn = Store<FastObjectElements>;
+        deleteFn = Delete<FastObjectElements>;
+        canUseSameAccessorFn = CanUseSameAccessor<FastObjectElements>;
       }
     }
     label Slow {
-      if (map.elements_kind == DICTIONARY_ELEMENTS && IsExtensibleMap(map) &&
-          !IsCustomElementsReceiverInstanceType(map.instance_type)) {
-        loadFn = Load<DictionaryElements>;
-        storeFn = Store<DictionaryElements>;
-        canUseSameAccessorFn = CanUseSameAccessor<DictionaryElements>;
-      }
+      loadFn = Load<GenericElementsAccessor>;
+      storeFn = Store<GenericElementsAccessor>;
+      deleteFn = Delete<GenericElementsAccessor>;
+      canUseSameAccessorFn = CanUseSameAccessor<GenericElementsAccessor>;
     }
+
+    const workArrayLength =
+        CalculateWorkArrayLength(receiver, initialReceiverLength);
 
     return new SortState{
       receiver,
@@ -141,17 +191,18 @@ namespace array {
       sortComparePtr,
       loadFn,
       storeFn,
+      deleteFn,
       canUseSameAccessorFn,
-      bailoutStatus: kSuccess,
       minGallop: kMinGallopWins,
       pendingRunsSize: 0,
       pendingRuns: AllocateZeroedFixedArray(Convert<intptr>(kMaxMergePending)),
-      workArray: AllocateZeroedFixedArray(Convert<intptr>(sortLength)),
-      tempArray: kEmptyFixedArray
+      workArray: AllocateZeroedFixedArray(workArrayLength),
+      tempArray: kEmptyFixedArray,
+      sortLength: 0,
+      numberOfUndefined: 0
     };
   }
 
-  const kFailure: Smi = -1;
   const kSuccess: Smi = 0;
 
   // The maximum number of entries in a SortState's pending-runs stack.
@@ -169,11 +220,12 @@ namespace array {
   // it is first requested, but it has always at least this size.
   const kSortStateTempSize: Smi = 32;
 
-  type LoadFn = builtin(Context, SortState, Smi) => Object;
-  type StoreFn = builtin(Context, SortState, Smi, Object) => Smi;
-  type CanUseSameAccessorFn = builtin(Context, JSReceiver, Object, Number) =>
+  type LoadFn = builtin(Context, SortState, Smi) => (JSAny|TheHole);
+  type StoreFn = builtin(Context, SortState, Smi, JSAny) => Smi;
+  type DeleteFn = builtin(Context, SortState, Smi) => Smi;
+  type CanUseSameAccessorFn = builtin(Context, JSReceiver, Map, Number) =>
       Boolean;
-  type CompareBuiltinFn = builtin(Context, Object, Object, Object) => Number;
+  type CompareBuiltinFn = builtin(Context, JSAny, JSAny, JSAny) => Number;
 
   // The following builtins implement Load/Store for all the Accessors.
   // The most generic baseline version uses Get-/SetProperty. We do not need
@@ -181,78 +233,57 @@ namespace array {
   // copied values from the prototype chain to the receiver if they were visible
   // through a hole.
 
-  transitioning builtin Load<ElementsAccessor: type>(
-      context: Context, sortState: SortState, index: Smi): Object {
-    return GetProperty(sortState.receiver, index);
+  transitioning builtin Load<ElementsAccessor : type extends ElementsKind>(
+      context: Context, sortState: SortState, index: Smi): JSAny|TheHole {
+    const receiver = sortState.receiver;
+    if (!HasProperty_Inline(receiver, index)) return TheHole;
+    return GetProperty(receiver, index);
   }
 
-  Load<FastPackedSmiElements>(
-      context: Context, sortState: SortState, index: Smi): Object {
+  Load<FastSmiElements>(context: Context, sortState: SortState, index: Smi):
+      JSAny|TheHole {
     const object = UnsafeCast<JSObject>(sortState.receiver);
     const elements = UnsafeCast<FixedArray>(object.elements);
-    return elements.objects[index];
+    return UnsafeCast<(JSAny | TheHole)>(elements.objects[index]);
   }
 
-  Load<FastSmiOrObjectElements>(
-      context: Context, sortState: SortState, index: Smi): Object {
+  Load<FastObjectElements>(context: Context, sortState: SortState, index: Smi):
+      JSAny|TheHole {
     const object = UnsafeCast<JSObject>(sortState.receiver);
     const elements = UnsafeCast<FixedArray>(object.elements);
-    const result: Object = elements.objects[index];
-    if (IsTheHole(result)) {
-      // The pre-processing step removed all holes by compacting all elements
-      // at the start of the array. Finding a hole means the cmp function or
-      // ToString changes the array.
-      return Failure(sortState);
-    }
-    return result;
+    return UnsafeCast<(JSAny | TheHole)>(elements.objects[index]);
   }
 
   Load<FastDoubleElements>(context: Context, sortState: SortState, index: Smi):
-      Object {
+      JSAny|TheHole {
     try {
       const object = UnsafeCast<JSObject>(sortState.receiver);
       const elements = UnsafeCast<FixedDoubleArray>(object.elements);
-      const value = LoadDoubleWithHoleCheck(elements, index) otherwise Bailout;
+      const value = elements.floats[index].Value() otherwise IfHole;
       return AllocateHeapNumberWithValue(value);
     }
-    label Bailout {
-      // The pre-processing step removed all holes by compacting all elements
-      // at the start of the array. Finding a hole means the cmp function or
-      // ToString changes the array.
-      return Failure(sortState);
+    label IfHole {
+      return TheHole;
     }
   }
 
-  Load<DictionaryElements>(context: Context, sortState: SortState, index: Smi):
-      Object {
-    try {
-      const object = UnsafeCast<JSObject>(sortState.receiver);
-      const dictionary = UnsafeCast<NumberDictionary>(object.elements);
-      const intptrIndex = Convert<intptr>(index);
-      return BasicLoadNumberDictionaryElement(dictionary, intptrIndex)
-          otherwise Bailout, Bailout;
-    }
-    label Bailout {
-      return Failure(sortState);
-    }
-  }
-
-  transitioning builtin Store<ElementsAccessor: type>(
-      context: Context, sortState: SortState, index: Smi, value: Object): Smi {
+  transitioning builtin Store<ElementsAccessor : type extends ElementsKind>(
+      context: Context, sortState: SortState, index: Smi, value: JSAny): Smi {
     SetProperty(sortState.receiver, index, value);
     return kSuccess;
   }
 
-  Store<FastPackedSmiElements>(
-      context: Context, sortState: SortState, index: Smi, value: Object): Smi {
+  Store<FastSmiElements>(
+      context: Context, sortState: SortState, index: Smi, value: JSAny): Smi {
     const object = UnsafeCast<JSObject>(sortState.receiver);
     const elements = UnsafeCast<FixedArray>(object.elements);
-    StoreFixedArrayElementSmi(elements, index, value, SKIP_WRITE_BARRIER);
+    const value = UnsafeCast<Smi>(value);
+    StoreFixedArrayElement(elements, index, value, SKIP_WRITE_BARRIER);
     return kSuccess;
   }
 
-  Store<FastSmiOrObjectElements>(
-      context: Context, sortState: SortState, index: Smi, value: Object): Smi {
+  Store<FastObjectElements>(
+      context: Context, sortState: SortState, index: Smi, value: JSAny): Smi {
     const object = UnsafeCast<JSObject>(sortState.receiver);
     const elements = UnsafeCast<FixedArray>(object.elements);
     elements.objects[index] = value;
@@ -260,7 +291,7 @@ namespace array {
   }
 
   Store<FastDoubleElements>(
-      context: Context, sortState: SortState, index: Smi, value: Object): Smi {
+      context: Context, sortState: SortState, index: Smi, value: JSAny): Smi {
     const object = UnsafeCast<JSObject>(sortState.receiver);
     const elements = UnsafeCast<FixedDoubleArray>(object.elements);
     const heapVal = UnsafeCast<HeapNumber>(value);
@@ -269,30 +300,45 @@ namespace array {
     return kSuccess;
   }
 
-  Store<DictionaryElements>(
-      context: Context, sortState: SortState, index: Smi, value: Object): Smi {
+  transitioning builtin Delete<ElementsAccessor : type extends ElementsKind>(
+      context: Context, sortState: SortState, index: Smi): Smi {
+    const receiver = sortState.receiver;
+    DeleteProperty(receiver, index, LanguageMode::kStrict);
+    return kSuccess;
+  }
+
+  Delete<FastSmiElements>(context: Context, sortState: SortState, index: Smi):
+      Smi {
+    assert(IsHoleyFastElementsKind(sortState.receiver.map.elements_kind));
+
     const object = UnsafeCast<JSObject>(sortState.receiver);
-    const dictionary = UnsafeCast<NumberDictionary>(object.elements);
-    const intptrIndex = Convert<intptr>(index);
-    try {
-      BasicStoreNumberDictionaryElement(dictionary, intptrIndex, value)
-          otherwise Fail, Fail, ReadOnly;
-      return kSuccess;
-    }
-    label ReadOnly {
-      // We cannot write to read-only data properties. Throw the same TypeError
-      // as SetProperty would.
-      const receiver = sortState.receiver;
-      ThrowTypeError(
-          kStrictReadOnlyProperty, index, Typeof(receiver), receiver);
-    }
-    label Fail {
-      return Failure(sortState);
-    }
+    const elements = UnsafeCast<FixedArray>(object.elements);
+    elements.objects[index] = TheHole;
+    return kSuccess;
+  }
+
+  Delete<FastObjectElements>(
+      context: Context, sortState: SortState, index: Smi): Smi {
+    assert(IsHoleyFastElementsKind(sortState.receiver.map.elements_kind));
+
+    const object = UnsafeCast<JSObject>(sortState.receiver);
+    const elements = UnsafeCast<FixedArray>(object.elements);
+    elements.objects[index] = TheHole;
+    return kSuccess;
+  }
+
+  Delete<FastDoubleElements>(
+      context: Context, sortState: SortState, index: Smi): Smi {
+    assert(IsHoleyFastElementsKind(sortState.receiver.map.elements_kind));
+
+    const object = UnsafeCast<JSObject>(sortState.receiver);
+    const elements = UnsafeCast<FixedDoubleArray>(object.elements);
+    elements.floats[index] = kDoubleHole;
+    return kSuccess;
   }
 
   transitioning builtin SortCompareDefault(
-      context: Context, comparefn: Object, x: Object, y: Object): Number {
+      context: Context, comparefn: JSAny, x: JSAny, y: JSAny): Number {
     assert(comparefn == Undefined);
 
     if (TaggedIsSmi(x) && TaggedIsSmi(y)) {
@@ -300,10 +346,10 @@ namespace array {
     }
 
     // 5. Let xString be ? ToString(x).
-    const xString = ToString_Inline(context, x);
+    const xString = ToString_Inline(x);
 
     // 6. Let yString be ? ToString(y).
-    const yString = ToString_Inline(context, y);
+    const yString = ToString_Inline(y);
 
     // 7. Let xSmaller be the result of performing
     //    Abstract Relational Comparison xString < yString.
@@ -320,12 +366,12 @@ namespace array {
   }
 
   transitioning builtin SortCompareUserFn(
-      context: Context, comparefn: Object, x: Object, y: Object): Number {
+      context: Context, comparefn: JSAny, x: JSAny, y: JSAny): Number {
     assert(comparefn != Undefined);
     const cmpfn = UnsafeCast<Callable>(comparefn);
 
     // a. Let v be ? ToNumber(? Call(comparefn, undefined, x, y)).
-    const v = ToNumber_Inline(context, Call(context, cmpfn, Undefined, x, y));
+    const v = ToNumber_Inline(Call(context, cmpfn, Undefined, x, y));
 
     // b. If v is NaN, return +0.
     if (NumberIsNaN(v)) return 0;
@@ -334,8 +380,8 @@ namespace array {
     return v;
   }
 
-  builtin CanUseSameAccessor<ElementsAccessor: type>(
-      context: Context, receiver: JSReceiver, initialReceiverMap: Object,
+  builtin CanUseSameAccessor<ElementsAccessor : type extends ElementsKind>(
+      context: Context, receiver: JSReceiver, initialReceiverMap: Map,
       initialReceiverLength: Number): Boolean {
     if (receiver.map != initialReceiverMap) return False;
 
@@ -348,16 +394,10 @@ namespace array {
   }
 
   CanUseSameAccessor<GenericElementsAccessor>(
-      context: Context, receiver: JSReceiver, initialReceiverMap: Object,
-      initialReceiverLength: Number): Boolean {
+      _context: Context, _receiver: JSReceiver, _initialReceiverMap: Map,
+      _initialReceiverLength: Number): Boolean {
     // Do nothing. We are already on the slow path.
     return True;
-  }
-
-  CanUseSameAccessor<DictionaryElements>(
-      context: Context, receiver: JSReceiver, initialReceiverMap: Object,
-      initialReceiverLength: Number): Boolean {
-    return SelectBooleanConstant(receiver.map == initialReceiverMap);
   }
 
   // Re-loading the stack-size is done in a few places. The small macro allows
@@ -418,40 +458,10 @@ namespace array {
     return tempArray;
   }
 
-  // This macro jumps to the Bailout label iff kBailoutStatus is kFailure.
-  macro EnsureSuccess(implicit context: Context)(sortState:
-                                                     SortState) labels Bailout {
-    if (sortState.bailoutStatus == kFailure) goto Bailout;
-  }
-
-  // Sets kBailoutStatus to kFailure and returns kFailure.
-  macro Failure(sortState: SortState): Smi {
-    sortState.bailoutStatus = kFailure;
-    return kFailure;
-  }
-
-  // The following Call* macros wrap builtin calls, making call sites more
-  // readable since we can use labels and do not have to check kBailoutStatus
-  // or the return value.
-
-  macro CallLoad(implicit context: Context, sortState: SortState)(
-      load: LoadFn, index: Smi): Object
-      labels Bailout {
-    const result: Object = load(context, sortState, index);
-    EnsureSuccess(sortState) otherwise Bailout;
-    return result;
-  }
-
-  macro CallStore(implicit context: Context, sortState: SortState)(
-      store: StoreFn, index: Smi, value: Object) labels Bailout {
-    store(context, sortState, index, value);
-    EnsureSuccess(sortState) otherwise Bailout;
-  }
-
   transitioning builtin
   Copy(implicit context: Context)(
       source: FixedArray, srcPos: Smi, target: FixedArray, dstPos: Smi,
-      length: Smi): Object {
+      length: Smi): JSAny {
     assert(srcPos >= 0);
     assert(dstPos >= 0);
     assert(srcPos <= source.length - length);
@@ -472,7 +482,7 @@ namespace array {
     } else {
       let srcIdx: Smi = srcPos;
       let dstIdx: Smi = dstPos;
-      let to: Smi = srcPos + length;
+      const to: Smi = srcPos + length;
 
       while (srcIdx < to) {
         target.objects[dstIdx++] = source.objects[srcIdx++];
@@ -504,7 +514,7 @@ namespace array {
       let left: Smi = low;
       let right: Smi = start;
 
-      const pivot = workArray.objects[right];
+      const pivot = UnsafeCast<JSAny>(workArray.objects[right]);
 
       // Invariants:
       //   pivot >= all in [low, left).
@@ -514,7 +524,8 @@ namespace array {
       // Find pivot insertion point.
       while (left < right) {
         const mid: Smi = left + ((right - left) >> 1);
-        const order = sortState.Compare(pivot, workArray.objects[mid]);
+        const order =
+            sortState.Compare(pivot, UnsafeCast<JSAny>(workArray.objects[mid]));
 
         if (order < 0) {
           right = mid;
@@ -561,13 +572,13 @@ namespace array {
 
     const workArray = sortState.workArray;
 
-    let low: Smi = lowArg + 1;
+    const low: Smi = lowArg + 1;
     if (low == high) return 1;
 
     let runLength: Smi = 2;
 
-    const elementLow = workArray.objects[low];
-    const elementLowPred = workArray.objects[low - 1];
+    const elementLow = UnsafeCast<JSAny>(workArray.objects[low]);
+    const elementLowPred = UnsafeCast<JSAny>(workArray.objects[low - 1]);
     let order = sortState.Compare(elementLow, elementLowPred);
 
     // TODO(szuend): Replace with "order < 0" once Torque supports it.
@@ -575,9 +586,9 @@ namespace array {
     //               'never' and uses two labels to branch.
     const isDescending: bool = order < 0 ? true : false;
 
-    let previousElement: Object = elementLow;
+    let previousElement: JSAny = elementLow;
     for (let idx: Smi = low + 1; idx < high; ++idx) {
-      const currentElement = workArray.objects[idx];
+      const currentElement = UnsafeCast<JSAny>(workArray.objects[idx]);
       order = sortState.Compare(currentElement, previousElement);
 
       if (isDescending) {
@@ -626,7 +637,7 @@ namespace array {
     const pendingRuns: FixedArray = sortState.pendingRuns;
     let baseA: Smi = GetPendingRunBase(pendingRuns, i);
     let lengthA: Smi = GetPendingRunLength(pendingRuns, i);
-    let baseB: Smi = GetPendingRunBase(pendingRuns, i + 1);
+    const baseB: Smi = GetPendingRunBase(pendingRuns, i + 1);
     let lengthB: Smi = GetPendingRunLength(pendingRuns, i + 1);
     assert(lengthA > 0 && lengthB > 0);
     assert(baseA + lengthA == baseB);
@@ -645,7 +656,7 @@ namespace array {
 
     // Where does b start in a? Elements in a before that can be ignored,
     // because they are already in place.
-    const keyRight = workArray.objects[baseB];
+    const keyRight = UnsafeCast<JSAny>(workArray.objects[baseB]);
     const k: Smi = GallopRight(workArray, keyRight, baseA, lengthA, 0);
     assert(k >= 0);
 
@@ -656,7 +667,7 @@ namespace array {
 
     // Where does a end in b? Elements in b after that can be ignored,
     // because they are already in place.
-    const keyLeft = workArray.objects[baseA + lengthA - 1];
+    const keyLeft = UnsafeCast<JSAny>(workArray.objects[baseA + lengthA - 1]);
     lengthB = GallopLeft(workArray, keyLeft, baseB, lengthB, lengthB - 1);
     assert(lengthB >= 0);
     if (lengthB == 0) return kSuccess;
@@ -690,14 +701,14 @@ namespace array {
   // pretending that array[base - 1] is minus infinity and array[base + len]
   // is plus infinity. In other words, key belongs at index base + k.
   builtin GallopLeft(implicit context: Context, sortState: SortState)(
-      array: FixedArray, key: Object, base: Smi, length: Smi, hint: Smi): Smi {
+      array: FixedArray, key: JSAny, base: Smi, length: Smi, hint: Smi): Smi {
     assert(length > 0 && base >= 0);
     assert(0 <= hint && hint < length);
 
     let lastOfs: Smi = 0;
     let offset: Smi = 1;
 
-    const baseHintElement = array.objects[base + hint];
+    const baseHintElement = UnsafeCast<JSAny>(array.objects[base + hint]);
     let order = sortState.Compare(baseHintElement, key);
 
     if (order < 0) {
@@ -705,9 +716,10 @@ namespace array {
       // a[base + hint + lastOfs] < key <= a[base + hint + offset].
 
       // a[base + length - 1] is highest.
-      let maxOfs: Smi = length - hint;
+      const maxOfs: Smi = length - hint;
       while (offset < maxOfs) {
-        const offsetElement = array.objects[base + hint + offset];
+        const offsetElement =
+            UnsafeCast<JSAny>(array.objects[base + hint + offset]);
         order = sortState.Compare(offsetElement, key);
 
         // a[base + hint + offset] >= key? Break.
@@ -731,9 +743,10 @@ namespace array {
       assert(order >= 0);
 
       // a[base + hint] is lowest.
-      let maxOfs: Smi = hint + 1;
+      const maxOfs: Smi = hint + 1;
       while (offset < maxOfs) {
-        const offsetElement = array.objects[base + hint - offset];
+        const offsetElement =
+            UnsafeCast<JSAny>(array.objects[base + hint - offset]);
         order = sortState.Compare(offsetElement, key);
 
         if (order < 0) break;
@@ -763,7 +776,8 @@ namespace array {
     while (lastOfs < offset) {
       const m: Smi = lastOfs + ((offset - lastOfs) >> 1);
 
-      order = sortState.Compare(array.objects[base + m], key);
+      order =
+          sortState.Compare(UnsafeCast<JSAny>(array.objects[base + m]), key);
 
       if (order < 0) {
         lastOfs = m + 1;  // a[base + m] < key.
@@ -787,14 +801,14 @@ namespace array {
   //
   // or kFailure on error.
   builtin GallopRight(implicit context: Context, sortState: SortState)(
-      array: FixedArray, key: Object, base: Smi, length: Smi, hint: Smi): Smi {
+      array: FixedArray, key: JSAny, base: Smi, length: Smi, hint: Smi): Smi {
     assert(length > 0 && base >= 0);
     assert(0 <= hint && hint < length);
 
     let lastOfs: Smi = 0;
     let offset: Smi = 1;
 
-    const baseHintElement = array.objects[base + hint];
+    const baseHintElement = UnsafeCast<JSAny>(array.objects[base + hint]);
     let order = sortState.Compare(key, baseHintElement);
 
     if (order < 0) {
@@ -802,9 +816,10 @@ namespace array {
       // a[base + hint - offset] <= key < a[base + hint - lastOfs].
 
       // a[base + hint] is lowest.
-      let maxOfs: Smi = hint + 1;
+      const maxOfs: Smi = hint + 1;
       while (offset < maxOfs) {
-        const offsetElement = array.objects[base + hint - offset];
+        const offsetElement =
+            UnsafeCast<JSAny>(array.objects[base + hint - offset]);
         order = sortState.Compare(key, offsetElement);
 
         if (order >= 0) break;
@@ -827,9 +842,10 @@ namespace array {
       // a[base + hint + lastOfs] <= key < a[base + hint + offset].
 
       // a[base + length - 1] is highest.
-      let maxOfs: Smi = length - hint;
+      const maxOfs: Smi = length - hint;
       while (offset < maxOfs) {
-        const offsetElement = array.objects[base + hint + offset];
+        const offsetElement =
+            UnsafeCast<JSAny>(array.objects[base + hint + offset]);
         order = sortState.Compare(key, offsetElement);
 
         // a[base + hint + ofs] <= key.
@@ -858,7 +874,8 @@ namespace array {
     while (lastOfs < offset) {
       const m: Smi = lastOfs + ((offset - lastOfs) >> 1);
 
-      order = sortState.Compare(key, array.objects[base + m]);
+      order =
+          sortState.Compare(key, UnsafeCast<JSAny>(array.objects[base + m]));
 
       if (order < 0) {
         offset = m;  // key < a[base + m].
@@ -915,8 +932,9 @@ namespace array {
         while (Int32TrueConstant()) {
           assert(lengthA > 1 && lengthB > 0);
 
-          let order = sortState.Compare(
-              workArray.objects[cursorB], tempArray.objects[cursorTemp]);
+          const order = sortState.Compare(
+              UnsafeCast<JSAny>(workArray.objects[cursorB]),
+              UnsafeCast<JSAny>(tempArray.objects[cursorTemp]));
 
           if (order < 0) {
             workArray.objects[dest++] = workArray.objects[cursorB++];
@@ -953,7 +971,8 @@ namespace array {
           sortState.minGallop = minGallop;
 
           nofWinsA = GallopRight(
-              tempArray, workArray.objects[cursorB], cursorTemp, lengthA, 0);
+              tempArray, UnsafeCast<JSAny>(workArray.objects[cursorB]),
+              cursorTemp, lengthA, 0);
           assert(nofWinsA >= 0);
 
           if (nofWinsA > 0) {
@@ -972,7 +991,8 @@ namespace array {
           if (--lengthB == 0) goto Succeed;
 
           nofWinsB = GallopLeft(
-              workArray, tempArray.objects[cursorTemp], cursorB, lengthB, 0);
+              workArray, UnsafeCast<JSAny>(tempArray.objects[cursorTemp]),
+              cursorB, lengthB, 0);
           assert(nofWinsB >= 0);
           if (nofWinsB > 0) {
             Copy(workArray, cursorB, workArray, dest, nofWinsB);
@@ -1047,8 +1067,9 @@ namespace array {
         while (Int32TrueConstant()) {
           assert(lengthA > 0 && lengthB > 1);
 
-          let order = sortState.Compare(
-              tempArray.objects[cursorTemp], workArray.objects[cursorA]);
+          const order = sortState.Compare(
+              UnsafeCast<JSAny>(tempArray.objects[cursorTemp]),
+              UnsafeCast<JSAny>(workArray.objects[cursorA]));
 
           if (order < 0) {
             workArray.objects[dest--] = workArray.objects[cursorA--];
@@ -1086,8 +1107,8 @@ namespace array {
           sortState.minGallop = minGallop;
 
           let k: Smi = GallopRight(
-              workArray, tempArray.objects[cursorTemp], baseA, lengthA,
-              lengthA - 1);
+              workArray, UnsafeCast<JSAny>(tempArray.objects[cursorTemp]),
+              baseA, lengthA, lengthA - 1);
           assert(k >= 0);
           nofWinsA = lengthA - k;
 
@@ -1103,7 +1124,8 @@ namespace array {
           if (--lengthB == 1) goto CopyA;
 
           k = GallopLeft(
-              tempArray, workArray.objects[cursorA], 0, lengthB, lengthB - 1);
+              tempArray, UnsafeCast<JSAny>(workArray.objects[cursorA]), 0,
+              lengthB, lengthB - 1);
           assert(k >= 0);
           nofWinsB = lengthB - k;
 
@@ -1217,7 +1239,7 @@ namespace array {
   // remains. This is used at the end of the mergesort.
   transitioning macro
   MergeForceCollapse(context: Context, sortState: SortState) {
-    let pendingRuns: FixedArray = sortState.pendingRuns;
+    const pendingRuns: FixedArray = sortState.pendingRuns;
 
     // Reload the stack size becuase MergeAt might change it.
     while (GetPendingRunsSize(sortState) > 1) {
@@ -1267,49 +1289,89 @@ namespace array {
   }
 
   transitioning macro
-  CopyReceiverElementsToWorkArray(
-      implicit context: Context, sortState: SortState)(length: Smi) {
-    // TODO(szuend): Investigate if we can use COW arrays or a memcpy + range
-    //               barrier to speed this step up.
-    let loadFn = sortState.loadFn;
-    const workArray = sortState.workArray;
+  CompactReceiverElementsIntoWorkArray(
+      implicit context: Context, sortState: SortState)(): Smi {
+    let growableWorkArray = growable_fixed_array::GrowableFixedArray{
+      array: sortState.workArray,
+      capacity: Convert<intptr>(sortState.workArray.length),
+      length: 0
+    };
 
-    for (let i: Smi = 0; i < length; ++i) {
-      try {
-        workArray.objects[i] = CallLoad(loadFn, i) otherwise Bailout;
-      }
-      label Bailout deferred {
-        sortState.ResetToGenericAccessor();
-        loadFn = sortState.loadFn;
-        workArray.objects[i] = CallLoad(loadFn, i) otherwise unreachable;
+    const loadFn = sortState.loadFn;
+
+    // TODO(szuend): Implement full range sorting, not only up to MaxSmi.
+    //               https://crbug.com/v8/7970.
+    const receiverLength: Number = sortState.initialReceiverLength;
+    assert(IsNumberNormalized(receiverLength));
+
+    const sortLength: Smi = TaggedIsSmi(receiverLength) ?
+        UnsafeCast<Smi>(receiverLength) :
+        Convert<PositiveSmi>(kSmiMax) otherwise unreachable;
+
+    // Move all non-undefined elements into {sortState.workArray}, holes
+    // are ignored.
+    let numberOfUndefined: Smi = 0;
+    for (let i: Smi = 0; i < receiverLength; ++i) {
+      const element: JSAny|TheHole = loadFn(context, sortState, i);
+
+      if (element == TheHole) {
+        // Do nothing for holes. The result is that elements are
+        // compacted at the front of the work array.
+      } else if (element == Undefined) {
+        numberOfUndefined++;
+      } else {
+        growableWorkArray.Push(element);
       }
     }
+
+    // Reset the workArray on the frameState, as it may have grown.
+    sortState.workArray = growableWorkArray.array;
+    sortState.sortLength = sortLength;
+    sortState.numberOfUndefined = numberOfUndefined;
+
+    return Convert<Smi>(growableWorkArray.length);
   }
 
   transitioning macro
   CopyWorkArrayToReceiver(implicit context: Context, sortState: SortState)(
-      length: Smi) {
-    // TODO(szuend): Build fast-path that simply installs the work array as the
-    // new backing store where applicable.
-    let storeFn = sortState.storeFn;
+      numberOfNonUndefined: Smi) {
+    const storeFn = sortState.storeFn;
     const workArray = sortState.workArray;
 
-    for (let i: Smi = 0; i < length; ++i) {
-      try {
-        CallStore(storeFn, i, workArray.objects[i]) otherwise Bailout;
-      }
-      label Bailout deferred {
-        sortState.ResetToGenericAccessor();
-        storeFn = sortState.storeFn;
-        CallStore(storeFn, i, workArray.objects[i]) otherwise unreachable;
-      }
+    assert(numberOfNonUndefined <= workArray.length);
+    assert(
+        numberOfNonUndefined + sortState.numberOfUndefined <=
+        sortState.sortLength);
+
+    // Writing the elements back is a 3 step process:
+    //   1. Copy the sorted elements from the workarray to the receiver.
+    //   2. Add {nOfUndefined} undefineds to the receiver.
+    //   3. Depending on the backing store either delete properties or
+    //      set them to the TheHole up to {sortState.sortLength}.
+    let index: Smi = 0;
+    for (; index < numberOfNonUndefined; ++index) {
+      storeFn(
+          context, sortState, index,
+          UnsafeCast<JSAny>(workArray.objects[index]));
+    }
+
+    const numberOfUndefinedEnd: Smi =
+        sortState.numberOfUndefined + numberOfNonUndefined;
+    for (; index < numberOfUndefinedEnd; ++index) {
+      storeFn(context, sortState, index, Undefined);
+    }
+
+    const end: Smi = sortState.sortLength;
+    const deleteFn = sortState.deleteFn;
+    for (; index < end; ++index) {
+      deleteFn(context, sortState, index);
     }
   }
 
   transitioning builtin
-  ArrayTimSort(context: Context, sortState: SortState, length: Smi): Object {
-    CopyReceiverElementsToWorkArray(length);
-    ArrayTimSortImpl(context, sortState, length);
+  ArrayTimSort(context: Context, sortState: SortState): JSAny {
+    const numberOfNonUndefined: Smi = CompactReceiverElementsIntoWorkArray();
+    ArrayTimSortImpl(context, sortState, numberOfNonUndefined);
 
     try {
       // The comparison function or toString might have changed the
@@ -1320,32 +1382,19 @@ namespace array {
       sortState.ResetToGenericAccessor();
     }
 
-    CopyWorkArrayToReceiver(length);
+    CopyWorkArrayToReceiver(numberOfNonUndefined);
     return kSuccess;
   }
 
-  // For compatibility with JSC, we also sort elements inherited from
-  // the prototype chain on non-Array objects.
-  // We do this by copying them to this object and sorting only
-  // own elements. This is not very efficient, but sorting with
-  // inherited elements happens very, very rarely, if at all.
-  // The specification allows "implementation dependent" behavior
-  // if an element on the prototype chain has an element that
-  // might interact with sorting.
-  //
-  // We also move all non-undefined elements to the front of the
-  // array and move the undefineds after that. Holes are removed.
-  // This happens for Array as well as non-Array objects.
-  extern runtime PrepareElementsForSort(Context, Object, Number): Smi;
-
   // https://tc39.github.io/ecma262/#sec-array.prototype.sort
   transitioning javascript builtin
-  ArrayPrototypeSort(context: Context, receiver: Object, ...arguments): Object {
+  ArrayPrototypeSort(js-implicit context: NativeContext, receiver: JSAny)(
+      ...arguments): JSAny {
     // 1. If comparefn is not undefined and IsCallable(comparefn) is false,
     //    throw a TypeError exception.
-    const comparefnObj: Object = arguments[0];
+    const comparefnObj: JSAny = arguments[0];
     const comparefn = Cast<(Undefined | Callable)>(comparefnObj) otherwise
-    ThrowTypeError(kBadSortComparisonFunction, comparefnObj);
+    ThrowTypeError(MessageTemplate::kBadSortComparisonFunction, comparefnObj);
 
     // 2. Let obj be ? ToObject(this value).
     const obj: JSReceiver = ToObject(context, receiver);
@@ -1355,16 +1404,8 @@ namespace array {
 
     if (len < 2) return receiver;
 
-    // TODO(szuend): Investigate performance tradeoff of skipping this step
-    //               for PACKED_* and handling Undefineds during sorting.
-    const nofNonUndefined: Smi = PrepareElementsForSort(context, obj, len);
-    assert(nofNonUndefined <= len);
-
-    if (nofNonUndefined < 2) return receiver;
-
-    const sortState: SortState =
-        NewSortState(obj, comparefn, len, nofNonUndefined, false);
-    ArrayTimSort(context, sortState, nofNonUndefined);
+    const sortState: SortState = NewSortState(obj, comparefn, len);
+    ArrayTimSort(context, sortState);
 
     return receiver;
   }

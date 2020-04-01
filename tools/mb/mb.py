@@ -64,6 +64,8 @@ class MetaBuildWrapper(object):
     self.luci_tryservers = {}
     self.masters = {}
     self.mixins = {}
+    self.isolate_exe = 'isolate.exe' if self.platform.startswith(
+        'win') else 'isolate'
 
   def Main(self, args):
     self.ParseArgs(args)
@@ -131,6 +133,8 @@ class MetaBuildWrapper(object):
     subp.add_argument('output_path', nargs=1,
                       help='path to a file containing the output arguments '
                            'as a JSON object.')
+    subp.add_argument('--json-output',
+                      help='Write errors to json.output')
     subp.set_defaults(func=self.CmdAnalyze)
 
     subp = subps.add_parser('export',
@@ -149,6 +153,8 @@ class MetaBuildWrapper(object):
     subp.add_argument('--swarming-targets-file',
                       help='save runtime dependencies for targets listed '
                            'in file.')
+    subp.add_argument('--json-output',
+                      help='Write errors to json.output')
     subp.add_argument('path', nargs=1,
                       help='path to generate build into')
     subp.set_defaults(func=self.CmdGen)
@@ -167,6 +173,12 @@ class MetaBuildWrapper(object):
                             help='look up the command for a given config or '
                                  'builder')
     AddCommonOptions(subp)
+    subp.add_argument('--quiet', default=False, action='store_true',
+                      help='Print out just the arguments, '
+                           'do not emulate the output of the gen subcommand.')
+    subp.add_argument('--recursive', default=False, action='store_true',
+                      help='Lookup arguments from imported files, '
+                           'implies --quiet')
     subp.set_defaults(func=self.CmdLookup)
 
     subp = subps.add_parser(
@@ -307,12 +319,15 @@ class MetaBuildWrapper(object):
 
   def CmdLookup(self):
     vals = self.Lookup()
-    cmd = self.GNCmd('gen', '_path_')
-    gn_args = self.GNArgs(vals)
-    self.Print('\nWriting """\\\n%s""" to _path_/args.gn.\n' % gn_args)
-    env = None
+    gn_args = self.GNArgs(vals, expand_imports=self.args.recursive)
+    if self.args.quiet or self.args.recursive:
+      self.Print(gn_args, end='')
+    else:
+      cmd = self.GNCmd('gen', '_path_')
+      self.Print('\nWriting """\\\n%s""" to _path_/args.gn.\n' % gn_args)
+      env = None
 
-    self.PrintCmd(cmd, env)
+      self.PrintCmd(cmd, env)
     return 0
 
   def CmdRun(self):
@@ -347,19 +362,39 @@ class MetaBuildWrapper(object):
     for k, v in self._DefaultDimensions() + self.args.dimensions:
       dimensions += ['-d', k, v]
 
+    archive_json_path = self.ToSrcRelPath(
+        '%s/%s.archive.json' % (build_dir, target))
     cmd = [
-        self.executable,
-        self.PathJoin('tools', 'swarming_client', 'isolate.py'),
+        self.PathJoin(self.chromium_src_dir, 'tools', 'luci-go',
+                      self.isolate_exe),
         'archive',
+        '-i',
+        self.ToSrcRelPath('%s/%s.isolate' % (build_dir, target)),
         '-s',
         self.ToSrcRelPath('%s/%s.isolated' % (build_dir, target)),
         '-I', 'isolateserver.appspot.com',
+        '-dump-json',
+        archive_json_path,
       ]
-    ret, out, _ = self.Run(cmd, force_verbose=False)
+    ret, _, _ = self.Run(cmd, force_verbose=False)
     if ret:
       return ret
 
-    isolated_hash = out.splitlines()[0].split()[0]
+    try:
+      archive_hashes = json.loads(self.ReadFile(archive_json_path))
+    except Exception:
+      self.Print(
+          'Failed to read JSON file "%s"' % archive_json_path, file=sys.stderr)
+      return 1
+    try:
+      isolated_hash = archive_hashes[target]
+    except Exception:
+      self.Print(
+          'Cannot find hash for "%s" in "%s", file content: %s' %
+          (target, archive_json_path, archive_hashes),
+          file=sys.stderr)
+      return 1
+
     cmd = [
         self.executable,
         self.PathJoin('tools', 'swarming_client', 'swarming.py'),
@@ -375,11 +410,11 @@ class MetaBuildWrapper(object):
 
   def _RunLocallyIsolated(self, build_dir, target):
     cmd = [
-        self.executable,
-        self.PathJoin('tools', 'swarming_client', 'isolate.py'),
+        self.PathJoin(self.chromium_src_dir, 'tools', 'luci-go',
+                      self.isolate_exe),
         'run',
-        '-s',
-        self.ToSrcRelPath('%s/%s.isolated' % (build_dir, target)),
+        '-i',
+        self.ToSrcRelPath('%s/%s.isolate' % (build_dir, target)),
       ]
     if self.args.extra_args:
       cmd += ['--'] + self.args.extra_args
@@ -394,7 +429,7 @@ class MetaBuildWrapper(object):
     if self.platform == 'darwin':
       os_dim = ('os', 'Mac-10.12')
     elif self.platform.startswith('linux'):
-      os_dim = ('os', 'Ubuntu-14.04')
+      os_dim = ('os', 'Ubuntu-16.04')
     elif self.platform == 'win32':
       os_dim = ('os', 'Windows-10')
     else:
@@ -702,15 +737,17 @@ class MetaBuildWrapper(object):
       self.WriteFile(gn_runtime_deps_path, '\n'.join(labels) + '\n')
       cmd.append('--runtime-deps-list-file=%s' % gn_runtime_deps_path)
 
-    ret, _, _ = self.Run(cmd)
+    ret, output, _ = self.Run(cmd)
     if ret:
+        if self.args.json_output:
+          # write errors to json.output
+          self.WriteJSON({'output': output}, self.args.json_output)
         # If `gn gen` failed, we should exit early rather than trying to
         # generate isolates. Run() will have already logged any error output.
         self.Print('GN gen failed: %d' % ret)
         return ret
 
     android = 'target_os="android"' in vals['gn_args']
-    fuchsia = 'target_os="fuchsia"' in vals['gn_args']
     for target in swarming_targets:
       if android:
         # Android targets may be either android_apk or executable. The former
@@ -720,11 +757,6 @@ class MetaBuildWrapper(object):
         runtime_deps_targets = [
             target + '.runtime_deps',
             'obj/%s.stamp.runtime_deps' % label.replace(':', '/')]
-      elif fuchsia:
-        # Only emit a runtime deps file for the group() target on Fuchsia.
-        label = isolate_map[target]['label']
-        runtime_deps_targets = [
-          'obj/%s.stamp.runtime_deps' % label.replace(':', '/')]
       elif (isolate_map[target]['type'] == 'script' or
             isolate_map[target].get('label_type') == 'group'):
         # For script targets, the build target is usually a group,
@@ -779,13 +811,11 @@ class MetaBuildWrapper(object):
     self.WriteIsolateFiles(build_dir, target, runtime_deps)
 
     ret, _, _ = self.Run([
-        self.executable,
-        self.PathJoin('tools', 'swarming_client', 'isolate.py'),
+        self.PathJoin(self.chromium_src_dir, 'tools', 'luci-go',
+                      self.isolate_exe),
         'check',
         '-i',
-        self.ToSrcRelPath('%s/%s.isolate' % (build_dir, target)),
-        '-s',
-        self.ToSrcRelPath('%s/%s.isolated' % (build_dir, target))],
+        self.ToSrcRelPath('%s/%s.isolate' % (build_dir, target))],
         buffer_output=False)
 
     return ret
@@ -852,7 +882,7 @@ class MetaBuildWrapper(object):
     return [gn_path, subcommand, path] + list(args)
 
 
-  def GNArgs(self, vals):
+  def GNArgs(self, vals, expand_imports=False):
     if vals['cros_passthrough']:
       if not 'GN_ARGS' in os.environ:
         raise MBErr('MB is expecting GN_ARGS to be in the environment')
@@ -874,15 +904,24 @@ class MetaBuildWrapper(object):
     if android_version_name:
       gn_args += ' android_default_version_name="%s"' % android_version_name
 
-    # Canonicalize the arg string into a sorted, newline-separated list
-    # of key-value pairs, and de-dup the keys if need be so that only
-    # the last instance of each arg is listed.
-    gn_args = gn_helpers.ToGNString(gn_helpers.FromGNArgs(gn_args))
+    args_gn_lines = []
+    parsed_gn_args = {}
 
     args_file = vals.get('args_file', None)
     if args_file:
-      gn_args = ('import("%s")\n' % vals['args_file']) + gn_args
-    return gn_args
+      if expand_imports:
+        content = self.ReadFile(self.ToAbsPath(args_file))
+        parsed_gn_args = gn_helpers.FromGNArgs(content)
+      else:
+        args_gn_lines.append('import("%s")' % args_file)
+
+    # Canonicalize the arg string into a sorted, newline-separated list
+    # of key-value pairs, and de-dup the keys if need be so that only
+    # the last instance of each arg is listed.
+    parsed_gn_args.update(gn_helpers.FromGNArgs(gn_args))
+    args_gn_lines.append(gn_helpers.ToGNString(parsed_gn_args))
+
+    return '\n'.join(args_gn_lines)
 
   def ToAbsPath(self, build_path, *comps):
     return self.PathJoin(self.chromium_src_dir,
@@ -949,8 +988,11 @@ class MetaBuildWrapper(object):
     try:
       self.WriteJSON(gn_inp, gn_input_path)
       cmd = self.GNCmd('analyze', build_path, gn_input_path, gn_output_path)
-      ret, _, _ = self.Run(cmd, force_verbose=True)
+      ret, output, _ = self.Run(cmd, force_verbose=True)
       if ret:
+        if self.args.json_output:
+          # write errors to json.output
+          self.WriteJSON({'output': output}, self.args.json_output)
         return ret
 
       gn_outp_str = self.ReadFile(gn_output_path)

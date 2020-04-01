@@ -8,8 +8,9 @@
 #include "src/base/compiler-specific.h"
 #include "src/base/enum-set.h"
 #include "src/base/flags.h"
-#include "src/globals.h"
-#include "src/machine-type.h"
+#include "src/codegen/machine-type.h"
+#include "src/compiler/globals.h"
+#include "src/compiler/write-barrier-kind.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -48,6 +49,46 @@ using LoadRepresentation = MachineType;
 
 V8_EXPORT_PRIVATE LoadRepresentation LoadRepresentationOf(Operator const*)
     V8_WARN_UNUSED_RESULT;
+
+enum class LoadKind {
+  kNormal,
+  kUnaligned,
+  kProtected,
+};
+
+size_t hash_value(LoadKind);
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, LoadKind);
+
+enum class LoadTransformation {
+  kS8x16LoadSplat,
+  kS16x8LoadSplat,
+  kS32x4LoadSplat,
+  kS64x2LoadSplat,
+  kI16x8Load8x8S,
+  kI16x8Load8x8U,
+  kI32x4Load16x4S,
+  kI32x4Load16x4U,
+  kI64x2Load32x2S,
+  kI64x2Load32x2U,
+};
+
+size_t hash_value(LoadTransformation);
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, LoadTransformation);
+
+struct LoadTransformParameters {
+  LoadKind kind;
+  LoadTransformation transformation;
+};
+
+size_t hash_value(LoadTransformParameters);
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&,
+                                           LoadTransformParameters);
+
+V8_EXPORT_PRIVATE LoadTransformParameters const& LoadTransformParametersOf(
+    Operator const*) V8_WARN_UNUSED_RESULT;
 
 // A Store needs a MachineType and a WriteBarrierKind in order to emit the
 // correct write barrier.
@@ -111,6 +152,34 @@ MachineRepresentation AtomicStoreRepresentationOf(Operator const* op)
     V8_WARN_UNUSED_RESULT;
 
 MachineType AtomicOpType(Operator const* op) V8_WARN_UNUSED_RESULT;
+
+class S8x16ShuffleParameter {
+ public:
+  explicit S8x16ShuffleParameter(const uint8_t shuffle[16]) {
+    std::copy(shuffle, shuffle + 16, shuffle_.begin());
+  }
+  const std::array<uint8_t, 16>& shuffle() const { return shuffle_; }
+  const uint8_t* data() const { return shuffle_.data(); }
+  uint8_t operator[](int x) const { return shuffle_[x]; }
+
+ private:
+  std::array<uint8_t, 16> shuffle_;
+};
+
+V8_EXPORT_PRIVATE bool operator==(S8x16ShuffleParameter const& lhs,
+                                  S8x16ShuffleParameter const& rhs);
+bool operator!=(S8x16ShuffleParameter const& lhs,
+                S8x16ShuffleParameter const& rhs);
+
+size_t hash_value(S8x16ShuffleParameter const& p);
+
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&,
+                                           S8x16ShuffleParameter const&);
+
+V8_EXPORT_PRIVATE S8x16ShuffleParameter const& S8x16ShuffleParameterOf(
+    Operator const* op) V8_WARN_UNUSED_RESULT;
+
+StackCheckKind StackCheckKindOf(Operator const* op) V8_WARN_UNUSED_RESULT;
 
 // Interface for building machine-level operators. These operators are
 // machine-level but machine-independent and thus define a language suitable
@@ -216,7 +285,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
           AlignmentRequirements::FullUnalignedAccessSupport());
 
   const Operator* Comment(const char* msg);
-  const Operator* DebugAbort();
+  const Operator* AbortCSAAssert();
   const Operator* DebugBreak();
   const Operator* UnsafePointerAdd();
 
@@ -236,6 +305,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const OptionalOperator Word64ReverseBits();
   const Operator* Word32ReverseBytes();
   const Operator* Word64ReverseBytes();
+  const Operator* Simd128ReverseBytes();
   const OptionalOperator Int32AbsWithOverflow();
   const OptionalOperator Int64AbsWithOverflow();
 
@@ -295,8 +365,16 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* Uint64LessThanOrEqual();
   const Operator* Uint64Mod();
 
-  // This operator reinterprets the bits of a tagged pointer as word.
+  // This operator reinterprets the bits of a tagged pointer as a word.
   const Operator* BitcastTaggedToWord();
+
+  // This operator reinterprets the bits of a tagged value as a word preserving
+  // non-pointer bits (all the bits that are not modified by GC):
+  // 1) smi tag
+  // 2) weak tag
+  // 3) smi payload if the tagged value is a smi.
+  // Note, that it's illegal to "look" at the pointer bits of non-smi values.
+  const Operator* BitcastTaggedToWordForTagAndSmiBits();
 
   // This operator reinterprets the bits of a tagged MaybeObject pointer as
   // word.
@@ -330,16 +408,11 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* TryTruncateFloat32ToUint64();
   const Operator* TryTruncateFloat64ToUint64();
   const Operator* ChangeInt32ToFloat64();
+  const Operator* BitcastWord32ToWord64();
   const Operator* ChangeInt32ToInt64();
   const Operator* ChangeInt64ToFloat64();
   const Operator* ChangeUint32ToFloat64();
   const Operator* ChangeUint32ToUint64();
-  const Operator* ChangeTaggedToCompressed();
-  const Operator* ChangeTaggedPointerToCompressedPointer();
-  const Operator* ChangeTaggedSignedToCompressedSigned();
-  const Operator* ChangeCompressedToTagged();
-  const Operator* ChangeCompressedPointerToTaggedPointer();
-  const Operator* ChangeCompressedSignedToTaggedSigned();
 
   // These operators truncate or round numbers, both changing the representation
   // of the number and mapping multiple input values onto the same output value.
@@ -462,6 +535,25 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* Float64SilenceNaN();
 
   // SIMD operators.
+  const Operator* F64x2Splat();
+  const Operator* F64x2Abs();
+  const Operator* F64x2Neg();
+  const Operator* F64x2Sqrt();
+  const Operator* F64x2Add();
+  const Operator* F64x2Sub();
+  const Operator* F64x2Mul();
+  const Operator* F64x2Div();
+  const Operator* F64x2ExtractLane(int32_t);
+  const Operator* F64x2Min();
+  const Operator* F64x2Max();
+  const Operator* F64x2ReplaceLane(int32_t);
+  const Operator* F64x2Eq();
+  const Operator* F64x2Ne();
+  const Operator* F64x2Lt();
+  const Operator* F64x2Le();
+  const Operator* F64x2Qfma();
+  const Operator* F64x2Qfms();
+
   const Operator* F32x4Splat();
   const Operator* F32x4ExtractLane(int32_t);
   const Operator* F32x4ReplaceLane(int32_t);
@@ -469,6 +561,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* F32x4UConvertI32x4();
   const Operator* F32x4Abs();
   const Operator* F32x4Neg();
+  const Operator* F32x4Sqrt();
   const Operator* F32x4RecipApprox();
   const Operator* F32x4RecipSqrtApprox();
   const Operator* F32x4Add();
@@ -482,6 +575,31 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* F32x4Ne();
   const Operator* F32x4Lt();
   const Operator* F32x4Le();
+  const Operator* F32x4Qfma();
+  const Operator* F32x4Qfms();
+
+  const Operator* I64x2Splat();
+  const Operator* I64x2SplatI32Pair();
+  const Operator* I64x2ExtractLane(int32_t);
+  const Operator* I64x2ReplaceLane(int32_t);
+  const Operator* I64x2ReplaceLaneI32Pair(int32_t);
+  const Operator* I64x2Neg();
+  const Operator* I64x2Shl();
+  const Operator* I64x2ShrS();
+  const Operator* I64x2Add();
+  const Operator* I64x2Sub();
+  const Operator* I64x2Mul();
+  const Operator* I64x2MinS();
+  const Operator* I64x2MaxS();
+  const Operator* I64x2Eq();
+  const Operator* I64x2Ne();
+  const Operator* I64x2GtS();
+  const Operator* I64x2GeS();
+  const Operator* I64x2ShrU();
+  const Operator* I64x2MinU();
+  const Operator* I64x2MaxU();
+  const Operator* I64x2GtU();
+  const Operator* I64x2GeU();
 
   const Operator* I32x4Splat();
   const Operator* I32x4ExtractLane(int32_t);
@@ -490,8 +608,8 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I32x4SConvertI16x8Low();
   const Operator* I32x4SConvertI16x8High();
   const Operator* I32x4Neg();
-  const Operator* I32x4Shl(int32_t);
-  const Operator* I32x4ShrS(int32_t);
+  const Operator* I32x4Shl();
+  const Operator* I32x4ShrS();
   const Operator* I32x4Add();
   const Operator* I32x4AddHoriz();
   const Operator* I32x4Sub();
@@ -506,20 +624,23 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I32x4UConvertF32x4();
   const Operator* I32x4UConvertI16x8Low();
   const Operator* I32x4UConvertI16x8High();
-  const Operator* I32x4ShrU(int32_t);
+  const Operator* I32x4ShrU();
   const Operator* I32x4MinU();
   const Operator* I32x4MaxU();
   const Operator* I32x4GtU();
   const Operator* I32x4GeU();
+  const Operator* I32x4Abs();
+  const Operator* I32x4BitMask();
 
   const Operator* I16x8Splat();
-  const Operator* I16x8ExtractLane(int32_t);
+  const Operator* I16x8ExtractLaneU(int32_t);
+  const Operator* I16x8ExtractLaneS(int32_t);
   const Operator* I16x8ReplaceLane(int32_t);
   const Operator* I16x8SConvertI8x16Low();
   const Operator* I16x8SConvertI8x16High();
   const Operator* I16x8Neg();
-  const Operator* I16x8Shl(int32_t);
-  const Operator* I16x8ShrS(int32_t);
+  const Operator* I16x8Shl();
+  const Operator* I16x8ShrS();
   const Operator* I16x8SConvertI32x4();
   const Operator* I16x8Add();
   const Operator* I16x8AddSaturateS();
@@ -536,7 +657,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
 
   const Operator* I16x8UConvertI8x16Low();
   const Operator* I16x8UConvertI8x16High();
-  const Operator* I16x8ShrU(int32_t);
+  const Operator* I16x8ShrU();
   const Operator* I16x8UConvertI32x4();
   const Operator* I16x8AddSaturateU();
   const Operator* I16x8SubSaturateU();
@@ -544,13 +665,17 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I16x8MaxU();
   const Operator* I16x8GtU();
   const Operator* I16x8GeU();
+  const Operator* I16x8RoundingAverageU();
+  const Operator* I16x8Abs();
+  const Operator* I16x8BitMask();
 
   const Operator* I8x16Splat();
-  const Operator* I8x16ExtractLane(int32_t);
+  const Operator* I8x16ExtractLaneU(int32_t);
+  const Operator* I8x16ExtractLaneS(int32_t);
   const Operator* I8x16ReplaceLane(int32_t);
   const Operator* I8x16Neg();
-  const Operator* I8x16Shl(int32_t);
-  const Operator* I8x16ShrS(int32_t);
+  const Operator* I8x16Shl();
+  const Operator* I8x16ShrS();
   const Operator* I8x16SConvertI16x8();
   const Operator* I8x16Add();
   const Operator* I8x16AddSaturateS();
@@ -564,7 +689,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I8x16GtS();
   const Operator* I8x16GeS();
 
-  const Operator* I8x16ShrU(int32_t);
+  const Operator* I8x16ShrU();
   const Operator* I8x16UConvertI16x8();
   const Operator* I8x16AddSaturateU();
   const Operator* I8x16SubSaturateU();
@@ -572,6 +697,9 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* I8x16MaxU();
   const Operator* I8x16GtU();
   const Operator* I8x16GeU();
+  const Operator* I8x16RoundingAverageU();
+  const Operator* I8x16Abs();
+  const Operator* I8x16BitMask();
 
   const Operator* S128Load();
   const Operator* S128Store();
@@ -582,9 +710,13 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* S128Xor();
   const Operator* S128Not();
   const Operator* S128Select();
+  const Operator* S128AndNot();
 
+  const Operator* S8x16Swizzle();
   const Operator* S8x16Shuffle(const uint8_t shuffle[16]);
 
+  const Operator* S1x2AnyTrue();
+  const Operator* S1x2AllTrue();
   const Operator* S1x4AnyTrue();
   const Operator* S1x4AllTrue();
   const Operator* S1x8AnyTrue();
@@ -596,6 +728,8 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* Load(LoadRepresentation rep);
   const Operator* PoisonedLoad(LoadRepresentation rep);
   const Operator* ProtectedLoad(LoadRepresentation rep);
+
+  const Operator* LoadTransform(LoadKind kind, LoadTransformation transform);
 
   // store [base + index], value
   const Operator* Store(StoreRepresentation rep);
@@ -616,9 +750,20 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   const Operator* Word64PoisonOnSpeculation();
 
   // Access to the machine stack.
-  const Operator* LoadStackPointer();
   const Operator* LoadFramePointer();
   const Operator* LoadParentFramePointer();
+
+  // Compares: stack_pointer [- offset] > value. The offset is optionally
+  // applied for kFunctionEntry stack checks.
+  const Operator* StackPointerGreaterThan(StackCheckKind kind);
+
+  // Loads the offset that should be applied to the current stack
+  // pointer before a stack check. Used as input to the
+  // Runtime::kStackGuardWithGap call.
+  const Operator* LoadStackCheckOffset();
+
+  // Memory barrier.
+  const Operator* MemBarrier();
 
   // atomic-load [base + index]
   const Operator* Word32AtomicLoad(LoadRepresentation rep);
@@ -645,9 +790,9 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   // atomic-or [base + index], value
   const Operator* Word32AtomicOr(MachineType type);
   // atomic-xor [base + index], value
-  const Operator* Word32AtomicXor(MachineType rep);
+  const Operator* Word32AtomicXor(MachineType type);
   // atomic-add [base + index], value
-  const Operator* Word64AtomicAdd(MachineType rep);
+  const Operator* Word64AtomicAdd(MachineType type);
   // atomic-sub [base + index], value
   const Operator* Word64AtomicSub(MachineType type);
   // atomic-and [base + index], value
@@ -655,7 +800,7 @@ class V8_EXPORT_PRIVATE MachineOperatorBuilder final
   // atomic-or [base + index], value
   const Operator* Word64AtomicOr(MachineType type);
   // atomic-xor [base + index], value
-  const Operator* Word64AtomicXor(MachineType rep);
+  const Operator* Word64AtomicXor(MachineType type);
   // atomic-pair-load [base + index]
   const Operator* Word32AtomicPairLoad();
   // atomic-pair-sub [base + index], value_high, value-low

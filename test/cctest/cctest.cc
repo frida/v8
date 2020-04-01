@@ -29,15 +29,19 @@
 #include "test/cctest/cctest.h"
 
 #include "include/libplatform/libplatform.h"
-#include "src/compiler.h"
+#include "src/codegen/compiler.h"
+#include "src/codegen/optimized-compilation-info.h"
 #include "src/compiler/pipeline.h"
 #include "src/debug/debug.h"
-#include "src/objects-inl.h"
-#include "src/optimized-compilation-info.h"
+#include "src/objects/objects-inl.h"
 #include "src/trap-handler/trap-handler.h"
 #include "test/cctest/print-extension.h"
 #include "test/cctest/profiler-extension.h"
 #include "test/cctest/trace-extension.h"
+
+#ifdef V8_USE_PERFETTO
+#include "perfetto/tracing.h"
+#endif  // V8_USE_PERFETTO
 
 #if V8_OS_WIN
 #include <windows.h>  // NOLINT
@@ -121,6 +125,9 @@ void CcTest::Run() {
 }
 
 i::Heap* CcTest::heap() { return i_isolate()->heap(); }
+i::ReadOnlyHeap* CcTest::read_only_heap() {
+  return i_isolate()->read_only_heap();
+}
 
 void CcTest::CollectGarbage(i::AllocationSpace space) {
   heap()->CollectGarbage(space, i::GarbageCollectionReason::kTesting);
@@ -225,10 +232,9 @@ HandleAndZoneScope::HandleAndZoneScope()
 
 HandleAndZoneScope::~HandleAndZoneScope() = default;
 
-i::Handle<i::JSFunction> Optimize(i::Handle<i::JSFunction> function,
-                                  i::Zone* zone, i::Isolate* isolate,
-                                  uint32_t flags,
-                                  i::compiler::JSHeapBroker** out_broker) {
+i::Handle<i::JSFunction> Optimize(
+    i::Handle<i::JSFunction> function, i::Zone* zone, i::Isolate* isolate,
+    uint32_t flags, std::unique_ptr<i::compiler::JSHeapBroker>* out_broker) {
   i::Handle<i::SharedFunctionInfo> shared(function->shared(), isolate);
   i::IsCompiledScope is_compiled_scope(shared->is_compiled_scope());
   CHECK(is_compiled_scope.is_compiled() ||
@@ -249,7 +255,7 @@ i::Handle<i::JSFunction> Optimize(i::Handle<i::JSFunction> function,
   i::Handle<i::Code> code =
       i::compiler::Pipeline::GenerateCodeForTesting(&info, isolate, out_broker)
           .ToHandleChecked();
-  info.native_context()->AddOptimizedCode(*code);
+  info.native_context().AddOptimizedCode(*code);
   function->set_code(*code);
 
   return function;
@@ -267,7 +273,6 @@ static void SuggestTestHarness(int tests) {
   printf("Running multiple tests in sequence is deprecated and may cause "
          "bogus failure.  Consider using tools/run-tests.py instead.\n");
 }
-
 
 int main(int argc, char* argv[]) {
 #if V8_OS_WIN
@@ -300,6 +305,13 @@ int main(int argc, char* argv[]) {
     }
   }
 
+#ifdef V8_USE_PERFETTO
+  // Set up the in-process backend that the tracing controller will connect to.
+  perfetto::TracingInitArgs init_args;
+  init_args.backends = perfetto::BackendType::kInProcessBackend;
+  perfetto::Tracing::Initialize(init_args);
+#endif  // V8_USE_PERFETTO
+
   v8::V8::InitializeICUDefaultLocation(argv[0]);
   std::unique_ptr<v8::Platform> platform(v8::platform::NewDefaultPlatform());
   v8::V8::InitializePlatform(platform.get());
@@ -315,9 +327,9 @@ int main(int argc, char* argv[]) {
   CcTest::set_array_buffer_allocator(
       v8::ArrayBuffer::Allocator::NewDefaultAllocator());
 
-  v8::RegisterExtension(v8::base::make_unique<i::PrintExtension>());
-  v8::RegisterExtension(v8::base::make_unique<i::ProfilerExtension>());
-  v8::RegisterExtension(v8::base::make_unique<i::TraceExtension>());
+  v8::RegisterExtension(std::make_unique<i::PrintExtension>());
+  v8::RegisterExtension(std::make_unique<i::ProfilerExtension>());
+  v8::RegisterExtension(std::make_unique<i::TraceExtension>());
 
   int tests_run = 0;
   bool print_run_count = true;

@@ -6,6 +6,7 @@ Running test: testPreciseCountBaseline
     result : {
         result : [
         ]
+        timestamp : <timestamp>
     }
 }
 {
@@ -13,6 +14,7 @@ Running test: testPreciseCountBaseline
     result : {
         result : [
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -34,7 +36,7 @@ Running test: testPreciseCountCoverage
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -94,7 +96,7 @@ Running test: testPreciseCountCoverage
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -106,9 +108,10 @@ Running test: testPreciseCountCoverage
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
+        timestamp : <timestamp>
     }
 }
 {
@@ -116,6 +119,7 @@ Running test: testPreciseCountCoverage
     result : {
         result : [
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -137,7 +141,7 @@ Running test: testPreciseCountCoverageIncremental
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -195,6 +199,7 @@ Running test: testPreciseCountCoverageIncremental
                 url : testPreciseCountCoverageIncremental
             }
         ]
+        timestamp : <timestamp>
     }
 }
 {
@@ -221,7 +226,7 @@ Running test: testPreciseCountCoverageIncremental
     result : {
         result : {
             type : string
-            value : unoptimized
+            value : optimized
         }
     }
 }
@@ -262,9 +267,14 @@ Running test: testPreciseCountCoverageIncremental
                                 startOffset : 74
                             }
                             [1] : {
-                                count : 0
+                                count : 1
                                 endOffset : 156
                                 startOffset : 143
+                            }
+                            [2] : {
+                                count : 1
+                                endOffset : 172
+                                startOffset : 157
                             }
                         ]
                     }
@@ -275,7 +285,7 @@ Running test: testPreciseCountCoverageIncremental
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -287,12 +297,12 @@ Running test: testPreciseCountCoverageIncremental
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
             [2] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -304,9 +314,10 @@ Running test: testPreciseCountCoverageIncremental
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -373,7 +384,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -423,7 +434,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -435,7 +446,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
     }
@@ -447,7 +458,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -497,7 +508,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -509,7 +520,7 @@ Running test: testBestEffortCoverageWithPreciseBinaryEnabled
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
     }
@@ -533,7 +544,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -583,7 +594,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -595,7 +606,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
     }
@@ -607,7 +618,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -657,7 +668,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : false
                         ranges : [
                             [0] : {
@@ -669,7 +680,7 @@ Running test: testBestEffortCoverageWithPreciseCountEnabled
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
     }
@@ -691,7 +702,7 @@ Running test: testEnablePreciseCountCoverageAtPause
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -703,9 +714,10 @@ Running test: testEnablePreciseCountCoverageAtPause
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -727,7 +739,7 @@ Running test: testPreciseBinaryCoverage
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -775,6 +787,7 @@ Running test: testPreciseBinaryCoverage
                 url : testPreciseBinaryCoverage
             }
         ]
+        timestamp : <timestamp>
     }
 }
 {
@@ -812,22 +825,6 @@ Running test: testPreciseBinaryCoverage
             [0] : {
                 functions : [
                     [0] : {
-                        functionName : fib
-                        isBlockCoverage : true
-                        ranges : [
-                            [0] : {
-                                count : 0
-                                endOffset : 73
-                                startOffset : 1
-                            }
-                            [1] : {
-                                count : 1
-                                endOffset : 72
-                                startOffset : 32
-                            }
-                        ]
-                    }
-                    [1] : {
                         functionName : is_optimized
                         isBlockCoverage : true
                         ranges : [
@@ -845,7 +842,7 @@ Running test: testPreciseBinaryCoverage
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -857,12 +854,12 @@ Running test: testPreciseBinaryCoverage
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
             [2] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -874,9 +871,10 @@ Running test: testPreciseBinaryCoverage
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -886,6 +884,7 @@ Running test: testPreciseEmptyScriptCoverageEntries
     result : {
         result : [
         ]
+        timestamp : <timestamp>
     }
 }
 
@@ -905,7 +904,7 @@ Running test: testPreciseCountCoveragePartial
             [0] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -986,6 +985,7 @@ Running test: testPreciseCountCoveragePartial
                 url : testPreciseCountCoveragePartial
             }
         ]
+        timestamp : <timestamp>
     }
 }
 {
@@ -1023,7 +1023,7 @@ Running test: testPreciseCountCoveragePartial
             [1] : {
                 functions : [
                     [0] : {
-                        functionName :
+                        functionName : 
                         isBlockCoverage : true
                         ranges : [
                             [0] : {
@@ -1035,8 +1035,9 @@ Running test: testPreciseCountCoveragePartial
                     }
                 ]
                 scriptId : <scriptId>
-                url :
+                url : 
             }
         ]
+        timestamp : <timestamp>
     }
 }

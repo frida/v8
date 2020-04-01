@@ -5,15 +5,15 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #include "include/v8.h"
-#include "src/api-inl.h"
-#include "src/handles.h"
-#include "src/objects-inl.h"
+#include "src/api/api-inl.h"
+#include "src/handles/handles.h"
+#include "src/objects/objects-inl.h"
 #include "test/unittests/test-utils.h"
 
 namespace v8 {
 namespace remote_object_unittest {
 
-typedef TestWithIsolate RemoteObjectTest;
+using RemoteObjectTest = TestWithIsolate;
 
 namespace {
 
@@ -105,8 +105,7 @@ TEST_F(RemoteObjectTest, ClassOf) {
       AccessCheck, NamedPropertyHandlerConfiguration(NamedGetter),
       IndexedPropertyHandlerConfiguration());
   constructor_template->SetClassName(
-      String::NewFromUtf8(isolate(), "test_class", NewStringType::kNormal)
-          .ToLocalChecked());
+      String::NewFromUtf8Literal(isolate(), "test_class"));
 
   Local<Object> remote_object =
       constructor_template->NewRemoteInstance().ToLocalChecked();

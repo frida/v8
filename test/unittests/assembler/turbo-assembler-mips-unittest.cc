@@ -2,9 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/macro-assembler.h"
-#include "src/mips/assembler-mips-inl.h"
-#include "src/simulator.h"
+#include "src/codegen/macro-assembler.h"
+#include "src/codegen/mips/assembler-mips-inl.h"
+#include "src/execution/simulator.h"
 #include "test/common/assembler-tester.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gtest-support.h"
@@ -22,14 +22,15 @@ class TurboAssemblerTest : public TestWithIsolate {};
 
 TEST_F(TurboAssemblerTest, TestHardAbort) {
   auto buffer = AllocateAssemblerBuffer();
-  TurboAssembler tasm(nullptr, AssemblerOptions{}, CodeObjectRequired::kNo,
+  TurboAssembler tasm(isolate(), AssemblerOptions{}, CodeObjectRequired::kNo,
                       buffer->CreateView());
+  __ set_root_array_available(false);
   __ set_abort_hard(true);
 
   __ Abort(AbortReason::kNoReason);
 
   CodeDesc desc;
-  tasm.GetCode(nullptr, &desc);
+  tasm.GetCode(isolate(), &desc);
   buffer->MakeExecutable();
   // We need an isolate here to execute in the simulator.
   auto f = GeneratedCode<void>::FromBuffer(isolate(), buffer->start());
@@ -39,8 +40,9 @@ TEST_F(TurboAssemblerTest, TestHardAbort) {
 
 TEST_F(TurboAssemblerTest, TestCheck) {
   auto buffer = AllocateAssemblerBuffer();
-  TurboAssembler tasm(nullptr, AssemblerOptions{}, CodeObjectRequired::kNo,
+  TurboAssembler tasm(isolate(), AssemblerOptions{}, CodeObjectRequired::kNo,
                       buffer->CreateView());
+  __ set_root_array_available(false);
   __ set_abort_hard(true);
 
   // Fail if the first parameter (in {a0}) is 17.
@@ -48,7 +50,7 @@ TEST_F(TurboAssemblerTest, TestCheck) {
   __ Ret();
 
   CodeDesc desc;
-  tasm.GetCode(nullptr, &desc);
+  tasm.GetCode(isolate(), &desc);
   buffer->MakeExecutable();
   // We need an isolate here to execute in the simulator.
   auto f = GeneratedCode<void, int>::FromBuffer(isolate(), buffer->start());

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --experimental-inline-promise-constructor
+// Flags: --allow-natives-syntax
 
 // We have to patch mjsunit because normal assertion failures just throw
 // exceptions which are swallowed in a then clause.
@@ -82,6 +82,7 @@ failWithMessage = (msg) => %AbortJS(msg);
   function foo() {
     return new Promise((a, b) => { throw new Error(); });
   }
+  %PrepareFunctionForOptimization(foo);
 
   function bar(i) {
     let error = null;

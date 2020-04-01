@@ -5,7 +5,7 @@
 #ifndef V8_COMPILER_BACKEND_UNWINDING_INFO_WRITER_H_
 #define V8_COMPILER_BACKEND_UNWINDING_INFO_WRITER_H_
 
-#include "src/flags.h"
+#include "src/flags/flags.h"
 
 #if V8_TARGET_ARCH_ARM
 #include "src/compiler/backend/arm/unwinding-info-writer-arm.h"
@@ -13,6 +13,10 @@
 #include "src/compiler/backend/arm64/unwinding-info-writer-arm64.h"
 #elif V8_TARGET_ARCH_X64
 #include "src/compiler/backend/x64/unwinding-info-writer-x64.h"
+#elif V8_TARGET_ARCH_S390X
+#include "src/compiler/backend/s390/unwinding-info-writer-s390.h"
+#elif V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
+#include "src/compiler/backend/ppc/unwinding-info-writer-ppc.h"
 #else
 
 // Placeholder for unsupported architectures.
@@ -23,25 +27,25 @@ namespace v8 {
 namespace internal {
 
 class EhFrameWriter;
+class Zone;
 
 namespace compiler {
 
 class InstructionBlock;
 
+static_assert(!FLAG_perf_prof_unwinding_info,
+              "--perf-prof-unwinding-info should be statically disabled if not "
+              "supported");
+
 class UnwindingInfoWriter {
  public:
-  explicit UnwindingInfoWriter(Zone* zone) {}
+  explicit UnwindingInfoWriter(Zone*) {}
 
-  void SetNumberOfInstructionBlocks(int number) {
-    if (FLAG_perf_prof_unwinding_info) UNIMPLEMENTED();
-  }
+  void SetNumberOfInstructionBlocks(int number) {}
 
-  void BeginInstructionBlock(int pc_offset, const InstructionBlock* block) {
-    if (FLAG_perf_prof_unwinding_info) UNIMPLEMENTED();
-  }
-  void EndInstructionBlock(const InstructionBlock* block) {
-    if (FLAG_perf_prof_unwinding_info) UNIMPLEMENTED();
-  }
+  void BeginInstructionBlock(int pc_offset, const InstructionBlock*) {}
+
+  void EndInstructionBlock(const InstructionBlock*) {}
 
   void Finish(int code_size) {}
 

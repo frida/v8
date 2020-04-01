@@ -266,9 +266,11 @@ function osr_inner(t, limit) {
       }
       r += x;
     }
+    %PrepareFunctionForOptimization(osr_inner);
   }
   return r;
 }
+%PrepareFunctionForOptimization(osr_inner);
 
 function osr_outer(t, osr_after) {
   var r = 1;
@@ -281,6 +283,7 @@ function osr_outer(t, osr_after) {
   }
   return r;
 }
+%PrepareFunctionForOptimization(osr_outer);
 
 function osr_outer_and_deopt(t, osr_after) {
   var r = 1;
@@ -290,6 +293,7 @@ function osr_outer_and_deopt(t, osr_after) {
   }
   return r;
 }
+%PrepareFunctionForOptimization(osr_outer_and_deopt);
 
 function test_osr() {
   with ({}) {}  // Disable optimizations of this function.

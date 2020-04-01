@@ -5,9 +5,10 @@
 #ifndef V8_PARSING_SCANNER_INL_H_
 #define V8_PARSING_SCANNER_INL_H_
 
-#include "src/char-predicates-inl.h"
 #include "src/parsing/keywords-gen.h"
 #include "src/parsing/scanner.h"
+#include "src/strings/char-predicates-inl.h"
+#include "src/utils/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -296,7 +297,7 @@ V8_INLINE Token::Value Scanner::ScanIdentifierOrKeywordInner() {
         if (!CanBeKeyword(scan_flags)) return Token::IDENTIFIER;
         // Could be a keyword or identifier.
         Vector<const uint8_t> chars = next().literal_chars.one_byte_literal();
-        return KeywordOrIdentifierToken(chars.start(), chars.length());
+        return KeywordOrIdentifierToken(chars.begin(), chars.length());
       }
 
       can_be_keyword = CanBeKeyword(scan_flags);
@@ -354,7 +355,6 @@ V8_INLINE Token::Value Scanner::ScanSingleToken() {
         case Token::RBRACE:
         case Token::LBRACK:
         case Token::RBRACK:
-        case Token::CONDITIONAL:
         case Token::COLON:
         case Token::SEMICOLON:
         case Token::COMMA:
@@ -362,6 +362,18 @@ V8_INLINE Token::Value Scanner::ScanSingleToken() {
         case Token::ILLEGAL:
           // One character tokens.
           return Select(token);
+
+        case Token::CONDITIONAL:
+          // ? ?. ??
+          Advance();
+          if (V8_UNLIKELY(allow_harmony_optional_chaining() && c0_ == '.')) {
+            Advance();
+            if (!IsDecimalDigit(c0_)) return Token::QUESTION_PERIOD;
+            PushBack('.');
+          } else if (V8_UNLIKELY(allow_harmony_nullish() && c0_ == '?')) {
+            return Select(Token::NULLISH);
+          }
+          return Token::CONDITIONAL;
 
         case Token::STRING:
           return ScanString();
@@ -494,6 +506,10 @@ V8_INLINE Token::Value Scanner::ScanSingleToken() {
           return ScanTemplateSpan();
 
         case Token::PRIVATE_NAME:
+          if (source_pos() == 0 && Peek() == '!') {
+            token = SkipSingleLineComment();
+            continue;
+          }
           return ScanPrivateName();
 
         case Token::WHITESPACE:

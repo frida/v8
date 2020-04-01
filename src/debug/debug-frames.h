@@ -5,22 +5,26 @@
 #ifndef V8_DEBUG_DEBUG_FRAMES_H_
 #define V8_DEBUG_DEBUG_FRAMES_H_
 
-#include "src/deoptimizer.h"
-#include "src/frames.h"
-#include "src/isolate.h"
-#include "src/objects.h"
-#include "src/v8threads.h"
+#include <memory>
+
+#include "src/deoptimizer/deoptimizer.h"
+#include "src/execution/isolate.h"
+#include "src/execution/v8threads.h"
+#include "src/objects/objects.h"
 #include "src/wasm/wasm-interpreter.h"
 
 namespace v8 {
 namespace internal {
+
+class JavaScriptFrame;
+class StandardFrame;
 
 class FrameInspector {
  public:
   FrameInspector(StandardFrame* frame, int inlined_frame_index,
                  Isolate* isolate);
 
-  ~FrameInspector();  // NOLINT (modernize-use-equals-default)
+  ~FrameInspector();
 
   int GetParametersCount();
   Handle<JSFunction> GetFunction() const { return function_; }
@@ -37,10 +41,7 @@ class FrameInspector {
   bool IsWasm();
   bool IsJavaScript();
 
-  inline JavaScriptFrame* javascript_frame() {
-    return frame_->is_arguments_adaptor() ? ArgumentsAdaptorFrame::cast(frame_)
-                                          : JavaScriptFrame::cast(frame_);
-  }
+  JavaScriptFrame* javascript_frame();
 
   int inlined_frame_index() const { return inlined_frame_index_; }
 

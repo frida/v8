@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/v8.h"
+#include "src/init/v8.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/heap/heap-inl.h"
 #include "src/interpreter/interpreter-intrinsics.h"
-#include "src/objects-inl.h"
+#include "src/objects/objects-inl.h"
 #include "test/cctest/interpreter/interpreter-tester.h"
 
 namespace v8 {
@@ -28,9 +28,23 @@ class InvokeIntrinsicHelper {
   template <class... A>
   Handle<Object> Invoke(A... args) {
     CHECK(IntrinsicsHelper::IsSupported(function_id_));
-    BytecodeArrayBuilder builder(zone_, sizeof...(args), 0, nullptr);
+    int parameter_count = sizeof...(args);
+#ifdef V8_REVERSE_JSARGS
+    // Move the parameter to locals, since the order of the
+    // arguments in the stack is reversed.
+    BytecodeArrayBuilder builder(zone_, parameter_count + 1, parameter_count,
+                                 nullptr);
+    for (int i = 0; i < parameter_count; i++) {
+      builder.MoveRegister(builder.Parameter(i), builder.Local(i));
+    }
+    RegisterList reg_list =
+        InterpreterTester::NewRegisterList(0, parameter_count);
+#else
+    // Add the receiver in the parameter count.
+    BytecodeArrayBuilder builder(zone_, parameter_count + 1, 0, nullptr);
     RegisterList reg_list = InterpreterTester::NewRegisterList(
-        builder.Receiver().index(), sizeof...(args));
+        builder.Parameter(0).index(), parameter_count);
+#endif
     builder.CallRuntime(function_id_, reg_list).Return();
     InterpreterTester tester(isolate_, builder.ToBytecodeArray(isolate_));
     auto callable = tester.GetCallable<A...>();
@@ -93,37 +107,6 @@ TEST(IsArray) {
   CHECK_EQ(*factory->false_value(),
            *helper.Invoke(helper.NewObject("'string'")));
   CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.NewObject("42")));
-}
-
-TEST(IsTypedArray) {
-  HandleAndZoneScope handles;
-
-  InvokeIntrinsicHelper helper(handles.main_isolate(), handles.main_zone(),
-                               Runtime::kInlineIsTypedArray);
-  Factory* factory = handles.main_isolate()->factory();
-
-  CHECK_EQ(*factory->false_value(),
-           *helper.Invoke(helper.NewObject("new Date()")));
-  CHECK_EQ(*factory->false_value(),
-           *helper.Invoke(helper.NewObject("(function() {})")));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.NewObject("([1])")));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.NewObject("({})")));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.NewObject("(/x/)")));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.Undefined()));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.Null()));
-  CHECK_EQ(*factory->false_value(),
-           *helper.Invoke(helper.NewObject("'string'")));
-  CHECK_EQ(*factory->false_value(), *helper.Invoke(helper.NewObject("42")));
-
-  CHECK_EQ(
-      *factory->true_value(),
-      *helper.Invoke(helper.NewObject("new Uint8Array(new ArrayBuffer(1));")));
-  CHECK_EQ(
-      *factory->true_value(),
-      *helper.Invoke(helper.NewObject("new Uint16Array(new ArrayBuffer(2));")));
-  CHECK_EQ(
-      *factory->true_value(),
-      *helper.Invoke(helper.NewObject("new Int32Array(new ArrayBuffer(4));")));
 }
 
 TEST(IsSmi) {

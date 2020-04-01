@@ -6,15 +6,16 @@
 
 #include "src/ast/ast.h"
 #include "src/base/bits.h"
-#include "src/counters.h"
 #include "src/heap/heap-inl.h"  // For InYoungGeneration().
 #include "src/ic/ic-inl.h"
+#include "src/logging/counters.h"
+#include "src/objects/tagged-value-inl.h"
 
 namespace v8 {
 namespace internal {
 
 StubCache::StubCache(Isolate* isolate) : isolate_(isolate) {
-  // Ensure the nullptr (aka Smi::kZero) which StubCache::Get() returns
+  // Ensure the nullptr (aka Smi::zero()) which StubCache::Get() returns
   // when the entry is not found is not considered as a handler.
   DCHECK(!IC::IsHandler(MaybeObject()));
 }
@@ -25,14 +26,13 @@ void StubCache::Initialize() {
   Clear();
 }
 
-// Hash algorithm for the primary table.  This algorithm is replicated in
-// assembler for every architecture.  Returns an index into the table that
+// Hash algorithm for the primary table. This algorithm is replicated in
+// the AccessorAssembler.  Returns an index into the table that
 // is scaled by 1 << kCacheIndexShift.
 int StubCache::PrimaryOffset(Name name, Map map) {
-  STATIC_ASSERT(kCacheIndexShift == Name::kHashShift);
   // Compute the hash of the name (use entire hash field).
-  DCHECK(name->HasHashCode());
-  uint32_t field = name->hash_field();
+  DCHECK(name.HasHashCode());
+  uint32_t field = name.hash_field();
   // Using only the low bits in 64-bit mode is unlikely to increase the
   // risk of collision even if the heap is spread over an area larger than
   // 4Gb (and not at all if it isn't).
@@ -70,8 +70,8 @@ bool CommonStubCacheChecks(StubCache* stub_cache, Name name, Map map,
   // can use identity checks instead of structural equality checks.
   DCHECK(!Heap::InYoungGeneration(name));
   DCHECK(!Heap::InYoungGeneration(handler));
-  DCHECK(name->IsUniqueName());
-  DCHECK(name->HasHashCode());
+  DCHECK(name.IsUniqueName());
+  DCHECK(name.HasHashCode());
   if (handler->ptr() != kNullAddress) DCHECK(IC::IsHandler(handler));
   return true;
 }
@@ -85,25 +85,28 @@ void StubCache::Set(Name name, Map map, MaybeObject handler) {
   // Compute the primary entry.
   int primary_offset = PrimaryOffset(name, map);
   Entry* primary = entry(primary_, primary_offset);
-  MaybeObject old_handler(primary->value);
-
+  MaybeObject old_handler(
+      TaggedValue::ToMaybeObject(isolate(), primary->value));
   // If the primary entry has useful data in it, we retire it to the
   // secondary cache before overwriting it.
   if (old_handler != MaybeObject::FromObject(
-                         isolate_->builtins()->builtin(Builtins::kIllegal)) &&
-      primary->map != kNullAddress) {
-    Map old_map = Map::cast(Object(primary->map));
-    int seed = PrimaryOffset(Name::cast(Object(primary->key)), old_map);
-    int secondary_offset =
-        SecondaryOffset(Name::cast(Object(primary->key)), seed);
+                         isolate()->builtins()->builtin(Builtins::kIllegal)) &&
+      !primary->map.IsSmi()) {
+    Map old_map =
+        Map::cast(StrongTaggedValue::ToObject(isolate(), primary->map));
+    int seed = PrimaryOffset(
+        Name::cast(StrongTaggedValue::ToObject(isolate(), primary->key)),
+        old_map);
+    int secondary_offset = SecondaryOffset(
+        Name::cast(StrongTaggedValue::ToObject(isolate(), primary->key)), seed);
     Entry* secondary = entry(secondary_, secondary_offset);
     *secondary = *primary;
   }
 
   // Update primary cache.
-  primary->key = name.ptr();
-  primary->value = handler.ptr();
-  primary->map = map.ptr();
+  primary->key = StrongTaggedValue(name);
+  primary->value = TaggedValue(handler);
+  primary->map = StrongTaggedValue(map);
   isolate()->counters()->megamorphic_stub_cache_updates()->Increment();
 }
 
@@ -111,13 +114,13 @@ MaybeObject StubCache::Get(Name name, Map map) {
   DCHECK(CommonStubCacheChecks(this, name, map, MaybeObject()));
   int primary_offset = PrimaryOffset(name, map);
   Entry* primary = entry(primary_, primary_offset);
-  if (primary->key == name.ptr() && primary->map == map.ptr()) {
-    return MaybeObject(primary->value);
+  if (primary->key == name && primary->map == map) {
+    return TaggedValue::ToMaybeObject(isolate(), primary->value);
   }
   int secondary_offset = SecondaryOffset(name, primary_offset);
   Entry* secondary = entry(secondary_, secondary_offset);
-  if (secondary->key == name.ptr() && secondary->map == map.ptr()) {
-    return MaybeObject(secondary->value);
+  if (secondary->key == name && secondary->map == map) {
+    return TaggedValue::ToMaybeObject(isolate(), secondary->value);
   }
   return MaybeObject();
 }
@@ -127,14 +130,14 @@ void StubCache::Clear() {
       isolate_->builtins()->builtin(Builtins::kIllegal));
   Name empty_string = ReadOnlyRoots(isolate()).empty_string();
   for (int i = 0; i < kPrimaryTableSize; i++) {
-    primary_[i].key = empty_string.ptr();
-    primary_[i].map = kNullAddress;
-    primary_[i].value = empty.ptr();
+    primary_[i].key = StrongTaggedValue(empty_string);
+    primary_[i].map = StrongTaggedValue(Smi::zero());
+    primary_[i].value = TaggedValue(empty);
   }
   for (int j = 0; j < kSecondaryTableSize; j++) {
-    secondary_[j].key = empty_string.ptr();
-    secondary_[j].map = kNullAddress;
-    secondary_[j].value = empty.ptr();
+    secondary_[j].key = StrongTaggedValue(empty_string);
+    secondary_[j].map = StrongTaggedValue(Smi::zero());
+    secondary_[j].value = TaggedValue(empty);
   }
 }
 

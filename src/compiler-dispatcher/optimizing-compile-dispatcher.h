@@ -8,17 +8,18 @@
 #include <atomic>
 #include <queue>
 
-#include "src/allocation.h"
 #include "src/base/platform/condition-variable.h"
 #include "src/base/platform/mutex.h"
 #include "src/base/platform/platform.h"
-#include "src/flags.h"
-#include "src/globals.h"
+#include "src/common/globals.h"
+#include "src/flags/flags.h"
+#include "src/utils/allocation.h"
 
 namespace v8 {
 namespace internal {
 
 class OptimizedCompilationJob;
+class RuntimeCallStats;
 class SharedFunctionInfo;
 
 class V8_EXPORT_PRIVATE OptimizingCompileDispatcher {
@@ -57,7 +58,7 @@ class V8_EXPORT_PRIVATE OptimizingCompileDispatcher {
   enum ModeFlag { COMPILE, FLUSH };
 
   void FlushOutputQueue(bool restore_function_code);
-  void CompileNext(OptimizedCompilationJob* job);
+  void CompileNext(OptimizedCompilationJob* job, RuntimeCallStats* stats);
   OptimizedCompilationJob* NextInput(bool check_if_flushing = false);
 
   inline int InputQueueIndex(int i) {

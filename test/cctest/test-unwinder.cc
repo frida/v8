@@ -4,10 +4,11 @@
 
 #include "include/v8.h"
 
-#include "src/api-inl.h"
+#include "src/api/api-inl.h"
 #include "src/builtins/builtins.h"
+#include "src/execution/isolate.h"
+#include "src/execution/pointer-authentication.h"
 #include "src/heap/spaces.h"
-#include "src/isolate.h"
 #include "src/objects/code-inl.h"
 #include "test/cctest/cctest.h"
 
@@ -15,19 +16,32 @@ namespace v8 {
 namespace internal {
 namespace test_unwinder {
 
-static void* unlimited_stack_base = std::numeric_limits<void*>::max();
+static const void* fake_stack_base = nullptr;
+
+// Ignore deprecation warnings so that we can keep the tests for now.
+// TODO(petermarshall): Delete all the tests here when the old API is removed to
+// reduce the duplication.
+#if __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated"
+#endif
 
 TEST(Unwind_BadState_Fail) {
   UnwindState unwind_state;  // Fields are intialized to nullptr.
   RegisterState register_state;
 
   bool unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state, &register_state,
-                                                 unlimited_stack_base);
+                                                 fake_stack_base);
   CHECK(!unwound);
   // The register state should not change when unwinding fails.
   CHECK_NULL(register_state.fp);
   CHECK_NULL(register_state.sp);
   CHECK_NULL(register_state.pc);
+}
+
+void StorePc(uintptr_t stack[], int index, uintptr_t pc) {
+  Address sp = reinterpret_cast<Address>(&stack[index]) + kSystemPointerSize;
+  stack[index] = PointerAuthentication::SignPCWithSP(pc, sp);
 }
 
 TEST(Unwind_BuiltinPCInMiddle_Success) {
@@ -41,7 +55,7 @@ TEST(Unwind_BuiltinPCInMiddle_Success) {
   uintptr_t stack[3];
   void* stack_base = stack + arraysize(stack);
   stack[0] = reinterpret_cast<uintptr_t>(stack + 2);  // saved FP (rbp).
-  stack[1] = 202;  // Return address into C++ code.
+  StorePc(stack, 1, 202);  // Return address into C++ code.
   stack[2] = 303;  // The SP points here in the caller's frame.
 
   register_state.sp = stack;
@@ -50,9 +64,9 @@ TEST(Unwind_BuiltinPCInMiddle_Success) {
   // Put the current PC inside of a valid builtin.
   Code builtin = i_isolate->builtins()->builtin(Builtins::kStringEqual);
   const uintptr_t offset = 40;
-  CHECK_LT(offset, builtin->InstructionSize());
+  CHECK_LT(offset, builtin.InstructionSize());
   register_state.pc =
-      reinterpret_cast<void*>(builtin->InstructionStart() + offset);
+      reinterpret_cast<void*>(builtin.InstructionStart() + offset);
 
   bool unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state, &register_state,
                                                  stack_base);
@@ -85,9 +99,9 @@ TEST(Unwind_BuiltinPCAtStart_Success) {
   stack[0] = 101;
   // Return address into JS code. It doesn't matter that this is not actually in
   // JSEntry, because we only check that for the top frame.
-  stack[1] = reinterpret_cast<uintptr_t>(code + 10);
+  StorePc(stack, 1, reinterpret_cast<uintptr_t>(code + 10));
   stack[2] = reinterpret_cast<uintptr_t>(stack + 5);  // saved FP (rbp).
-  stack[3] = 303;  // Return address into C++ code.
+  StorePc(stack, 3, 303);  // Return address into C++ code.
   stack[4] = 404;
   stack[5] = 505;
 
@@ -97,7 +111,7 @@ TEST(Unwind_BuiltinPCAtStart_Success) {
   // Put the current PC at the start of a valid builtin, so that we are setting
   // up the frame.
   Code builtin = i_isolate->builtins()->builtin(Builtins::kStringEqual);
-  register_state.pc = reinterpret_cast<void*>(builtin->InstructionStart());
+  register_state.pc = reinterpret_cast<void*>(builtin.InstructionStart());
 
   bool unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state, &register_state,
                                                  stack_base);
@@ -114,7 +128,8 @@ const char* foo_source = R"(
     let y = x ^ b;
     let z = y / a;
     return x + y - z;
-  }
+  };
+  %PrepareFunctionForOptimization(foo);
   foo(1, 2);
   foo(1, 2);
   %OptimizeFunctionOnNextCall(foo);
@@ -136,7 +151,7 @@ TEST(Unwind_CodeObjectPCInMiddle_Success) {
   uintptr_t stack[3];
   void* stack_base = stack + arraysize(stack);
   stack[0] = reinterpret_cast<uintptr_t>(stack + 2);  // saved FP (rbp).
-  stack[1] = 202;  // Return address into C++ code.
+  StorePc(stack, 1, 202);  // Return address into C++ code.
   stack[2] = 303;  // The SP points here in the caller's frame.
 
   register_state.sp = stack;
@@ -153,16 +168,16 @@ TEST(Unwind_CodeObjectPCInMiddle_Success) {
   // Put the current PC inside of the created code object.
   AbstractCode abstract_code = foo->abstract_code();
   // We don't produce optimized code when run with --no-opt.
-  if (!abstract_code->IsCode() && FLAG_opt == false) return;
-  CHECK(abstract_code->IsCode());
+  if (!abstract_code.IsCode() && FLAG_opt == false) return;
+  CHECK(abstract_code.IsCode());
 
-  Code code = abstract_code->GetCode();
+  Code code = abstract_code.GetCode();
   // We don't want the offset too early or it could be the `push rbp`
   // instruction (which is not at the start of generated code, because the lazy
   // deopt check happens before frame setup).
-  const uintptr_t offset = code->InstructionSize() - 20;
-  CHECK_LT(offset, code->InstructionSize());
-  Address pc = code->InstructionStart() + offset;
+  const uintptr_t offset = code.InstructionSize() - 20;
+  CHECK_LT(offset, code.InstructionSize());
+  Address pc = code.InstructionStart() + offset;
   register_state.pc = reinterpret_cast<void*>(pc);
 
   // Check that the created code is within the code range that we get from the
@@ -204,7 +219,7 @@ TEST(Unwind_JSEntryBeforeFrame_Fail) {
   stack[3] = 131;
   stack[4] = 141;
   stack[5] = 151;
-  stack[6] = 100;  // Return address into C++ code.
+  StorePc(stack, 6, 100);  // Return address into C++ code.
   stack[7] = 303;  // The SP points here in the caller's frame.
   stack[8] = 404;
   stack[9] = 505;
@@ -258,7 +273,7 @@ TEST(Unwind_OneJSFrame_Success) {
   stack[3] = 131;
   stack[4] = 141;
   stack[5] = reinterpret_cast<uintptr_t>(stack + 9);  // saved FP (rbp).
-  stack[6] = 100;  // Return address into C++ code.
+  StorePc(stack, 6, 100);  // Return address into C++ code.
   stack[7] = 303;  // The SP points here in the caller's frame.
   stack[8] = 404;
   stack[9] = 505;
@@ -302,10 +317,10 @@ TEST(Unwind_TwoJSFrames_Success) {
   stack[1] = 111;
   stack[2] = reinterpret_cast<uintptr_t>(stack + 5);  // saved FP (rbp).
   // The fake return address is in the JS code range.
-  stack[3] = reinterpret_cast<uintptr_t>(code + 10);
+  StorePc(stack, 3, reinterpret_cast<uintptr_t>(code + 10));
   stack[4] = 141;
   stack[5] = reinterpret_cast<uintptr_t>(stack + 9);  // saved FP (rbp).
-  stack[6] = 100;  // Return address into C++ code.
+  StorePc(stack, 6, 100);  // Return address into C++ code.
   stack[7] = 303;  // The SP points here in the caller's frame.
   stack[8] = 404;
   stack[9] = 505;
@@ -336,11 +351,11 @@ TEST(Unwind_JSEntry_Fail) {
   RegisterState register_state;
 
   Code js_entry = i_isolate->heap()->builtin(Builtins::kJSEntry);
-  byte* start = reinterpret_cast<byte*>(js_entry->InstructionStart());
+  byte* start = reinterpret_cast<byte*>(js_entry.InstructionStart());
   register_state.pc = start + 10;
 
   bool unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state, &register_state,
-                                                 unlimited_stack_base);
+                                                 fake_stack_base);
   CHECK(!unwound);
   // The register state should not change when unwinding fails.
   CHECK_NULL(register_state.fp);
@@ -362,7 +377,7 @@ TEST(Unwind_StackBounds_Basic) {
 
   uintptr_t stack[3];
   stack[0] = reinterpret_cast<uintptr_t>(stack + 2);  // saved FP (rbp).
-  stack[1] = 202;  // Return address into C++ code.
+  StorePc(stack, 1, 202);  // Return address into C++ code.
   stack[2] = 303;  // The SP points here in the caller's frame.
 
   register_state.sp = stack;
@@ -405,12 +420,12 @@ TEST(Unwind_StackBounds_WithUnwinding) {
   stack[3] = 131;
   stack[4] = 141;
   stack[5] = reinterpret_cast<uintptr_t>(stack + 9);  // saved FP (rbp).
-  stack[6] = reinterpret_cast<uintptr_t>(code + 20);  // JS code.
+  StorePc(stack, 6, reinterpret_cast<uintptr_t>(code + 20));  // JS code.
   stack[7] = 303;  // The SP points here in the caller's frame.
   stack[8] = 404;
   stack[9] = reinterpret_cast<uintptr_t>(stack) +
              (12 * sizeof(uintptr_t));                 // saved FP (OOB).
-  stack[10] = reinterpret_cast<uintptr_t>(code + 20);  // JS code.
+  StorePc(stack, 10, reinterpret_cast<uintptr_t>(code + 20));  // JS code.
 
   register_state.sp = stack;
   register_state.fp = stack + 5;
@@ -426,7 +441,7 @@ TEST(Unwind_StackBounds_WithUnwinding) {
   // Change the return address so that it is not in range. We will not range
   // check the stack[9] FP value because we have finished unwinding and the
   // contents of rbp does not necessarily have to be the FP in this case.
-  stack[10] = 202;
+  StorePc(stack, 10, 202);
   unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state, &register_state,
                                             stack_base);
   CHECK(unwound);
@@ -494,8 +509,8 @@ TEST(PCIsInV8_InJSEntryRange) {
   UnwindState unwind_state = isolate->GetUnwindState();
 
   Code js_entry = i_isolate->heap()->builtin(Builtins::kJSEntry);
-  byte* start = reinterpret_cast<byte*>(js_entry->InstructionStart());
-  size_t length = js_entry->InstructionSize();
+  byte* start = reinterpret_cast<byte*>(js_entry.InstructionStart());
+  size_t length = js_entry.InstructionSize();
 
   void* pc = start;
   CHECK(v8::Unwinder::PCIsInV8(unwind_state, pc));
@@ -530,9 +545,8 @@ TEST(PCIsInV8_LargeCodeObject) {
   desc.unwinding_info = nullptr;
   desc.unwinding_info_size = 0;
   desc.origin = nullptr;
-  Handle<Object> self_ref;
   Handle<Code> foo_code =
-      i_isolate->factory()->NewCode(desc, Code::WASM_FUNCTION, self_ref);
+      Factory::CodeBuilder(i_isolate, desc, Code::WASM_FUNCTION).Build();
 
   CHECK(i_isolate->heap()->InSpace(*foo_code, CODE_LO_SPACE));
   byte* start = reinterpret_cast<byte*>(foo_code->InstructionStart());
@@ -540,6 +554,80 @@ TEST(PCIsInV8_LargeCodeObject) {
   void* pc = start;
   CHECK(v8::Unwinder::PCIsInV8(unwind_state, pc));
 }
+
+#ifdef USE_SIMULATOR
+// TODO(v8:10026): Make this also work without the simulator. The part that
+// needs modifications is getting the RegisterState.
+class UnwinderTestHelper {
+ public:
+  explicit UnwinderTestHelper(const std::string& test_function)
+      : isolate_(CcTest::isolate()) {
+    CHECK(!instance_);
+    instance_ = this;
+    v8::HandleScope scope(isolate_);
+    v8::Local<v8::ObjectTemplate> global = v8::ObjectTemplate::New(isolate_);
+    global->Set(v8_str("TryUnwind"),
+                v8::FunctionTemplate::New(isolate_, TryUnwind));
+    LocalContext env(isolate_, nullptr, global);
+    CompileRun(v8_str(test_function.c_str()));
+  }
+
+  ~UnwinderTestHelper() { instance_ = nullptr; }
+
+ private:
+  static void TryUnwind(const v8::FunctionCallbackInfo<v8::Value>& args) {
+    instance_->DoTryUnwind();
+  }
+
+  void DoTryUnwind() {
+    // Set up RegisterState.
+    v8::RegisterState register_state;
+    SimulatorHelper simulator_helper;
+    if (!simulator_helper.Init(isolate_)) return;
+    simulator_helper.FillRegisters(&register_state);
+    // At this point, the PC will point to a Redirection object, which is not
+    // in V8 as far as the unwinder is concerned. To make this work, point to
+    // the return address, which is in V8, instead.
+    register_state.pc = register_state.lr;
+
+    UnwindState unwind_state = isolate_->GetUnwindState();
+    void* stack_base = reinterpret_cast<void*>(0xffffffffffffffffL);
+    bool unwound = v8::Unwinder::TryUnwindV8Frames(unwind_state,
+                                                   &register_state, stack_base);
+    // Check that we have successfully unwound past js_entry_sp.
+    CHECK(unwound);
+    CHECK_GT(register_state.sp,
+             reinterpret_cast<void*>(CcTest::i_isolate()->js_entry_sp()));
+  }
+
+  v8::Isolate* isolate_;
+
+  static UnwinderTestHelper* instance_;
+};
+
+UnwinderTestHelper* UnwinderTestHelper::instance_;
+
+TEST(Unwind_TwoNestedFunctions) {
+  i::FLAG_allow_natives_syntax = true;
+  const char* test_script =
+      "function test_unwinder_api_inner() {"
+      "  TryUnwind();"
+      "  return 0;"
+      "}"
+      "function test_unwinder_api_outer() {"
+      "  return test_unwinder_api_inner();"
+      "}"
+      "%NeverOptimizeFunction(test_unwinder_api_inner);"
+      "%NeverOptimizeFunction(test_unwinder_api_outer);"
+      "test_unwinder_api_outer();";
+
+  UnwinderTestHelper helper(test_script);
+}
+#endif
+
+#if __clang__
+#pragma clang diagnostic pop
+#endif
 
 }  // namespace test_unwinder
 }  // namespace internal

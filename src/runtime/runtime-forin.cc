@@ -4,15 +4,15 @@
 
 #include "src/runtime/runtime-utils.h"
 
-#include "src/arguments-inl.h"
-#include "src/counters.h"
-#include "src/elements.h"
+#include "src/execution/arguments-inl.h"
+#include "src/execution/isolate-inl.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-inl.h"  // For ToBoolean. TODO(jkummerow): Drop.
-#include "src/isolate-inl.h"
-#include "src/keys.h"
-#include "src/objects-inl.h"
+#include "src/logging/counters.h"
+#include "src/objects/elements.h"
+#include "src/objects/keys.h"
 #include "src/objects/module.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -33,7 +33,10 @@ MaybeHandle<HeapObject> Enumerate(Isolate* isolate,
   if (!accumulator.is_receiver_simple_enum()) {
     Handle<FixedArray> keys;
     ASSIGN_RETURN_ON_EXCEPTION(
-        isolate, keys, accumulator.GetKeys(GetKeysConversion::kConvertToString),
+        isolate, keys,
+        accumulator.GetKeys(accumulator.may_have_elements()
+                                ? GetKeysConversion::kConvertToString
+                                : GetKeysConversion::kNoNumbers),
         HeapObject);
     // Test again, since cache may have been built by GetKeys() calls above.
     if (!accumulator.is_receiver_simple_enum()) return keys;
@@ -42,16 +45,16 @@ MaybeHandle<HeapObject> Enumerate(Isolate* isolate,
   return handle(receiver->map(), isolate);
 }
 
-// This is a slight modifcation of JSReceiver::HasProperty, dealing with
+// This is a slight modification of JSReceiver::HasProperty, dealing with
 // the oddities of JSProxy and JSModuleNamespace in for-in filter.
 MaybeHandle<Object> HasEnumerableProperty(Isolate* isolate,
                                           Handle<JSReceiver> receiver,
                                           Handle<Object> key) {
   bool success = false;
   Maybe<PropertyAttributes> result = Just(ABSENT);
-  LookupIterator it =
-      LookupIterator::PropertyOrElement(isolate, receiver, key, &success);
+  LookupIterator::Key lookup_key(isolate, key, &success);
   if (!success) return isolate->factory()->undefined_value();
+  LookupIterator it(isolate, receiver, lookup_key);
   for (; it.IsFound(); it.Next()) {
     switch (it.state()) {
       case LookupIterator::NOT_FOUND:

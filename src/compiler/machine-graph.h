@@ -6,11 +6,11 @@
 #define V8_COMPILER_MACHINE_GRAPH_H_
 
 #include "src/base/compiler-specific.h"
+#include "src/common/globals.h"
 #include "src/compiler/common-node-cache.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/machine-operator.h"
-#include "src/globals.h"
 #include "src/runtime/runtime.h"
 
 namespace v8 {
@@ -43,6 +43,8 @@ class V8_EXPORT_PRIVATE MachineGraph : public NON_EXPORTED_BASE(ZoneObject) {
   // TODO(turbofan): Code using Int32Constant/Int64Constant to store pointer
   // constants is probably not serializable.
   Node* IntPtrConstant(intptr_t value);
+
+  Node* TaggedIndexConstant(intptr_t value);
 
   Node* RelocatableInt32Constant(int32_t value, RelocInfo::Mode rmode);
   Node* RelocatableInt64Constant(int64_t value, RelocInfo::Mode rmode);

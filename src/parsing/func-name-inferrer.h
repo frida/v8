@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "src/base/macros.h"
-#include "src/pointer-with-payload.h"
+#include "src/utils/pointer-with-payload.h"
 
 namespace v8 {
 namespace internal {
@@ -110,7 +110,7 @@ class FuncNameInferrer {
   };
 
   // Constructs a full name in dotted notation from gathered names.
-  const AstConsString* MakeNameFromStack();
+  AstConsString* MakeNameFromStack();
 
   // Performs name inferring for added functions.
   void InferFunctionsNames();

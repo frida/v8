@@ -6,6 +6,8 @@
 #define V8_OBJECTS_API_CALLBACKS_H_
 
 #include "src/objects/struct.h"
+#include "torque-generated/bit-fields-tq.h"
+#include "torque-generated/class-definitions-tq.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -83,72 +85,34 @@ class AccessorInfo : public Struct {
  private:
   inline bool HasExpectedReceiverType();
 
-// Bit positions in |flags|.
-#define ACCESSOR_INFO_FLAGS_BIT_FIELDS(V, _)                           \
-  V(AllCanReadBit, bool, 1, _)                                         \
-  V(AllCanWriteBit, bool, 1, _)                                        \
-  V(IsSpecialDataPropertyBit, bool, 1, _)                              \
-  V(IsSloppyBit, bool, 1, _)                                           \
-  V(ReplaceOnAccessBit, bool, 1, _)                                    \
-  V(GetterSideEffectTypeBits, SideEffectType, 2, _)                    \
-  /* We could save a bit from setter side-effect type, if necessary */ \
-  V(SetterSideEffectTypeBits, SideEffectType, 2, _)                    \
-  V(InitialAttributesBits, PropertyAttributes, 3, _)
-
-  DEFINE_BIT_FIELDS(ACCESSOR_INFO_FLAGS_BIT_FIELDS)
-#undef ACCESSOR_INFO_FLAGS_BIT_FIELDS
+  // Bit positions in |flags|.
+  DEFINE_TORQUE_GENERATED_ACCESSOR_INFO_FLAGS()
 
   OBJECT_CONSTRUCTORS(AccessorInfo, Struct);
 };
 
-class AccessCheckInfo : public Struct {
+class AccessCheckInfo
+    : public TorqueGeneratedAccessCheckInfo<AccessCheckInfo, Struct> {
  public:
-  DECL_ACCESSORS(callback, Object)
-  DECL_ACCESSORS(named_interceptor, Object)
-  DECL_ACCESSORS(indexed_interceptor, Object)
-  DECL_ACCESSORS(data, Object)
-
-  DECL_CAST(AccessCheckInfo)
-
   // Dispatched behavior.
   DECL_PRINTER(AccessCheckInfo)
-  DECL_VERIFIER(AccessCheckInfo)
 
   static AccessCheckInfo Get(Isolate* isolate, Handle<JSObject> receiver);
 
-  DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
-                                TORQUE_GENERATED_ACCESS_CHECK_INFO_FIELDS)
-
-  OBJECT_CONSTRUCTORS(AccessCheckInfo, Struct);
+  TQ_OBJECT_CONSTRUCTORS(AccessCheckInfo)
 };
 
-class InterceptorInfo : public Struct {
+class InterceptorInfo
+    : public TorqueGeneratedInterceptorInfo<InterceptorInfo, Struct> {
  public:
-  DECL_ACCESSORS(getter, Object)
-  DECL_ACCESSORS(setter, Object)
-  DECL_ACCESSORS(query, Object)
-  DECL_ACCESSORS(descriptor, Object)
-  DECL_ACCESSORS(deleter, Object)
-  DECL_ACCESSORS(enumerator, Object)
-  DECL_ACCESSORS(definer, Object)
-  DECL_ACCESSORS(data, Object)
   DECL_BOOLEAN_ACCESSORS(can_intercept_symbols)
   DECL_BOOLEAN_ACCESSORS(all_can_read)
   DECL_BOOLEAN_ACCESSORS(non_masking)
   DECL_BOOLEAN_ACCESSORS(is_named)
   DECL_BOOLEAN_ACCESSORS(has_no_side_effect)
 
-  inline int flags() const;
-  inline void set_flags(int flags);
-
-  DECL_CAST(InterceptorInfo)
-
   // Dispatched behavior.
   DECL_PRINTER(InterceptorInfo)
-  DECL_VERIFIER(InterceptorInfo)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(HeapObject::kHeaderSize,
-                                TORQUE_GENERATED_INTERCEPTOR_INFO_FIELDS)
 
   static const int kCanInterceptSymbolsBit = 0;
   static const int kAllCanReadBit = 1;
@@ -156,17 +120,12 @@ class InterceptorInfo : public Struct {
   static const int kNamed = 3;
   static const int kHasNoSideEffect = 4;
 
-  OBJECT_CONSTRUCTORS(InterceptorInfo, Struct);
+  TQ_OBJECT_CONSTRUCTORS(InterceptorInfo)
 };
 
-class CallHandlerInfo : public Tuple3 {
+class CallHandlerInfo
+    : public TorqueGeneratedCallHandlerInfo<CallHandlerInfo, Struct> {
  public:
-  DECL_ACCESSORS(callback, Object)
-  DECL_ACCESSORS(js_callback, Object)
-  DECL_ACCESSORS(data, Object)
-
-  DECL_CAST(CallHandlerInfo)
-
   inline bool IsSideEffectFreeCallHandlerInfo() const;
   inline bool IsSideEffectCallHandlerInfo() const;
   inline void SetNextCallHasNoSideEffect();
@@ -180,11 +139,7 @@ class CallHandlerInfo : public Tuple3 {
 
   Address redirected_callback() const;
 
-  static const int kCallbackOffset = kValue1Offset;
-  static const int kJsCallbackOffset = kValue2Offset;
-  static const int kDataOffset = kValue3Offset;
-
-  OBJECT_CONSTRUCTORS(CallHandlerInfo, Tuple3);
+  TQ_OBJECT_CONSTRUCTORS(CallHandlerInfo)
 };
 
 }  // namespace internal

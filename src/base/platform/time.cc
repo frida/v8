@@ -70,6 +70,9 @@ V8_INLINE int64_t ClockNow(clockid_t clk_id) {
 #if defined(V8_OS_AIX)
   thread_cputime_t tc;
   if (clk_id == CLOCK_THREAD_CPUTIME_ID) {
+#if defined(__PASE__)  // CLOCK_THREAD_CPUTIME_ID clock not supported on IBMi
+    return 0;
+#endif
     if (thread_cputime(-1, &tc) != 0) {
       UNREACHABLE();
     }
@@ -777,31 +780,12 @@ ThreadTicks ThreadTicks::Now() {
 
 
 #if V8_OS_WIN
-typedef BOOL (WINAPI *QueryThreadCycleTimeImpl)(HANDLE thread_handle, PULONG64 cycle_time);
-
-class QueryThreadCycleApi final {
- public:
-  QueryThreadCycleApi() : impl(reinterpret_cast<QueryThreadCycleTimeImpl>(
-    GetProcAddress(GetModuleHandle(TEXT("kernel32.dll")), "QueryThreadCycleTime")))
-  {}
-
-  bool IsAvailable() const { return impl != NULL; }
-
-  QueryThreadCycleTimeImpl impl;
-};
-
-
-static LazyStaticInstance<QueryThreadCycleApi, DefaultConstructTrait<QueryThreadCycleApi>,
-                          ThreadSafeInitOnceTrait>::type query_thread_cycle_api =
-    LAZY_STATIC_INSTANCE_INITIALIZER;
-
-
 ThreadTicks ThreadTicks::GetForThread(const HANDLE& thread_handle) {
   DCHECK(IsSupported());
 
   // Get the number of TSC ticks used by the current thread.
   ULONG64 thread_cycle_time = 0;
-  query_thread_cycle_api.Pointer()->impl(thread_handle, &thread_cycle_time);
+  ::QueryThreadCycleTime(thread_handle, &thread_cycle_time);
 
   // Get the frequency of the TSC.
   double tsc_ticks_per_second = TSCTicksPerSecond();
@@ -816,8 +800,7 @@ ThreadTicks ThreadTicks::GetForThread(const HANDLE& thread_handle) {
 
 // static
 bool ThreadTicks::IsSupportedWin() {
-  static bool is_supported = query_thread_cycle_api.Pointer()->IsAvailable() &&
-                             base::CPU().has_non_stop_time_stamp_counter() &&
+  static bool is_supported = base::CPU().has_non_stop_time_stamp_counter() &&
                              !IsQPCReliable();
   return is_supported;
 }

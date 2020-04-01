@@ -9,11 +9,12 @@
 #ifndef V8_OBJECTS_JS_SEGMENT_ITERATOR_H_
 #define V8_OBJECTS_JS_SEGMENT_ITERATOR_H_
 
+#include "src/base/bit-field.h"
+#include "src/execution/isolate.h"
 #include "src/heap/factory.h"
-#include "src/isolate.h"
-#include "src/objects.h"
 #include "src/objects/js-segmenter.h"
 #include "src/objects/managed.h"
+#include "src/objects/objects.h"
 #include "unicode/uversion.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -75,12 +76,8 @@ class JSSegmentIterator : public JSObject {
   inline void set_granularity(JSSegmenter::Granularity granularity);
   inline JSSegmenter::Granularity granularity() const;
 
-// Bit positions in |flags|.
-#define FLAGS_BIT_FIELDS(V, _)                       \
-  V(GranularityBits, JSSegmenter::Granularity, 2, _) \
-  V(BreakTypeSetBits, bool, 1, _)
-  DEFINE_BIT_FIELDS(FLAGS_BIT_FIELDS)
-#undef FLAGS_BIT_FIELDS
+  // Bit positions in |flags|.
+  DEFINE_TORQUE_GENERATED_JS_SEGMENT_ITERATOR_FLAGS()
 
   STATIC_ASSERT(JSSegmenter::Granularity::GRAPHEME <= GranularityBits::kMax);
   STATIC_ASSERT(JSSegmenter::Granularity::WORD <= GranularityBits::kMax);
@@ -90,16 +87,8 @@ class JSSegmentIterator : public JSObject {
   DECL_INT_ACCESSORS(flags)
 
 // Layout description.
-#define SEGMENTER_FIELDS(V)               \
-  /* Pointer fields. */                   \
-  V(kICUBreakIteratorOffset, kTaggedSize) \
-  V(kUnicodeStringOffset, kTaggedSize)    \
-  V(kFlagsOffset, kTaggedSize)            \
-  /* Total Size */                        \
-  V(kSize, 0)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize, SEGMENTER_FIELDS)
-#undef SEGMENTER_FIELDS
+  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
+                                TORQUE_GENERATED_JS_SEGMENT_ITERATOR_FIELDS)
 
   OBJECT_CONSTRUCTORS(JSSegmentIterator, JSObject);
 };

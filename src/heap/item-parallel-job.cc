@@ -5,8 +5,8 @@
 #include "src/heap/item-parallel-job.h"
 
 #include "src/base/platform/semaphore.h"
-#include "src/counters.h"
-#include "src/v8.h"
+#include "src/init/v8.h"
+#include "src/logging/counters.h"
 
 namespace v8 {
 namespace internal {
@@ -26,8 +26,12 @@ void ItemParallelJob::Task::SetupInternal(base::Semaphore* on_finish,
   }
 }
 
+void ItemParallelJob::Task::WillRunOnForeground() {
+  runner_ = Runner::kForeground;
+}
+
 void ItemParallelJob::Task::RunInternal() {
-  RunInParallel();
+  RunInParallel(runner_);
   on_finish_->Signal();
 }
 
@@ -95,6 +99,7 @@ void ItemParallelJob::Run() {
 
   // Contribute on main thread.
   DCHECK(main_task);
+  main_task->WillRunOnForeground();
   main_task->Run();
 
   // Wait for background tasks.

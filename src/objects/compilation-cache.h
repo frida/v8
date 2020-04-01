@@ -9,7 +9,7 @@
 #include "src/objects/hash-table.h"
 #include "src/objects/js-regexp.h"
 #include "src/objects/shared-function-info.h"
-#include "src/roots.h"
+#include "src/roots/roots.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -23,7 +23,7 @@ class CompilationCacheShape : public BaseShape<HashTableKey*> {
     return key->IsMatch(value);
   }
 
-  static inline uint32_t Hash(Isolate* isolate, HashTableKey* key) {
+  static inline uint32_t Hash(ReadOnlyRoots roots, HashTableKey* key) {
     return key->Hash();
   }
 
@@ -69,6 +69,8 @@ class InfoCellPair {
   SharedFunctionInfo shared_;
   FeedbackCell feedback_cell_;
 };
+
+EXTERN_DECLARE_HASH_TABLE(CompilationCacheTable, CompilationCacheShape)
 
 // This cache is used in two different variants. For regexp caching, it simply
 // maps identifying info of the regexp to the cached regexp object. Scripts and

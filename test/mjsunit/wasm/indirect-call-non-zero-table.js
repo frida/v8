@@ -41,38 +41,38 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
     .index;
 
   builder.addFunction('call1', kSig_i_i)
-    .addBody([kExprGetLocal, 0,   // function index
+    .addBody([kExprLocalGet, 0,   // function index
       kExprCallIndirect, sig_index, table1])
     .exportAs('call1');
   builder.addFunction('return_call1', kSig_i_i)
-    .addBody([kExprGetLocal, 0,   // function index
+    .addBody([kExprLocalGet, 0,   // function index
       kExprReturnCallIndirect, sig_index, table1])
     .exportAs('return_call1');
   builder.addFunction('call2', kSig_i_i)
-    .addBody([kExprGetLocal, 0,   // function index
+    .addBody([kExprLocalGet, 0,   // function index
       kExprCallIndirect, sig_index, table2])
     .exportAs('call2');
   builder.addFunction('return_call2', kSig_i_i)
-    .addBody([kExprGetLocal, 0,   // function index
+    .addBody([kExprLocalGet, 0,   // function index
       kExprReturnCallIndirect, sig_index, table2])
     .exportAs('return_call2');
 
   builder.addFunction('call_invalid_sig', kSig_i_i)
-    .addBody([kExprGetLocal, 0, kExprGetLocal, 0,   // function index + param
+    .addBody([kExprLocalGet, 0, kExprLocalGet, 0,   // function index + param
       kExprCallIndirect, other_sig, table2])
     .exportAs('call_invalid_sig');
   builder.addFunction('return_call_invalid_sig', kSig_i_i)
-    .addBody([kExprGetLocal, 0, kExprGetLocal, 0,   // function index + param
+    .addBody([kExprLocalGet, 0, kExprLocalGet, 0,   // function index + param
       kExprReturnCallIndirect, other_sig, table2])
     .exportAs('return_call_invalid_sig');
 
   // We want to crash if we call through the table with index 0.
   builder.addElementSegment(placeholder, 0, false,
-    [f_unreachable, f_unreachable, f_unreachable], false);
-  builder.addElementSegment(table1, 0, false, [f1, f2, f3], false);
+    [f_unreachable, f_unreachable, f_unreachable]);
+  builder.addElementSegment(table1, 0, false, [f1, f2, f3]);
   // Keep one slot in table2 uninitialized. We should trap if we call it.
   builder.addElementSegment(table2, 1, false,
-    [f_unreachable, f_unreachable, f4, f5], false);
+    [f_unreachable, f_unreachable, f4, f5]);
 
   const instance = builder.instantiate();
 
@@ -119,14 +119,14 @@ load("test/mjsunit/wasm/wasm-module-builder.js");
 
   const sig_index = builder.addType(kSig_i_v);
   const f1 = builder.addFunction("foo", sig_index)
-    .addBody([kExprGetGlobal, g, kExprI32Const, 12, kExprI32Add]);
+    .addBody([kExprGlobalGet, g, kExprI32Const, 12, kExprI32Add]);
 
   builder.addFunction('call', kSig_i_i)
-    .addBody([kExprGetLocal, 0,   // function index
+    .addBody([kExprLocalGet, 0,   // function index
       kExprCallIndirect, sig_index, t1])
     .exportAs('call');
 
-  builder.addElementSegment(t1, g, true, [f1.index], true);
+  builder.addElementSegment(t1, g, true, [f1.index]);
   const base1 = 3;
   const base2 = 5;
 
@@ -167,14 +167,14 @@ function js_div(a, b) { return (a / b) | 0; }
 
   let sig_index = builder.addType(kSig_i_ii);
   builder.addFunction("placeholder", sig_index)
-    .addBody([kExprGetLocal, 0]);
+    .addBody([kExprLocalGet, 0]);
 
   builder.addElementSegment(table_index, g, true, [div]);
   builder.addFunction("main", kSig_i_ii)
     .addBody([
       kExprI32Const, 55,  // --
-      kExprGetLocal, 0,   // --
-      kExprGetLocal, 1,   // --
+      kExprLocalGet, 0,   // --
+      kExprLocalGet, 1,   // --
       kExprCallIndirect, 0, table_index])  // --
     .exportAs("main");
 

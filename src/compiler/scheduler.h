@@ -6,15 +6,18 @@
 #define V8_COMPILER_SCHEDULER_H_
 
 #include "src/base/flags.h"
+#include "src/common/globals.h"
 #include "src/compiler/node.h"
 #include "src/compiler/opcodes.h"
 #include "src/compiler/schedule.h"
 #include "src/compiler/zone-stats.h"
-#include "src/globals.h"
 #include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
+
+class TickCounter;
+
 namespace compiler {
 
 // Forward declarations.
@@ -22,7 +25,6 @@ class CFGBuilder;
 class ControlEquivalence;
 class Graph;
 class SpecialRPONumberer;
-
 
 // Computes a schedule from a graph, placing nodes into basic blocks and
 // ordering the basic blocks in the special RPO order.
@@ -34,10 +36,14 @@ class V8_EXPORT_PRIVATE Scheduler {
 
   // The complete scheduling algorithm. Creates a new schedule and places all
   // nodes from the graph into it.
-  static Schedule* ComputeSchedule(Zone* temp_zone, Graph* graph, Flags flags);
+  static Schedule* ComputeSchedule(Zone* temp_zone, Graph* graph, Flags flags,
+                                   TickCounter* tick_counter);
 
   // Compute the RPO of blocks in an existing schedule.
   static BasicBlockVector* ComputeSpecialRPO(Zone* zone, Schedule* schedule);
+
+  // Computes the dominator tree on an existing schedule that has RPO computed.
+  static void GenerateDominatorTree(Schedule* schedule);
 
  private:
   // Placement of a node changes during scheduling. The placement state
@@ -78,9 +84,10 @@ class V8_EXPORT_PRIVATE Scheduler {
   CFGBuilder* control_flow_builder_;     // Builds basic blocks for controls.
   SpecialRPONumberer* special_rpo_;      // Special RPO numbering of blocks.
   ControlEquivalence* equivalence_;      // Control dependence equivalence.
+  TickCounter* const tick_counter_;
 
   Scheduler(Zone* zone, Graph* graph, Schedule* schedule, Flags flags,
-            size_t node_count_hint_);
+            size_t node_count_hint_, TickCounter* tick_counter);
 
   inline SchedulerData DefaultSchedulerData();
   inline SchedulerData* GetData(Node* node);
@@ -94,7 +101,7 @@ class V8_EXPORT_PRIVATE Scheduler {
   void IncrementUnscheduledUseCount(Node* node, int index, Node* from);
   void DecrementUnscheduledUseCount(Node* node, int index, Node* from);
 
-  void PropagateImmediateDominators(BasicBlock* block);
+  static void PropagateImmediateDominators(BasicBlock* block);
 
   // Phase 1: Build control-flow graph.
   friend class CFGBuilder;
@@ -103,7 +110,7 @@ class V8_EXPORT_PRIVATE Scheduler {
   // Phase 2: Compute special RPO and dominator tree.
   friend class SpecialRPONumberer;
   void ComputeSpecialRPONumbering();
-  void GenerateImmediateDominatorTree();
+  void GenerateDominatorTree();
 
   // Phase 3: Prepare use counts for nodes.
   friend class PrepareUsesVisitor;
