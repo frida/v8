@@ -7334,9 +7334,7 @@ class PromiseRejectMessage {
 typedef void (*PromiseRejectCallback)(PromiseRejectMessage message);
 
 // --- Microtasks Callbacks ---
-#ifndef _MSC_VER
 V8_DEPRECATE_SOON("Use *WithData version.")
-#endif
 typedef void (*MicrotasksCompletedCallback)(Isolate*);
 typedef void (*MicrotasksCompletedCallbackWithData)(Isolate*, void*);
 typedef void (*MicrotaskCallback)(void* data);
@@ -8185,7 +8183,9 @@ class V8_EXPORT Isolate {
           array_buffer_allocator_shared(),
           external_references(nullptr),
           allow_atomics_wait(true),
-          only_terminate_in_safe_scope(false) {}
+          only_terminate_in_safe_scope(false),
+          embedder_wrapper_type_index(-1),
+          embedder_wrapper_object_index(-1) {}
 
     /**
      * Allows the host application to provide the address of a function that is
@@ -8249,6 +8249,14 @@ class V8_EXPORT Isolate {
      * Termination is postponed when there is no active SafeForTerminationScope.
      */
     bool only_terminate_in_safe_scope;
+
+    /**
+     * The following parameters describe the offsets for addressing type info
+     * for wrapped API objects and are used by the fast C API
+     * (for details see v8-fast-api-calls.h).
+     */
+    int embedder_wrapper_type_index;
+    int embedder_wrapper_object_index;
   };
 
 
@@ -10590,12 +10598,6 @@ class V8_EXPORT Locker {
    * current thread.
    */
   static bool IsLocked(Isolate* isolate);
-
-  /**
-   * Returns whether or not the locker for a given isolate, is locked by any
-   * thread.
-   */
-  static bool IsLockedByAnyThread(Isolate* isolate);
 
   /**
    * Returns whether v8::Locker is being used by this V8 instance.

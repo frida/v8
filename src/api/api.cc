@@ -1582,8 +1582,9 @@ void FunctionTemplate::SetCallHandler(FunctionCallback callback,
     data = v8::Undefined(reinterpret_cast<v8::Isolate*>(isolate));
   }
   obj->set_data(*Utils::OpenHandle(*data));
-  if (c_function != nullptr) {
-    DCHECK_NOT_NULL(c_function->GetAddress());
+  // Blink passes CFunction's constructed with the default constructor
+  // for non-fast calls, so we should check the address too.
+  if (c_function != nullptr && c_function->GetAddress()) {
     i::FunctionTemplateInfo::SetCFunction(
         isolate, info,
         i::handle(*FromCData(isolate, c_function->GetAddress()), isolate));
@@ -5729,7 +5730,7 @@ bool v8::V8::Initialize() {
 #if V8_OS_LINUX || V8_OS_MACOSX
 bool TryHandleWebAssemblyTrapPosix(int sig_code, siginfo_t* info,
                                    void* context) {
-#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
+#if V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
   return i::trap_handler::TryHandleSignal(sig_code, info, context);
 #else
   return false;
@@ -5744,11 +5745,10 @@ bool V8::TryHandleSignal(int signum, void* info, void* context) {
 
 #if V8_OS_WIN
 bool TryHandleWebAssemblyTrapWindows(EXCEPTION_POINTERS* exception) {
-#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64
+#if V8_TARGET_ARCH_X64
   return i::trap_handler::TryHandleWasmTrap(exception);
-#else
-  return false;
 #endif
+  return false;
 }
 #endif
 
@@ -8334,6 +8334,10 @@ void Isolate::Initialize(Isolate* isolate,
   }
   i_isolate->set_only_terminate_in_safe_scope(
       params.only_terminate_in_safe_scope);
+  i_isolate->set_embedder_wrapper_type_index(
+      params.embedder_wrapper_type_index);
+  i_isolate->set_embedder_wrapper_object_index(
+      params.embedder_wrapper_object_index);
 
   if (!i::V8::GetCurrentPlatform()
            ->GetForegroundTaskRunner(isolate)

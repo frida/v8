@@ -372,11 +372,6 @@ void Isolate::InitializeOncePerProcess() {
   per_isolate_thread_data_key_ = base::Thread::CreateThreadLocalKey();
 }
 
-void Isolate::TearDown() {
-  base::Thread::DeleteThreadLocalKey(per_isolate_thread_data_key_);
-  base::Thread::DeleteThreadLocalKey(isolate_key_);
-}
-
 Address Isolate::get_address_from_id(IsolateAddressId id) {
   return isolate_addresses_[id];
 }
@@ -2117,8 +2112,7 @@ bool Isolate::ComputeLocationFromStackTrace(MessageLocation* target,
             Managed<wasm::GlobalWasmCodeRef>::cast(elements->WasmCodeObject(i))
                 .get()
                 ->code();
-        offset = FrameSummary::WasmCompiledFrameSummary::GetWasmSourcePosition(
-            code, offset);
+        offset = code->GetSourcePositionBefore(offset);
       }
       Handle<WasmInstanceObject> instance(elements->WasmInstance(i), this);
       const wasm::WasmModule* module = elements->WasmInstance(i).module();

@@ -16,7 +16,18 @@ namespace v8 {
 namespace internal {
 namespace trap_handler {
 
+// TODO(eholk): Support trap handlers on other platforms.
+#if V8_TARGET_ARCH_X64 && V8_OS_LINUX && !V8_OS_ANDROID
+#define V8_TRAP_HANDLER_SUPPORTED true
+#elif V8_TARGET_ARCH_X64 && V8_OS_WIN
+#define V8_TRAP_HANDLER_SUPPORTED true
+#elif V8_TARGET_ARCH_X64 && V8_OS_MACOSX
+#define V8_TRAP_HANDLER_SUPPORTED true
+#elif V8_TARGET_ARCH_X64 && V8_OS_FREEBSD
+#define V8_TRAP_HANDLER_SUPPORTED true
+#else
 #define V8_TRAP_HANDLER_SUPPORTED false
+#endif
 
 struct ProtectedInstructionData {
   // The offset of this instruction from the start of its code object.
@@ -44,7 +55,14 @@ int V8_EXPORT_PRIVATE RegisterHandlerData(
 /// kInvalidIndex.
 void V8_EXPORT_PRIVATE ReleaseHandlerData(int index);
 
+#if V8_OS_WIN
+#define THREAD_LOCAL __declspec(thread)
+#elif V8_OS_ANDROID
+// TODO(eholk): fix this before enabling for trap handlers for Android.
 #define THREAD_LOCAL
+#else
+#define THREAD_LOCAL __thread
+#endif
 
 extern bool g_is_trap_handler_enabled;
 // Enables trap handling for WebAssembly bounds checks.

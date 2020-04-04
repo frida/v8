@@ -634,6 +634,8 @@ class LiftoffCompiler {
   }
 
   void GenerateOutOfLineCode(OutOfLineCode* ool) {
+    DEBUG_CODE_COMMENT(
+        (std::string("Out of line: ") + GetRuntimeStubName(ool->stub)).c_str());
     __ bind(ool->label.get());
     const bool is_stack_check = ool->stub == WasmCode::kWasmStackGuard;
     const bool is_mem_out_of_bounds =
@@ -2316,6 +2318,10 @@ class LiftoffCompiler {
         return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i32x4_sub);
       case wasm::kExprI32x4Mul:
         return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i32x4_mul);
+      case wasm::kExprI32x4MinS:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i32x4_min_s);
+      case wasm::kExprI32x4MinU:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i32x4_min_u);
       case wasm::kExprI16x8Splat:
         return EmitUnOp<kI32, kS128>(&LiftoffAssembler::emit_i16x8_splat);
       case wasm::kExprI16x8Add:
@@ -2330,6 +2336,10 @@ class LiftoffCompiler {
       case wasm::kExprI16x8AddSaturateU:
         return EmitBinOp<kS128, kS128>(
             &LiftoffAssembler::emit_i16x8_add_saturate_u);
+      case wasm::kExprI16x8MinS:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i16x8_min_s);
+      case wasm::kExprI16x8MinU:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i16x8_min_u);
       case wasm::kExprI8x16Splat:
         return EmitUnOp<kI32, kS128>(&LiftoffAssembler::emit_i8x16_splat);
       case wasm::kExprI8x16Add:
@@ -2344,6 +2354,10 @@ class LiftoffCompiler {
       case wasm::kExprI8x16AddSaturateU:
         return EmitBinOp<kS128, kS128>(
             &LiftoffAssembler::emit_i8x16_add_saturate_u);
+      case wasm::kExprI8x16MinS:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i8x16_min_s);
+      case wasm::kExprI8x16MinU:
+        return EmitBinOp<kS128, kS128>(&LiftoffAssembler::emit_i8x16_min_u);
       default:
         unsupported(decoder, kSimd, "simd");
     }

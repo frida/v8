@@ -444,6 +444,16 @@ void WasmCode::DecrementRefCount(Vector<WasmCode* const> code_vec) {
   if (engine) engine->FreeDeadCode(dead_code);
 }
 
+int WasmCode::GetSourcePositionBefore(int offset) {
+  int position = kNoSourcePosition;
+  for (SourcePositionTableIterator iterator(source_positions());
+       !iterator.done() && iterator.code_offset() < offset;
+       iterator.Advance()) {
+    position = iterator.source_position().ScriptOffset();
+  }
+  return position;
+}
+
 WasmCodeAllocator::OptionalLock::~OptionalLock() {
   if (allocator_) allocator_->mutex_.Unlock();
 }
@@ -1010,6 +1020,18 @@ WasmCode* NativeModule::PublishCode(std::unique_ptr<WasmCode> code) {
   return PublishCodeLocked(std::move(code));
 }
 
+std::vector<WasmCode*> NativeModule::PublishCode(
+    Vector<std::unique_ptr<WasmCode>> codes) {
+  std::vector<WasmCode*> published_code;
+  published_code.reserve(codes.size());
+  base::MutexGuard lock(&allocation_mutex_);
+  // The published code is put into the top-most surrounding {WasmCodeRefScope}.
+  for (auto& code : codes) {
+    published_code.push_back(PublishCodeLocked(std::move(code)));
+  }
+  return published_code;
+}
+
 WasmCode::Kind GetCodeKind(const WasmCompilationResult& result) {
   switch (result.kind) {
     case WasmCompilationResult::kWasmToJsWrapper:
@@ -1452,22 +1474,6 @@ WasmCode::RuntimeStubId NativeModule::GetRuntimeStubId(Address target) const {
   return WasmCode::kRuntimeStubCount;
 }
 
-const char* NativeModule::GetRuntimeStubName(Address target) const {
-  WasmCode::RuntimeStubId stub_id = GetRuntimeStubId(target);
-
-#define RUNTIME_STUB_NAME(Name) #Name,
-#define RUNTIME_STUB_NAME_TRAP(Name) "ThrowWasm" #Name,
-  constexpr const char* runtime_stub_names[] = {WASM_RUNTIME_STUB_LIST(
-      RUNTIME_STUB_NAME, RUNTIME_STUB_NAME_TRAP) "<unknown>"};
-#undef RUNTIME_STUB_NAME
-#undef RUNTIME_STUB_NAME_TRAP
-  STATIC_ASSERT(arraysize(runtime_stub_names) ==
-                WasmCode::kRuntimeStubCount + 1);
-
-  DCHECK_GT(arraysize(runtime_stub_names), stub_id);
-  return runtime_stub_names[stub_id];
-}
-
 NativeModule::~NativeModule() {
   TRACE_HEAP("Deleting native module: %p\n", this);
   // Cancel all background compilation before resetting any field of the
@@ -1779,11 +1785,13 @@ void NativeModule::SampleCodeSize(
   histogram->AddSample(code_size_mb);
 }
 
-WasmCode* NativeModule::AddCompiledCode(WasmCompilationResult result) {
-  return AddCompiledCode({&result, 1})[0];
+std::unique_ptr<WasmCode> NativeModule::AddCompiledCode(
+    WasmCompilationResult result) {
+  std::vector<std::unique_ptr<WasmCode>> code = AddCompiledCode({&result, 1});
+  return std::move(code[0]);
 }
 
-std::vector<WasmCode*> NativeModule::AddCompiledCode(
+std::vector<std::unique_ptr<WasmCode>> NativeModule::AddCompiledCode(
     Vector<WasmCompilationResult> results) {
   DCHECK(!results.empty());
   // First, allocate code space for all the results.
@@ -1815,17 +1823,7 @@ std::vector<WasmCode*> NativeModule::AddCompiledCode(
   }
   DCHECK_EQ(0, code_space.size());
 
-  // Under the {allocation_mutex_}, publish the code. The published code is put
-  // into the top-most surrounding {WasmCodeRefScope} by {PublishCodeLocked}.
-  std::vector<WasmCode*> code_vector;
-  code_vector.reserve(results.size());
-  {
-    base::MutexGuard lock(&allocation_mutex_);
-    for (auto& result : generated_code)
-      code_vector.push_back(PublishCodeLocked(std::move(result)));
-  }
-
-  return code_vector;
+  return generated_code;
 }
 
 bool NativeModule::IsRedirectedToInterpreter(uint32_t func_index) {
@@ -1971,21 +1969,17 @@ NativeModuleModificationScope::~NativeModuleModificationScope() {
 }
 
 namespace {
-
-base::LazyInstance<base::ThreadLocalPointer<WasmCodeRefScope>>::type
-    current_code_refs_scope = LAZY_INSTANCE_INITIALIZER;
-
+thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
 }  // namespace
 
 WasmCodeRefScope::WasmCodeRefScope()
-    : previous_scope_(current_code_refs_scope.Pointer()->Get()) {
-  current_code_refs_scope.Pointer()->Set(this);
+    : previous_scope_(current_code_refs_scope) {
+  current_code_refs_scope = this;
 }
 
 WasmCodeRefScope::~WasmCodeRefScope() {
-  auto current = current_code_refs_scope.Pointer();
-  DCHECK_EQ(this, current->Get());
-  current->Set(previous_scope_);
+  DCHECK_EQ(this, current_code_refs_scope);
+  current_code_refs_scope = previous_scope_;
   std::vector<WasmCode*> code_ptrs;
   code_ptrs.reserve(code_ptrs_.size());
   code_ptrs.assign(code_ptrs_.begin(), code_ptrs_.end());
@@ -1995,11 +1989,25 @@ WasmCodeRefScope::~WasmCodeRefScope() {
 // static
 void WasmCodeRefScope::AddRef(WasmCode* code) {
   DCHECK_NOT_NULL(code);
-  WasmCodeRefScope* current_scope = current_code_refs_scope.Pointer()->Get();
+  WasmCodeRefScope* current_scope = current_code_refs_scope;
   DCHECK_NOT_NULL(current_scope);
   auto entry = current_scope->code_ptrs_.insert(code);
   // If we added a new entry, increment the ref counter.
   if (entry.second) code->IncRef();
+}
+
+const char* GetRuntimeStubName(WasmCode::RuntimeStubId stub_id) {
+#define RUNTIME_STUB_NAME(Name) #Name,
+#define RUNTIME_STUB_NAME_TRAP(Name) "ThrowWasm" #Name,
+  constexpr const char* runtime_stub_names[] = {WASM_RUNTIME_STUB_LIST(
+      RUNTIME_STUB_NAME, RUNTIME_STUB_NAME_TRAP) "<unknown>"};
+#undef RUNTIME_STUB_NAME
+#undef RUNTIME_STUB_NAME_TRAP
+  STATIC_ASSERT(arraysize(runtime_stub_names) ==
+                WasmCode::kRuntimeStubCount + 1);
+
+  DCHECK_GT(arraysize(runtime_stub_names), stub_id);
+  return runtime_stub_names[stub_id];
 }
 
 }  // namespace wasm

@@ -695,10 +695,10 @@ I32_BINOP(xor, xor_)
 
 #undef I32_BINOP
 
-#define I32_BINOP_I(name, instruction)                               \
-  void LiftoffAssembler::emit_i32_##name(Register dst, Register lhs, \
-                                         int32_t imm) {              \
-    instruction(dst, lhs, Operand(imm));                             \
+#define I32_BINOP_I(name, instruction)                                  \
+  void LiftoffAssembler::emit_i32_##name##i(Register dst, Register lhs, \
+                                            int32_t imm) {              \
+    instruction(dst, lhs, Operand(imm));                                \
   }
 
 // clang-format off
@@ -728,12 +728,12 @@ bool LiftoffAssembler::emit_i32_popcnt(Register dst, Register src) {
                                          Register amount) {          \
     instruction(dst, src, amount);                                   \
   }
-#define I32_SHIFTOP_I(name, instruction)                             \
-  I32_SHIFTOP(name, instruction##v)                                  \
-  void LiftoffAssembler::emit_i32_##name(Register dst, Register src, \
-                                         int amount) {               \
-    DCHECK(is_uint5(amount));                                        \
-    instruction(dst, src, amount);                                   \
+#define I32_SHIFTOP_I(name, instruction)                                \
+  I32_SHIFTOP(name, instruction##v)                                     \
+  void LiftoffAssembler::emit_i32_##name##i(Register dst, Register src, \
+                                            int amount) {               \
+    DCHECK(is_uint5(amount));                                           \
+    instruction(dst, src, amount);                                      \
   }
 
 I32_SHIFTOP_I(shl, sll)
@@ -808,10 +808,10 @@ I64_BINOP(xor, xor_)
 
 #undef I64_BINOP
 
-#define I64_BINOP_I(name, instruction)                                       \
-  void LiftoffAssembler::emit_i64_##name(LiftoffRegister dst,                \
-                                         LiftoffRegister lhs, int32_t imm) { \
-    instruction(dst.gp(), lhs.gp(), Operand(imm));                           \
+#define I64_BINOP_I(name, instruction)                         \
+  void LiftoffAssembler::emit_i64_##name##i(                   \
+      LiftoffRegister dst, LiftoffRegister lhs, int32_t imm) { \
+    instruction(dst.gp(), lhs.gp(), Operand(imm));             \
   }
 
 // clang-format off
@@ -828,15 +828,15 @@ I64_BINOP_I(xor, Xor)
       LiftoffRegister dst, LiftoffRegister src, Register amount) { \
     instruction(dst.gp(), src.gp(), amount);                       \
   }
-#define I64_SHIFTOP_I(name, instruction)                                    \
-  I64_SHIFTOP(name, instruction##v)                                         \
-  void LiftoffAssembler::emit_i64_##name(LiftoffRegister dst,               \
-                                         LiftoffRegister src, int amount) { \
-    DCHECK(is_uint6(amount));                                               \
-    if (amount < 32)                                                        \
-      instruction(dst.gp(), src.gp(), amount);                              \
-    else                                                                    \
-      instruction##32(dst.gp(), src.gp(), amount - 32);                     \
+#define I64_SHIFTOP_I(name, instruction)                                       \
+  I64_SHIFTOP(name, instruction##v)                                            \
+  void LiftoffAssembler::emit_i64_##name##i(LiftoffRegister dst,               \
+                                            LiftoffRegister src, int amount) { \
+    DCHECK(is_uint6(amount));                                                  \
+    if (amount < 32)                                                           \
+      instruction(dst.gp(), src.gp(), amount);                                 \
+    else                                                                       \
+      instruction##32(dst.gp(), src.gp(), amount - 32);                        \
   }
 
 I64_SHIFTOP_I(shl, dsll)
@@ -1528,6 +1528,24 @@ void LiftoffAssembler::emit_i32x4_mul(LiftoffRegister dst, LiftoffRegister lhs,
   bailout(kSimd, "emit_i32x4_mul");
 }
 
+void LiftoffAssembler::emit_i32x4_min_s(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i32x4_min_s");
+}
+
+void LiftoffAssembler::emit_i32x4_min_u(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i32x4_min_u");
+}
+
 void LiftoffAssembler::emit_i16x8_splat(LiftoffRegister dst,
                                         LiftoffRegister src) {
   // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
@@ -1572,6 +1590,15 @@ void LiftoffAssembler::emit_i16x8_add(LiftoffRegister dst, LiftoffRegister lhs,
   bailout(kSimd, "emit_i16x8_add");
 }
 
+void LiftoffAssembler::emit_i16x8_add_saturate_s(LiftoffRegister dst,
+                                                 LiftoffRegister lhs,
+                                                 LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i16x8_add_saturate_s");
+}
+
 void LiftoffAssembler::emit_i16x8_sub(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
   // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
@@ -1586,6 +1613,33 @@ void LiftoffAssembler::emit_i16x8_mul(LiftoffRegister dst, LiftoffRegister lhs,
   // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
   // 3a4000 support MSA.
   bailout(kSimd, "emit_i16x8_mul");
+}
+
+void LiftoffAssembler::emit_i16x8_add_saturate_u(LiftoffRegister dst,
+                                                 LiftoffRegister lhs,
+                                                 LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i16x8_add_saturate_u");
+}
+
+void LiftoffAssembler::emit_i16x8_min_s(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i16x8_min_s");
+}
+
+void LiftoffAssembler::emit_i16x8_min_u(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i16x8_min_u");
 }
 
 void LiftoffAssembler::emit_i8x16_splat(LiftoffRegister dst,
@@ -1632,6 +1686,15 @@ void LiftoffAssembler::emit_i8x16_add(LiftoffRegister dst, LiftoffRegister lhs,
   bailout(kSimd, "emit_i8x16_add");
 }
 
+void LiftoffAssembler::emit_i8x16_add_saturate_s(LiftoffRegister dst,
+                                                 LiftoffRegister lhs,
+                                                 LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i8x16_add_saturate_s");
+}
+
 void LiftoffAssembler::emit_i8x16_sub(LiftoffRegister dst, LiftoffRegister lhs,
                                       LiftoffRegister rhs) {
   // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
@@ -1646,6 +1709,33 @@ void LiftoffAssembler::emit_i8x16_mul(LiftoffRegister dst, LiftoffRegister lhs,
   // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
   // 3a4000 support MSA.
   bailout(kSimd, "emit_i8x16_mul");
+}
+
+void LiftoffAssembler::emit_i8x16_add_saturate_u(LiftoffRegister dst,
+                                                 LiftoffRegister lhs,
+                                                 LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i8x16_add_saturate_u");
+}
+
+void LiftoffAssembler::emit_i8x16_min_s(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i8x16_min_s");
+}
+
+void LiftoffAssembler::emit_i8x16_min_u(LiftoffRegister dst,
+                                        LiftoffRegister lhs,
+                                        LiftoffRegister rhs) {
+  // TODO(mips): Support this on loongson 3a4000. Currently, the main MIPS
+  // CPU, Loongson 3a3000 does not support MSA(simd128), but the upcoming
+  // 3a4000 support MSA.
+  bailout(kSimd, "emit_i8x16_min_u");
 }
 
 void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {

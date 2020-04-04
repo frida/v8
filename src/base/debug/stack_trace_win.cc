@@ -39,29 +39,6 @@ bool g_dump_stack_in_signal_handler = true;
 bool g_initialized_symbols = false;
 DWORD g_init_error = ERROR_SUCCESS;
 
-struct DbghelpApi {
-  DWORD (WINAPI * SymSetOptions)(DWORD SymOptions);
-  BOOL (WINAPI * SymInitialize)(HANDLE hProcess, PCSTR UserSearchPath,
-                                BOOL fInvadeProcess);
-  BOOL (WINAPI * SymGetSearchPathW)(HANDLE hProcess, PWSTR SearchPath,
-                                    DWORD SearchPathLength);
-  BOOL (WINAPI * SymSetSearchPathW)(HANDLE hProcess, PCWSTR SearchPath);
-  BOOL (WINAPI * SymFromAddr)(HANDLE hProcess, DWORD64 Address,
-                              PDWORD64 Displacement, PSYMBOL_INFO Symbol);
-  BOOL (WINAPI * SymGetLineFromAddr64)(HANDLE hProcess, DWORD64 qwAddr,
-                                       PDWORD pdwDisplacement,
-                                       PIMAGEHLP_LINE64 Line64);
-  PVOID (WINAPI * SymFunctionTableAccess64)(HANDLE hProcess, DWORD64 AddrBase);
-  DWORD64 (WINAPI * SymGetModuleBase64)(HANDLE hProcess, DWORD64 qwAddr);
-  BOOL (WINAPI * StackWalk64)(DWORD MachineType, HANDLE hProcess,
-                              HANDLE hThread, LPSTACKFRAME64 StackFrame,
-                              PVOID ContextRecord,
-                              PREAD_PROCESS_MEMORY_ROUTINE64 ReadMemoryRoutine,
-                              PFUNCTION_TABLE_ACCESS_ROUTINE64 FunctionTableAccessRoutine,
-                              PGET_MODULE_BASE_ROUTINE64 GetModuleBaseRoutine,
-                              PTRANSLATE_ADDRESS_ROUTINE64 TranslateAddress);
-} g_dbghelp_api;
-
 // Prints the exception call stack.
 // This is the unit tests exception filter.
 long WINAPI StackDumpExceptionFilter(EXCEPTION_POINTERS* info) {  // NOLINT
@@ -75,26 +52,10 @@ long WINAPI StackDumpExceptionFilter(EXCEPTION_POINTERS* info) {  // NOLINT
 bool InitializeSymbols() {
   if (g_initialized_symbols) return g_init_error == ERROR_SUCCESS;
   g_initialized_symbols = true;
-
-  HMODULE dbghelp = LoadLibraryW(L"dbghelp.dll");
-#define ASSIGN_DBGHELP_FUNC(name)                                      \
-  g_dbghelp_api.name = reinterpret_cast<decltype(g_dbghelp_api.name)>( \
-      GetProcAddress(dbghelp, #name))
-  ASSIGN_DBGHELP_FUNC(SymSetOptions);
-  ASSIGN_DBGHELP_FUNC(SymInitialize);
-  ASSIGN_DBGHELP_FUNC(SymGetSearchPathW);
-  ASSIGN_DBGHELP_FUNC(SymSetSearchPathW);
-  ASSIGN_DBGHELP_FUNC(SymFromAddr);
-  ASSIGN_DBGHELP_FUNC(SymGetLineFromAddr64);
-  ASSIGN_DBGHELP_FUNC(SymFunctionTableAccess64);
-  ASSIGN_DBGHELP_FUNC(SymGetModuleBase64);
-  ASSIGN_DBGHELP_FUNC(StackWalk64);
-
   // Defer symbol load until they're needed, use undecorated names, and get line
   // numbers.
-  g_dbghelp_api.SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME |
-                              SYMOPT_LOAD_LINES);
-  if (!g_dbghelp_api.SymInitialize(GetCurrentProcess(), nullptr, TRUE)) {
+  SymSetOptions(SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME | SYMOPT_LOAD_LINES);
+  if (!SymInitialize(GetCurrentProcess(), nullptr, TRUE)) {
     g_init_error = GetLastError();
     // TODO(awong): Handle error: SymInitialize can fail with
     // ERROR_INVALID_PARAMETER.
@@ -113,8 +74,8 @@ bool InitializeSymbols() {
 
   // Note: The below function takes buffer size as number of characters,
   // not number of bytes!
-  if (!g_dbghelp_api.SymGetSearchPathW(GetCurrentProcess(), symbols_path.get(),
-                                       kSymbolsArraySize)) {
+  if (!SymGetSearchPathW(GetCurrentProcess(), symbols_path.get(),
+                         kSymbolsArraySize)) {
     g_init_error = GetLastError();
     return false;
   }
@@ -127,7 +88,7 @@ bool InitializeSymbols() {
   std::wstring new_path(
       std::wstring(symbols_path.get()) + L";" +
       exe_path_wstring.substr(0, exe_path_wstring.find_last_of(L"\\/")));
-  if (!g_dbghelp_api.SymSetSearchPathW(GetCurrentProcess(), new_path.c_str())) {
+  if (!SymSetSearchPathW(GetCurrentProcess(), new_path.c_str())) {
     g_init_error = GetLastError();
     return false;
   }
@@ -163,17 +124,15 @@ void OutputTraceToStream(const void* const* trace, size_t count,
     PSYMBOL_INFO symbol = reinterpret_cast<PSYMBOL_INFO>(&buffer[0]);
     symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
     symbol->MaxNameLen = kMaxNameLength - 1;
-    BOOL has_symbol = g_dbghelp_api.SymFromAddr(GetCurrentProcess(), frame,
-                                                &sym_displacement, symbol);
+    BOOL has_symbol =
+        SymFromAddr(GetCurrentProcess(), frame, &sym_displacement, symbol);
 
     // Attempt to retrieve line number information.
     DWORD line_displacement = 0;
     IMAGEHLP_LINE64 line = {};
     line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-    BOOL has_line = g_dbghelp_api.SymGetLineFromAddr64(GetCurrentProcess(),
-                                                       frame,
-                                                       &line_displacement,
-                                                       &line);
+    BOOL has_line = SymGetLineFromAddr64(GetCurrentProcess(), frame,
+                                         &line_displacement, &line);
 
     // Output the backtrace line.
     (*os) << "\t";
@@ -257,11 +216,9 @@ void StackTrace::InitTrace(const CONTEXT* context_record) {
   stack_frame.AddrPC.Mode = AddrModeFlat;
   stack_frame.AddrFrame.Mode = AddrModeFlat;
   stack_frame.AddrStack.Mode = AddrModeFlat;
-  while (g_dbghelp_api.StackWalk64(machine_type, GetCurrentProcess(),
-                                   GetCurrentThread(), &stack_frame,
-                                   &context_copy, nullptr,
-                                   g_dbghelp_api.SymFunctionTableAccess64,
-                                   g_dbghelp_api.SymGetModuleBase64, nullptr) &&
+  while (StackWalk64(machine_type, GetCurrentProcess(), GetCurrentThread(),
+                     &stack_frame, &context_copy, nullptr,
+                     &SymFunctionTableAccess64, &SymGetModuleBase64, nullptr) &&
          count_ < arraysize(trace_)) {
     trace_[count_++] = reinterpret_cast<void*>(stack_frame.AddrPC.Offset);
   }

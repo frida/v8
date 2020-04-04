@@ -227,8 +227,7 @@ DEFINE_IMPLICATION(harmony_import_meta, harmony_dynamic_import)
 #endif
 
 // Features that are complete (but still behind --harmony/es-staging flag).
-#define HARMONY_STAGED_BASE(V)                                     \
-  V(harmony_private_methods, "harmony private methods in class literals")
+#define HARMONY_STAGED_BASE(V)
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_STAGED(V)                                  \
@@ -243,15 +242,16 @@ DEFINE_IMPLICATION(harmony_import_meta, harmony_dynamic_import)
 #endif
 
 // Features that are shipping (turned on by default, but internal flag remains).
-#define HARMONY_SHIPPING_BASE(V)                               \
-  V(harmony_namespace_exports,                                 \
-    "harmony namespace exports (export * as foo from 'bar')")  \
-  V(harmony_sharedarraybuffer, "harmony sharedarraybuffer")    \
-  V(harmony_import_meta, "harmony import.meta property")       \
-  V(harmony_dynamic_import, "harmony dynamic import")          \
-  V(harmony_promise_all_settled, "harmony Promise.allSettled") \
-  V(harmony_nullish, "harmony nullish operator")               \
-  V(harmony_optional_chaining, "harmony optional chaining syntax")
+#define HARMONY_SHIPPING_BASE(V)                                   \
+  V(harmony_namespace_exports,                                     \
+    "harmony namespace exports (export * as foo from 'bar')")      \
+  V(harmony_sharedarraybuffer, "harmony sharedarraybuffer")        \
+  V(harmony_import_meta, "harmony import.meta property")           \
+  V(harmony_dynamic_import, "harmony dynamic import")              \
+  V(harmony_promise_all_settled, "harmony Promise.allSettled")     \
+  V(harmony_nullish, "harmony nullish operator")                   \
+  V(harmony_optional_chaining, "harmony optional chaining syntax") \
+  V(harmony_private_methods, "harmony private methods in class literals")
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_SHIPPING(V)                               \
@@ -889,8 +889,12 @@ DEFINE_BOOL(trace_mutator_utilization, false,
 DEFINE_BOOL(incremental_marking, true, "use incremental marking")
 DEFINE_BOOL(incremental_marking_wrappers, true,
             "use incremental marking for marking wrappers")
+DEFINE_BOOL(incremental_marking_task, true, "use tasks for incremental marking")
 DEFINE_BOOL(trace_unmapper, false, "Trace the unmapping")
 DEFINE_BOOL(parallel_scavenge, true, "parallel scavenge")
+DEFINE_BOOL(scavenge_task, true, "schedule scavenge tasks")
+DEFINE_INT(scavenge_task_trigger, 80,
+           "scavenge task trigger in percent of the current heap limit")
 DEFINE_BOOL(trace_parallel_scavenge, false, "trace parallel scavenge")
 DEFINE_BOOL(write_protect_code_memory, true, "write protect code memory")
 #ifdef V8_CONCURRENT_MARKING

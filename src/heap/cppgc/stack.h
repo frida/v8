@@ -7,17 +7,6 @@
 
 #include "src/base/macros.h"
 
-// TODO(chromium:1056170): Implement all platforms.
-// TODO(chromium:1056170): Should use HOST arch instead of target arch. Fix
-// requires fixing e.g. simulator platforms.
-#ifdef __clang__
-#if defined(V8_TARGET_ARCH_X64)
-#if !defined(V8_TARGET_OS_WIN)
-#define CPPGC_SUPPORTS_CONSERVATIVE_STACK_SCAN 1
-#endif
-#endif
-#endif
-
 namespace cppgc {
 namespace internal {
 
@@ -43,9 +32,10 @@ class V8_EXPORT_PRIVATE Stack final {
   void IteratePointers(StackVisitor* visitor) const;
 #endif  // CPPGC_SUPPORTS_CONSERVATIVE_STACK_SCAN
 
- private:
-  void IteratePointersImpl(StackVisitor* visitor, intptr_t* stack_end) const;
+  // Returns the start of the stack.
+  const void* stack_start() const { return stack_start_; }
 
+ private:
   const void* stack_start_;
 };
 
