@@ -7334,9 +7334,7 @@ class PromiseRejectMessage {
 typedef void (*PromiseRejectCallback)(PromiseRejectMessage message);
 
 // --- Microtasks Callbacks ---
-#ifndef _MSC_VER
 V8_DEPRECATE_SOON("Use *WithData version.")
-#endif
 typedef void (*MicrotasksCompletedCallback)(Isolate*);
 typedef void (*MicrotasksCompletedCallbackWithData)(Isolate*, void*);
 typedef void (*MicrotaskCallback)(void* data);
@@ -10600,12 +10598,6 @@ class V8_EXPORT Locker {
    * current thread.
    */
   static bool IsLocked(Isolate* isolate);
-
-  /**
-   * Returns whether or not the locker for a given isolate, is locked by any
-   * thread.
-   */
-  static bool IsLockedByAnyThread(Isolate* isolate);
 
   /**
    * Returns whether v8::Locker is being used by this V8 instance.

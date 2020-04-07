@@ -195,8 +195,10 @@ void WasmCode::LogCode(Isolate* isolate) const {
   if (IsAnonymous()) return;
 
   ModuleWireBytes wire_bytes(native_module()->wire_bytes());
-  WireBytesRef name_ref = native_module()->module()->function_names.Lookup(
-      wire_bytes, index(), VectorOf(native_module()->module()->export_table));
+  WireBytesRef name_ref =
+      native_module()->module()->lazily_generated_names.LookupFunctionName(
+          wire_bytes, index(),
+          VectorOf(native_module()->module()->export_table));
   WasmName name = wire_bytes.GetNameOrNull(name_ref);
 
   const std::string& source_map_url = native_module()->module()->source_map_url;
@@ -212,7 +214,7 @@ void WasmCode::LogCode(Isolate* isolate) const {
   }
 
   std::string name_buffer;
-  if (kind_ == kWasmToJsWrapper) {
+  if (kind() == kWasmToJsWrapper) {
     name_buffer = "wasm-to-js:";
     size_t prefix_len = name_buffer.size();
     constexpr size_t kMaxSigLength = 128;
@@ -305,7 +307,7 @@ void WasmCode::Disassemble(const char* name, std::ostream& os,
                            Address current_pc) const {
   if (name) os << "name: " << name << "\n";
   if (!IsAnonymous()) os << "index: " << index() << "\n";
-  os << "kind: " << GetWasmCodeKindAsString(kind_) << "\n";
+  os << "kind: " << GetWasmCodeKindAsString(kind()) << "\n";
   os << "compiler: " << (is_liftoff() ? "Liftoff" : "TurboFan") << "\n";
   size_t padding = instructions().size() - unpadded_binary_size_;
   os << "Body (size = " << instructions().size() << " = "
@@ -1089,7 +1091,7 @@ WasmCode* NativeModule::PublishCodeLocked(std::unique_ptr<WasmCode> code) {
         update_code_table && !has_interpreter_redirection(code->index());
 
     // Ensure that interpreter entries always populate to the jump table.
-    if (code->kind_ == WasmCode::Kind::kInterpreterEntry) {
+    if (code->kind() == WasmCode::Kind::kInterpreterEntry) {
       SetInterpreterRedirection(code->index());
       update_jump_table = true;
     }
@@ -1969,21 +1971,17 @@ NativeModuleModificationScope::~NativeModuleModificationScope() {
 }
 
 namespace {
-
-base::LazyInstance<base::ThreadLocalPointer<WasmCodeRefScope>>::type
-    current_code_refs_scope = LAZY_INSTANCE_INITIALIZER;
-
+thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
 }  // namespace
 
 WasmCodeRefScope::WasmCodeRefScope()
-    : previous_scope_(current_code_refs_scope.Pointer()->Get()) {
-  current_code_refs_scope.Pointer()->Set(this);
+    : previous_scope_(current_code_refs_scope) {
+  current_code_refs_scope = this;
 }
 
 WasmCodeRefScope::~WasmCodeRefScope() {
-  auto current = current_code_refs_scope.Pointer();
-  DCHECK_EQ(this, current->Get());
-  current->Set(previous_scope_);
+  DCHECK_EQ(this, current_code_refs_scope);
+  current_code_refs_scope = previous_scope_;
   std::vector<WasmCode*> code_ptrs;
   code_ptrs.reserve(code_ptrs_.size());
   code_ptrs.assign(code_ptrs_.begin(), code_ptrs_.end());
@@ -1993,7 +1991,7 @@ WasmCodeRefScope::~WasmCodeRefScope() {
 // static
 void WasmCodeRefScope::AddRef(WasmCode* code) {
   DCHECK_NOT_NULL(code);
-  WasmCodeRefScope* current_scope = current_code_refs_scope.Pointer()->Get();
+  WasmCodeRefScope* current_scope = current_code_refs_scope;
   DCHECK_NOT_NULL(current_scope);
   auto entry = current_scope->code_ptrs_.insert(code);
   // If we added a new entry, increment the ref counter.

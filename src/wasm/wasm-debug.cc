@@ -418,24 +418,6 @@ class InterpreterHandle {
             .Check();
       }
     }
-
-    // Fill stack values.
-    int stack_count = frame->GetStackHeight();
-    // Use an object without prototype instead of an Array, for nicer displaying
-    // in DevTools. For Arrays, the length field and prototype is displayed,
-    // which does not make too much sense here.
-    Handle<JSObject> stack_obj =
-        isolate_->factory()->NewJSObjectWithNullProto();
-    Handle<String> stack_name =
-        isolate_->factory()->InternalizeString(StaticCharVector("stack"));
-    JSObject::AddProperty(isolate, local_scope_object, stack_name, stack_obj,
-                          NONE);
-    for (int i = 0; i < stack_count; ++i) {
-      WasmValue value = frame->GetStackValue(i);
-      Handle<Object> value_obj = WasmValueToValueObject(isolate_, value);
-      JSObject::AddDataElement(stack_obj, static_cast<uint32_t>(i), value_obj,
-                               NONE);
-    }
     return local_scope_object;
   }
 
@@ -519,8 +501,15 @@ Handle<JSObject> GetGlobalScopeObject(Handle<WasmInstanceObject> instance) {
   Handle<JSObject> global_scope_object =
       isolate->factory()->NewJSObjectWithNullProto();
   if (instance->has_memory_object()) {
-    Handle<String> name =
-        isolate->factory()->InternalizeString(StaticCharVector("memory"));
+    Handle<String> name;
+    // TODO(duongn): extend the logic when multiple memories are supported.
+    const uint32_t memory_index = 0;
+    if (!WasmInstanceObject::GetMemoryNameOrNull(isolate, instance,
+                                                 memory_index)
+             .ToHandle(&name)) {
+      const char* label = "memory%d";
+      name = PrintFToOneByteString<true>(isolate, label, memory_index);
+    }
     Handle<JSArrayBuffer> memory_buffer(
         instance->memory_object().array_buffer(), isolate);
     Handle<JSTypedArray> uint8_array = isolate->factory()->NewJSTypedArray(
@@ -608,23 +597,6 @@ class DebugInfoImpl {
                                 StoreOrigin::kNamed)
             .Check();
       }
-    }
-
-    // Fill stack values.
-    // Use an object without prototype instead of an Array, for nicer displaying
-    // in DevTools. For Arrays, the length field and prototype is displayed,
-    // which does not make too much sense here.
-    Handle<JSObject> stack_obj = isolate->factory()->NewJSObjectWithNullProto();
-    Handle<String> stack_name =
-        isolate->factory()->InternalizeString(StaticCharVector("stack"));
-    JSObject::AddProperty(isolate, local_scope_object, stack_name, stack_obj,
-                          NONE);
-    int value_count = debug_side_table_entry->num_values();
-    for (int i = num_locals; i < value_count; ++i) {
-      WasmValue value = GetValue(debug_side_table_entry, i, fp, debug_break_fp);
-      Handle<Object> value_obj = WasmValueToValueObject(isolate, value);
-      JSObject::AddDataElement(stack_obj, static_cast<uint32_t>(i - num_locals),
-                               value_obj, NONE);
     }
     return local_scope_object;
   }

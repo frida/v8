@@ -202,7 +202,7 @@ Heap::Heap()
     : isolate_(isolate()),
       memory_pressure_level_(MemoryPressureLevel::kNone),
       global_pretenuring_feedback_(kInitialFeedbackCapacity),
-      safepoint_(new Safepoint(this)),
+      safepoint_(new GlobalSafepoint(this)),
       external_string_table_(this) {
   // Ensure old_generation_size_ is a multiple of kPageSize.
   DCHECK_EQ(0, max_old_generation_size_ & (Page::kPageSize - 1));
@@ -4473,6 +4473,8 @@ void Heap::IterateStrongRoots(RootVisitor* v, VisitMode mode) {
   if (FLAG_local_heaps) {
     safepoint_->Iterate(&left_trim_visitor);
     safepoint_->Iterate(v);
+    isolate_->persistent_handles_list()->Iterate(&left_trim_visitor);
+    isolate_->persistent_handles_list()->Iterate(v);
   }
 
   isolate_->IterateDeferredHandles(&left_trim_visitor);
@@ -5376,7 +5378,12 @@ void Heap::StartTearDown() {
   // a good time to run heap verification (if requested), before starting to
   // tear down parts of the Isolate.
   if (FLAG_verify_heap) {
-    Verify();
+    if (FLAG_local_heaps) {
+      SafepointScope scope(this);
+      Verify();
+    } else {
+      Verify();
+    }
   }
 #endif
 }
