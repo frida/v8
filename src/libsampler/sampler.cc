@@ -479,7 +479,14 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
 #endif  // V8_TARGET_ARCH_ARM64
 
 #elif V8_OS_MACOSX
-#if V8_HOST_ARCH_X64
+#if V8_HOST_ARCH_ARM64
+  state->pc = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
+  state->sp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
+  state->fp = reinterpret_cast<void*>(
+      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
+#elif V8_HOST_ARCH_X64
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__rip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__rsp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__rbp);

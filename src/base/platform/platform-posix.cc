@@ -147,7 +147,7 @@ int GetFlagsForMemoryPermission(OS::MemoryPermission access) {
 void* Allocate(void* hint, size_t size, OS::MemoryPermission access) {
   int prot = GetProtectionFromMemoryPermission(access);
   int flags = GetFlagsForMemoryPermission(access);
-#if V8_TARGET_OS_IOS && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
   // XXX: This logic is simple and leaky as it is only used for mksnapshot.
   size_t alignment = 16384;
   void* result = mmap(hint, size + alignment, prot, flags, kMmapFd,
@@ -238,7 +238,7 @@ int OS::ActivationFrameAlignment() {
 
 // static
 size_t OS::AllocatePageSize() {
-#if V8_TARGET_OS_IOS && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
   return 16384;
 #else
   return static_cast<size_t>(sysconf(_SC_PAGESIZE));
@@ -247,7 +247,7 @@ size_t OS::AllocatePageSize() {
 
 // static
 size_t OS::CommitPageSize() {
-#if V8_TARGET_OS_IOS && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
+#if (V8_TARGET_OS_MACOSX || V8_TARGET_OS_IOS) && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
   return 16384;
 #else
   static size_t page_size = getpagesize();
