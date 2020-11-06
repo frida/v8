@@ -13,6 +13,7 @@
 #include "src/objects/name.h"
 #include "src/objects/smi.h"
 #include "src/strings/unicode-decoder.h"
+#include "torque-generated/field-offsets.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -80,6 +81,8 @@ class StringShape {
 #endif
 };
 
+#include "torque-generated/src/objects/string-tq.inc"
+
 // The String abstract class captures JavaScript string values:
 //
 // Ecma-262:
@@ -97,6 +100,10 @@ class String : public TorqueGeneratedString<String, Name> {
   // A flat string has content that's encoded as a sequence of either
   // one-byte chars or two-byte UC16.
   // Returned by String::GetFlatContent().
+  // Not safe to use from concurrent background threads.
+  // TODO(solanes): Move FlatContent into FlatStringReader, and make it private.
+  // This would de-duplicate code, as well as taking advantage of the fact that
+  // FlatStringReader is relocatable.
   class FlatContent {
    public:
     // Returns true if the string is flat and this structure contains content.
@@ -134,11 +141,20 @@ class String : public TorqueGeneratedString<String, Name> {
     enum State { NON_FLAT, ONE_BYTE, TWO_BYTE };
 
     // Constructors only used by String::GetFlatContent().
-    explicit FlatContent(const uint8_t* start, int length)
-        : onebyte_start(start), length_(length), state_(ONE_BYTE) {}
-    explicit FlatContent(const uc16* start, int length)
-        : twobyte_start(start), length_(length), state_(TWO_BYTE) {}
-    FlatContent() : onebyte_start(nullptr), length_(0), state_(NON_FLAT) {}
+    FlatContent(const uint8_t* start, int length,
+                const DisallowHeapAllocation& no_gc)
+        : onebyte_start(start),
+          length_(length),
+          state_(ONE_BYTE),
+          no_gc_(no_gc) {}
+    FlatContent(const uc16* start, int length,
+                const DisallowHeapAllocation& no_gc)
+        : twobyte_start(start),
+          length_(length),
+          state_(TWO_BYTE),
+          no_gc_(no_gc) {}
+    explicit FlatContent(const DisallowHeapAllocation& no_gc)
+        : onebyte_start(nullptr), length_(0), state_(NON_FLAT), no_gc_(no_gc) {}
 
     union {
       const uint8_t* onebyte_start;
@@ -146,6 +162,7 @@ class String : public TorqueGeneratedString<String, Name> {
     };
     int length_;
     State state_;
+    const DisallowHeapAllocation& no_gc_;
 
     friend class String;
     friend class IterableSubString;
@@ -209,7 +226,7 @@ class String : public TorqueGeneratedString<String, Name> {
       Isolate* isolate, Handle<String> string,
       AllocationType allocation = AllocationType::kYoung);
   static inline Handle<String> Flatten(
-      OffThreadIsolate* isolate, Handle<String> string,
+      LocalIsolate* isolate, Handle<String> string,
       AllocationType allocation = AllocationType::kYoung);
 
   // Tries to return the content of a flat string as a structure holding either
@@ -259,9 +276,9 @@ class String : public TorqueGeneratedString<String, Name> {
     virtual Handle<String> GetPrefix() = 0;
     virtual Handle<String> GetSuffix() = 0;
 
-    // A named capture can be invalid (if it is not specified in the pattern),
-    // unmatched (specified but not matched in the current string), and matched.
-    enum CaptureState { INVALID, UNMATCHED, MATCHED };
+    // A named capture can be unmatched (either not specified in the pattern,
+    // or specified but unmatched in the current string), or matched.
+    enum CaptureState { UNMATCHED, MATCHED };
 
     virtual int CaptureCount() = 0;
     virtual bool HasNamedCaptures() = 0;
@@ -352,9 +369,20 @@ class String : public TorqueGeneratedString<String, Name> {
   // For use during stack traces.  Performs rudimentary sanity check.
   bool LooksValid();
 
-  // Dispatched behavior.
-  void StringShortPrint(StringStream* accumulator, bool show_details = true);
+  // Printing utility functions.
+  // - PrintUC16 prints the raw string contents to the given stream.
+  //   Non-printable characters are formatted as hex, but otherwise the string
+  //   is printed as-is.
+  // - StringShortPrint and StringPrint have extra formatting: they add a
+  //   prefix and suffix depending on the string kind, may add other information
+  //   such as the string heap object address, may truncate long strings, etc.
+  const char* PrefixForDebugPrint() const;
+  const char* SuffixForDebugPrint() const;
+  void StringShortPrint(StringStream* accumulator);
   void PrintUC16(std::ostream& os, int start = 0, int end = -1);  // NOLINT
+  void PrintUC16(StringStream* accumulator, int start, int end);
+
+  // Dispatched behavior.
 #if defined(DEBUG) || defined(OBJECT_PRINT)
   char* ToAsciiArray();
 #endif
@@ -558,15 +586,12 @@ class SeqOneByteString
   // instance.
   inline int SeqOneByteStringSize(InstanceType instance_type);
 
-  // Computes the size for an OneByteString instance of a given length.
-  static int SizeFor(int length) {
-    return OBJECT_POINTER_ALIGN(kHeaderSize + length * kCharSize);
-  }
-
   // Maximal memory usage for a single sequential one-byte string.
   static const int kMaxCharsSize = kMaxLength;
   static const int kMaxSize = OBJECT_POINTER_ALIGN(kMaxCharsSize + kHeaderSize);
   STATIC_ASSERT((kMaxSize - kHeaderSize) >= String::kMaxLength);
+
+  int AllocatedSize();
 
   class BodyDescriptor;
 
@@ -599,16 +624,13 @@ class SeqTwoByteString
   // instance.
   inline int SeqTwoByteStringSize(InstanceType instance_type);
 
-  // Computes the size for a TwoByteString instance of a given length.
-  static int SizeFor(int length) {
-    return OBJECT_POINTER_ALIGN(kHeaderSize + length * kShortSize);
-  }
-
   // Maximal memory usage for a single sequential two-byte string.
   static const int kMaxCharsSize = kMaxLength * 2;
   static const int kMaxSize = OBJECT_POINTER_ALIGN(kMaxCharsSize + kHeaderSize);
   STATIC_ASSERT(static_cast<int>((kMaxSize - kHeaderSize) / sizeof(uint16_t)) >=
                 String::kMaxLength);
+
+  int AllocatedSize();
 
   class BodyDescriptor;
 
@@ -639,7 +661,7 @@ class ConsString : public TorqueGeneratedConsString<ConsString, String> {
   // Minimum length for a cons string.
   static const int kMinLength = 13;
 
-  using BodyDescriptor = FixedBodyDescriptor<kFirstOffset, kSize, kSize>;
+  class BodyDescriptor;
 
   DECL_VERIFIER(ConsString)
 
@@ -661,7 +683,7 @@ class ThinString : public TorqueGeneratedThinString<ThinString, String> {
 
   DECL_VERIFIER(ThinString)
 
-  using BodyDescriptor = FixedBodyDescriptor<kActualOffset, kSize, kSize>;
+  class BodyDescriptor;
 
   TQ_OBJECT_CONSTRUCTORS(ThinString)
 };
@@ -688,7 +710,7 @@ class SlicedString : public TorqueGeneratedSlicedString<SlicedString, String> {
   // Minimum length for a sliced string.
   static const int kMinLength = 13;
 
-  using BodyDescriptor = FixedBodyDescriptor<kParentOffset, kSize, kSize>;
+  class BodyDescriptor;
 
   DECL_VERIFIER(SlicedString)
 
@@ -716,19 +738,21 @@ class ExternalString : public String {
   static const int kUncachedSize =
       kResourceOffset + FIELD_SIZE(kResourceOffset);
 
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
+
   // Return whether the external string data pointer is not cached.
   inline bool is_uncached() const;
   // Size in bytes of the external payload.
   int ExternalPayloadSize() const;
 
   // Used in the serializer/deserializer.
-  inline Address resource_as_address();
-  inline void set_address_as_resource(Address address);
-  inline uint32_t resource_as_uint32();
-  inline void set_uint32_as_resource(uint32_t value);
+  DECL_GETTER(resource_as_address, Address)
+  inline void set_address_as_resource(Isolate* isolate, Address address);
+  inline uint32_t GetResourceRefForDeserialization();
+  inline void SetResourceRefForSerialization(uint32_t ref);
 
   // Disposes string's resource object if it has not already been disposed.
-  inline void DisposeResource();
+  inline void DisposeResource(Isolate* isolate);
 
   STATIC_ASSERT(kResourceOffset == Internals::kStringResourceOffset);
   static const int kSizeOfAllExternalStrings = kHeaderSize;
@@ -745,19 +769,20 @@ class ExternalOneByteString : public ExternalString {
   using Resource = v8::String::ExternalOneByteStringResource;
 
   // The underlying resource.
-  inline const Resource* resource();
+  DECL_GETTER(resource, const Resource*)
 
   // It is assumed that the previous resource is null. If it is not null, then
   // it is the responsability of the caller the handle the previous resource.
   inline void SetResource(Isolate* isolate, const Resource* buffer);
+
   // Used only during serialization.
-  inline void set_resource(const Resource* buffer);
+  inline void set_resource(Isolate* isolate, const Resource* buffer);
 
   // Update the pointer cache to the external character array.
   // The cached pointer is always valid, as the external character array does =
   // not move during lifetime.  Deserialization is the only exception, after
   // which the pointer cache has to be refreshed.
-  inline void update_data_cache();
+  inline void update_data_cache(Isolate* isolate);
 
   inline const uint8_t* GetChars();
 
@@ -786,19 +811,20 @@ class ExternalTwoByteString : public ExternalString {
   using Resource = v8::String::ExternalStringResource;
 
   // The underlying string resource.
-  inline const Resource* resource();
+  DECL_GETTER(resource, const Resource*)
 
   // It is assumed that the previous resource is null. If it is not null, then
   // it is the responsability of the caller the handle the previous resource.
   inline void SetResource(Isolate* isolate, const Resource* buffer);
+
   // Used only during serialization.
-  inline void set_resource(const Resource* buffer);
+  inline void set_resource(Isolate* isolate, const Resource* buffer);
 
   // Update the pointer cache to the external character array.
   // The cached pointer is always valid, as the external character array does =
   // not move during lifetime.  Deserialization is the only exception, after
   // which the pointer cache has to be refreshed.
-  inline void update_data_cache();
+  inline void update_data_cache(Isolate* isolate);
 
   inline const uint16_t* GetChars();
 
@@ -822,12 +848,12 @@ class ExternalTwoByteString : public ExternalString {
 };
 
 // A flat string reader provides random access to the contents of a
-// string independent of the character width of the string.  The handle
+// string independent of the character width of the string. The handle
 // must be valid as long as the reader is being used.
+// Not safe to use from concurrent background threads.
 class V8_EXPORT_PRIVATE FlatStringReader : public Relocatable {
  public:
   FlatStringReader(Isolate* isolate, Handle<String> str);
-  FlatStringReader(Isolate* isolate, Vector<const char> input);
   void PostGarbageCollection() override;
   inline uc32 Get(int index);
   template <typename Char>
@@ -835,7 +861,7 @@ class V8_EXPORT_PRIVATE FlatStringReader : public Relocatable {
   int length() { return length_; }
 
  private:
-  Address* str_;
+  Handle<String> str_;
   bool is_one_byte_;
   int length_;
   const void* start_;

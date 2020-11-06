@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "src/objects/objects.h"
-
 #include "src/codegen/assembler-inl.h"
 #include "src/date/date.h"
 #include "src/diagnostics/disasm.h"
@@ -29,9 +27,11 @@
 #include "src/objects/free-space-inl.h"
 #include "src/objects/function-kind.h"
 #include "src/objects/hash-table-inl.h"
+#include "src/objects/instance-type.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/layout-descriptor.h"
 #include "src/objects/objects-inl.h"
+#include "src/objects/objects.h"
 #include "src/roots/roots.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-break-iterator-inl.h"
@@ -55,6 +55,7 @@
 #include "src/objects/js-relative-time-format-inl.h"
 #include "src/objects/js-segment-iterator-inl.h"
 #include "src/objects/js-segmenter-inl.h"
+#include "src/objects/js-segments-inl.h"
 #endif  // V8_INTL_SUPPORT
 #include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/literal-objects-inl.h"
@@ -66,13 +67,15 @@
 #include "src/objects/property-descriptor-object-inl.h"
 #include "src/objects/stack-frame-info-inl.h"
 #include "src/objects/struct-inl.h"
+#include "src/objects/synthetic-module-inl.h"
 #include "src/objects/template-objects-inl.h"
+#include "src/objects/torque-defined-classes-inl.h"
 #include "src/objects/transitions-inl.h"
 #include "src/regexp/regexp.h"
 #include "src/utils/ostreams.h"
 #include "src/wasm/wasm-objects-inl.h"
-#include "torque-generated/class-verifiers-tq.h"
-#include "torque-generated/internal-class-definitions-tq-inl.h"
+#include "torque-generated/class-verifiers.h"
+#include "torque-generated/runtime-macros.h"
 
 namespace v8 {
 namespace internal {
@@ -178,7 +181,6 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
     case SIMPLE_NUMBER_DICTIONARY_TYPE:
-    case STRING_TABLE_TYPE:
     case EPHEMERON_HASH_TABLE_TYPE:
     case FIXED_ARRAY_TYPE:
     case SCOPE_INFO_TYPE:
@@ -250,6 +252,14 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       TORQUE_INSTANCE_CHECKERS_MULTIPLE_FULLY_DEFINED(MAKE_TORQUE_CASE)
 #undef MAKE_TORQUE_CASE
 
+    case DESCRIPTOR_ARRAY_TYPE:
+    case STRONG_DESCRIPTOR_ARRAY_TYPE:
+      DescriptorArray::cast(*this).DescriptorArrayVerify(isolate);
+      break;
+
+    case FOREIGN_TYPE:
+      break;  // No interesting fields.
+
     case ALLOCATION_SITE_TYPE:
       AllocationSite::cast(*this).AllocationSiteVerify(isolate);
       break;
@@ -279,32 +289,30 @@ void Symbol::SymbolVerify(Isolate* isolate) {
   CHECK_IMPLIES(IsPrivateBrand(), IsPrivateName());
 }
 
-USE_TORQUE_VERIFIER(ByteArray)
-
 void BytecodeArray::BytecodeArrayVerify(Isolate* isolate) {
   // TODO(oth): Walk bytecodes and immediate values to validate sanity.
   // - All bytecodes are known and well formed.
   // - Jumps must go to new instructions starts.
   // - No Illegal bytecodes.
   // - No consecutive sequences of prefix Wide / ExtraWide.
-  CHECK(IsBytecodeArray());
-  CHECK(constant_pool().IsFixedArray());
-  VerifyHeapPointer(isolate, constant_pool());
-  CHECK(source_position_table().IsUndefined() ||
-        source_position_table().IsException() ||
-        source_position_table().IsByteArray());
-  CHECK(handler_table().IsByteArray());
+  CHECK(IsBytecodeArray(isolate));
+  CHECK(constant_pool(isolate).IsFixedArray(isolate));
+  VerifyHeapPointer(isolate, constant_pool(isolate));
+  {
+    Object table = source_position_table(isolate, kAcquireLoad);
+    CHECK(table.IsUndefined(isolate) || table.IsException(isolate) ||
+          table.IsByteArray(isolate));
+  }
+  CHECK(handler_table(isolate).IsByteArray(isolate));
+  for (int i = 0; i < constant_pool(isolate).length(); ++i) {
+    // No ThinStrings in the constant pool.
+    CHECK(!constant_pool(isolate).get(isolate, i).IsThinString(isolate));
+  }
 }
-
-USE_TORQUE_VERIFIER(FreeSpace)
-
-USE_TORQUE_VERIFIER(HeapNumber)
-
-USE_TORQUE_VERIFIER(FeedbackVector)
 
 USE_TORQUE_VERIFIER(JSReceiver)
 
-bool JSObject::ElementsAreSafeToExamine(const Isolate* isolate) const {
+bool JSObject::ElementsAreSafeToExamine(IsolateRoot isolate) const {
   // If a GC was caused while constructing this object, the elements
   // pointer may point to a one pointer filler map.
   return elements(isolate) !=
@@ -327,6 +335,11 @@ void VerifyJSObjectElements(Isolate* isolate, JSObject object) {
     if (object.elements().length() > 0) {
       CHECK(object.elements().IsFixedDoubleArray());
     }
+    return;
+  }
+
+  if (object.HasSloppyArgumentsElements()) {
+    CHECK(object.elements().IsSloppyArgumentsElements());
     return;
   }
 
@@ -367,7 +380,7 @@ void JSObject::JSObjectVerify(Isolate* isolate) {
       int delta = actual_unused_property_fields - map().UnusedPropertyFields();
       CHECK_EQ(0, delta % JSObject::kFieldsAdded);
     }
-    DescriptorArray descriptors = map().instance_descriptors();
+    DescriptorArray descriptors = map().instance_descriptors(kRelaxedLoad);
     bool is_transitionable_fast_elements_kind =
         IsTransitionableFastElementsKind(map().elements_kind());
 
@@ -441,13 +454,13 @@ void Map::MapVerify(Isolate* isolate) {
       // Root maps must not have descriptors in the descriptor array that do not
       // belong to the map.
       CHECK_EQ(NumberOfOwnDescriptors(),
-               instance_descriptors().number_of_descriptors());
+               instance_descriptors(kRelaxedLoad).number_of_descriptors());
     } else {
       // If there is a parent map it must be non-stable.
       Map parent = Map::cast(GetBackPointer());
       CHECK(!parent.is_stable());
-      DescriptorArray descriptors = instance_descriptors();
-      if (descriptors == parent.instance_descriptors()) {
+      DescriptorArray descriptors = instance_descriptors(kRelaxedLoad);
+      if (descriptors == parent.instance_descriptors(kRelaxedLoad)) {
         if (NumberOfOwnDescriptors() == parent.NumberOfOwnDescriptors() + 1) {
           // Descriptors sharing through property transitions takes over
           // ownership from the parent map.
@@ -465,14 +478,14 @@ void Map::MapVerify(Isolate* isolate) {
       }
     }
   }
-  SLOW_DCHECK(instance_descriptors().IsSortedNoDuplicates());
+  SLOW_DCHECK(instance_descriptors(kRelaxedLoad).IsSortedNoDuplicates());
   DisallowHeapAllocation no_gc;
   SLOW_DCHECK(
       TransitionsAccessor(isolate, *this, &no_gc).IsSortedNoDuplicates());
   SLOW_DCHECK(TransitionsAccessor(isolate, *this, &no_gc)
                   .IsConsistentWithBackPointers());
   SLOW_DCHECK(!FLAG_unbox_double_fields ||
-              layout_descriptor().IsConsistentWithMap(*this));
+              layout_descriptor(kAcquireLoad).IsConsistentWithMap(*this));
   // Only JSFunction maps have has_prototype_slot() bit set and constructible
   // JSFunction objects must have prototype slot.
   CHECK_IMPLIES(has_prototype_slot(), instance_type() == JS_FUNCTION_TYPE);
@@ -480,7 +493,7 @@ void Map::MapVerify(Isolate* isolate) {
     CHECK(!has_named_interceptor());
     CHECK(!is_dictionary_map());
     CHECK(!is_access_check_needed());
-    DescriptorArray const descriptors = instance_descriptors();
+    DescriptorArray const descriptors = instance_descriptors(kRelaxedLoad);
     for (InternalIndex i : IterateOwnDescriptors()) {
       CHECK(!descriptors.GetKey(i).IsInterestingSymbol());
     }
@@ -504,7 +517,7 @@ void Map::DictionaryMapVerify(Isolate* isolate) {
   CHECK(is_dictionary_map());
   CHECK_EQ(kInvalidEnumCacheSentinel, EnumLength());
   CHECK_EQ(ReadOnlyRoots(isolate).empty_descriptor_array(),
-           instance_descriptors());
+           instance_descriptors(kRelaxedLoad));
   CHECK_EQ(0, UnusedPropertyFields());
   CHECK_EQ(Map::GetVisitorId(*this), visitor_id());
 }
@@ -519,18 +532,12 @@ void EmbedderDataArray::EmbedderDataArrayVerify(Isolate* isolate) {
   }
 }
 
-USE_TORQUE_VERIFIER(FixedArrayBase)
-
-USE_TORQUE_VERIFIER(FixedArray)
-
 void WeakFixedArray::WeakFixedArrayVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::WeakFixedArrayVerify(*this, isolate);
   for (int i = 0; i < length(); i++) {
     MaybeObject::VerifyMaybeObjectPointer(isolate, Get(i));
   }
 }
-
-USE_TORQUE_VERIFIER(WeakArrayList)
 
 void PropertyArray::PropertyArrayVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::PropertyArrayVerify(*this, isolate);
@@ -576,7 +583,7 @@ void NativeContext::NativeContextVerify(Isolate* isolate) {
 }
 
 void FeedbackMetadata::FeedbackMetadataVerify(Isolate* isolate) {
-  if (slot_count() == 0 && closure_feedback_cell_count() == 0) {
+  if (slot_count() == 0 && create_closure_slot_count() == 0) {
     CHECK_EQ(ReadOnlyRoots(isolate).empty_feedback_metadata(), *this);
   } else {
     FeedbackMetadataIterator iter(*this);
@@ -636,39 +643,15 @@ void TransitionArray::TransitionArrayVerify(Isolate* isolate) {
   CHECK_LE(LengthFor(number_of_transitions()), length());
 }
 
-void JSArgumentsObject::JSArgumentsObjectVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::JSArgumentsObjectVerify(*this, isolate);
-  if (IsSloppyArgumentsElementsKind(GetElementsKind())) {
-    SloppyArgumentsElements::cast(elements())
-        .SloppyArgumentsElementsVerify(isolate, *this);
-  }
-  if (isolate->IsInAnyContext(map(), Context::SLOPPY_ARGUMENTS_MAP_INDEX) ||
-      isolate->IsInAnyContext(map(),
-                              Context::SLOW_ALIASED_ARGUMENTS_MAP_INDEX) ||
-      isolate->IsInAnyContext(map(),
-                              Context::FAST_ALIASED_ARGUMENTS_MAP_INDEX)) {
-    VerifyObjectField(isolate, JSSloppyArgumentsObject::kLengthOffset);
-    VerifyObjectField(isolate, JSSloppyArgumentsObject::kCalleeOffset);
-  } else if (isolate->IsInAnyContext(map(),
-                                     Context::STRICT_ARGUMENTS_MAP_INDEX)) {
-    VerifyObjectField(isolate, JSStrictArgumentsObject::kLengthOffset);
-  }
-}
-
-void SloppyArgumentsElements::SloppyArgumentsElementsVerify(Isolate* isolate,
-                                                            JSObject holder) {
-  FixedArrayVerify(isolate);
-  // Abort verification if only partially initialized (can't use arguments()
-  // getter because it does FixedArray::cast()).
-  if (get(kArgumentsIndex).IsUndefined(isolate)) return;
-
+namespace {
+void SloppyArgumentsElementsVerify(Isolate* isolate,
+                                   SloppyArgumentsElements elements,
+                                   JSObject holder) {
+  elements.SloppyArgumentsElementsVerify(isolate);
   ElementsKind kind = holder.GetElementsKind();
   bool is_fast = kind == FAST_SLOPPY_ARGUMENTS_ELEMENTS;
-  CHECK(IsFixedArray());
-  CHECK_GE(length(), 2);
-  CHECK_EQ(map(), ReadOnlyRoots(isolate).sloppy_arguments_elements_map());
-  Context context_object = context();
-  FixedArray arg_elements = FixedArray::cast(arguments());
+  Context context_object = elements.context();
+  FixedArray arg_elements = elements.arguments();
   if (arg_elements.length() == 0) {
     CHECK(arg_elements == ReadOnlyRoots(isolate).empty_fixed_array());
     return;
@@ -684,7 +667,7 @@ void SloppyArgumentsElements::SloppyArgumentsElementsVerify(Isolate* isolate,
   for (int i = 0; i < nofMappedParameters; i++) {
     // Verify that each context-mapped argument is either the hole or a valid
     // Smi within context length range.
-    Object mapped = get_mapped_entry(i);
+    Object mapped = elements.mapped_entries(i);
     if (mapped.IsTheHole(isolate)) {
       // Slow sloppy arguments can be holey.
       if (!is_fast) continue;
@@ -708,15 +691,33 @@ void SloppyArgumentsElements::SloppyArgumentsElementsVerify(Isolate* isolate,
   CHECK_LE(maxMappedIndex, context_object.length());
   CHECK_LE(maxMappedIndex, arg_elements.length());
 }
+}  // namespace
+
+void JSArgumentsObject::JSArgumentsObjectVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::JSArgumentsObjectVerify(*this, isolate);
+  if (IsSloppyArgumentsElementsKind(GetElementsKind())) {
+    SloppyArgumentsElementsVerify(
+        isolate, SloppyArgumentsElements::cast(elements()), *this);
+  }
+  if (isolate->IsInAnyContext(map(), Context::SLOPPY_ARGUMENTS_MAP_INDEX) ||
+      isolate->IsInAnyContext(map(),
+                              Context::SLOW_ALIASED_ARGUMENTS_MAP_INDEX) ||
+      isolate->IsInAnyContext(map(),
+                              Context::FAST_ALIASED_ARGUMENTS_MAP_INDEX)) {
+    VerifyObjectField(isolate, JSSloppyArgumentsObject::kLengthOffset);
+    VerifyObjectField(isolate, JSSloppyArgumentsObject::kCalleeOffset);
+  } else if (isolate->IsInAnyContext(map(),
+                                     Context::STRICT_ARGUMENTS_MAP_INDEX)) {
+    VerifyObjectField(isolate, JSStrictArgumentsObject::kLengthOffset);
+  }
+}
 
 void JSAsyncFunctionObject::JSAsyncFunctionObjectVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::JSAsyncFunctionObjectVerify(*this, isolate);
-  promise().HeapObjectVerify(isolate);
 }
 
 void JSAsyncGeneratorObject::JSAsyncGeneratorObjectVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::JSAsyncGeneratorObjectVerify(*this, isolate);
-  queue().HeapObjectVerify(isolate);
 }
 
 void JSDate::JSDateVerify(Isolate* isolate) {
@@ -818,17 +819,17 @@ void JSFunction::JSFunctionVerify(Isolate* isolate) {
 }
 
 void SharedFunctionInfo::SharedFunctionInfoVerify(Isolate* isolate) {
-  // TODO(leszeks): Add a TorqueGeneratedClassVerifier for OffThreadIsolate.
+  // TODO(leszeks): Add a TorqueGeneratedClassVerifier for LocalIsolate.
   TorqueGeneratedClassVerifiers::SharedFunctionInfoVerify(*this, isolate);
   this->SharedFunctionInfoVerify(ReadOnlyRoots(isolate));
 }
 
-void SharedFunctionInfo::SharedFunctionInfoVerify(OffThreadIsolate* isolate) {
+void SharedFunctionInfo::SharedFunctionInfoVerify(LocalIsolate* isolate) {
   this->SharedFunctionInfoVerify(ReadOnlyRoots(isolate));
 }
 
 void SharedFunctionInfo::SharedFunctionInfoVerify(ReadOnlyRoots roots) {
-  Object value = name_or_scope_info();
+  Object value = name_or_scope_info(kAcquireLoad);
   if (value.IsScopeInfo()) {
     CHECK_LT(0, ScopeInfo::cast(value).length());
     CHECK_NE(value, roots.empty_scope_info());
@@ -840,8 +841,11 @@ void SharedFunctionInfo::SharedFunctionInfoVerify(ReadOnlyRoots roots) {
         HasUncompiledDataWithoutPreparseData() || HasWasmJSFunctionData() ||
         HasWasmCapiFunctionData());
 
-  CHECK(script_or_debug_info().IsUndefined(roots) ||
-        script_or_debug_info().IsScript() || HasDebugInfo());
+  {
+    auto script = script_or_debug_info(kAcquireLoad);
+    CHECK(script.IsUndefined(roots) || script.IsScript() ||
+          script.IsDebugInfo());
+  }
 
   if (!is_compiled()) {
     CHECK(!HasFeedbackMetadata());
@@ -873,11 +877,6 @@ void SharedFunctionInfo::SharedFunctionInfoVerify(ReadOnlyRoots roots) {
       CHECK(!construct_as_builtin());
     }
   }
-
-  // At this point we only support skipping arguments adaptor frames
-  // for strict mode functions (see https://crbug.com/v8/8895).
-  CHECK_IMPLIES(is_safe_to_skip_arguments_adaptor(),
-                language_mode() == LanguageMode::kStrict);
 }
 
 void JSGlobalProxy::JSGlobalProxyVerify(Isolate* isolate) {
@@ -936,6 +935,8 @@ void Oddball::OddballVerify(Isolate* isolate) {
   } else if (map() == roots.self_reference_marker_map()) {
     // Multiple instances of this oddball may exist at once.
     CHECK_EQ(kind(), Oddball::kSelfReferenceMarker);
+  } else if (map() == roots.basic_block_counters_marker_map()) {
+    CHECK(*this == roots.basic_block_counters_marker());
   } else {
     UNREACHABLE();
   }
@@ -950,13 +951,16 @@ void CodeDataContainer::CodeDataContainerVerify(Isolate* isolate) {
 }
 
 void Code::CodeVerify(Isolate* isolate) {
-  CHECK_IMPLIES(
-      has_safepoint_table(),
-      IsAligned(safepoint_table_offset(), static_cast<unsigned>(kIntSize)));
+  CHECK(IsAligned(InstructionSize(),
+                  static_cast<unsigned>(Code::kMetadataAlignment)));
+  CHECK_EQ(safepoint_table_offset(), 0);
   CHECK_LE(safepoint_table_offset(), handler_table_offset());
   CHECK_LE(handler_table_offset(), constant_pool_offset());
   CHECK_LE(constant_pool_offset(), code_comments_offset());
-  CHECK_LE(code_comments_offset(), InstructionSize());
+  CHECK_LE(code_comments_offset(), unwinding_info_offset());
+  CHECK_LE(unwinding_info_offset(), MetadataSize());
+  CHECK_IMPLIES(!ReadOnlyHeap::Contains(*this),
+                IsAligned(InstructionStart(), kCodeAlignment));
   CHECK_IMPLIES(!ReadOnlyHeap::Contains(*this),
                 IsAligned(raw_instruction_start(), kCodeAlignment));
   // TODO(delphick): Refactor Factory::CodeBuilder::BuildInternal, so that the
@@ -965,7 +969,8 @@ void Code::CodeVerify(Isolate* isolate) {
   // everything is set up.
   // CHECK_EQ(ReadOnlyHeap::Contains(*this), !IsExecutable());
   relocation_info().ObjectVerify(isolate);
-  CHECK(Code::SizeFor(body_size()) <= kMaxRegularHeapObjectSize ||
+  CHECK(V8_ENABLE_THIRD_PARTY_HEAP_BOOL ||
+        CodeSize() <= MemoryChunkLayout::MaxRegularCodeObjectSize() ||
         isolate->heap()->InSpace(*this, CODE_LO_SPACE));
   Address last_gc_pc = kNullAddress;
 
@@ -1097,13 +1102,6 @@ void JSFinalizationRegistry::JSFinalizationRegistryVerify(Isolate* isolate) {
         next_dirty().IsJSFinalizationRegistry());
 }
 
-void JSFinalizationRegistryCleanupIterator::
-    JSFinalizationRegistryCleanupIteratorVerify(Isolate* isolate) {
-  CHECK(IsJSFinalizationRegistryCleanupIterator());
-  JSObjectVerify(isolate);
-  VerifyHeapPointer(isolate, finalization_registry());
-}
-
 void JSWeakMap::JSWeakMapVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::JSWeakMapVerify(*this, isolate);
   CHECK(table().IsEphemeronHashTable() || table().IsUndefined(isolate));
@@ -1187,6 +1185,7 @@ void SmallOrderedHashTable<Derived>::SmallOrderedHashTableVerify(
   }
 }
 void SmallOrderedHashMap::SmallOrderedHashMapVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::SmallOrderedHashMapVerify(*this, isolate);
   SmallOrderedHashTable<SmallOrderedHashMap>::SmallOrderedHashTableVerify(
       isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1199,6 +1198,7 @@ void SmallOrderedHashMap::SmallOrderedHashMapVerify(Isolate* isolate) {
 }
 
 void SmallOrderedHashSet::SmallOrderedHashSetVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::SmallOrderedHashSetVerify(*this, isolate);
   SmallOrderedHashTable<SmallOrderedHashSet>::SmallOrderedHashTableVerify(
       isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1212,6 +1212,8 @@ void SmallOrderedHashSet::SmallOrderedHashSetVerify(Isolate* isolate) {
 
 void SmallOrderedNameDictionary::SmallOrderedNameDictionaryVerify(
     Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::SmallOrderedNameDictionaryVerify(*this,
+                                                                  isolate);
   SmallOrderedHashTable<
       SmallOrderedNameDictionary>::SmallOrderedHashTableVerify(isolate);
   for (int entry = NumberOfElements(); entry < NumberOfDeletedElements();
@@ -1230,6 +1232,40 @@ void JSRegExp::JSRegExpVerify(Isolate* isolate) {
     case JSRegExp::ATOM: {
       FixedArray arr = FixedArray::cast(data());
       CHECK(arr.get(JSRegExp::kAtomPatternIndex).IsString());
+      break;
+    }
+    case JSRegExp::EXPERIMENTAL: {
+      FixedArray arr = FixedArray::cast(data());
+      Smi uninitialized = Smi::FromInt(JSRegExp::kUninitializedValue);
+
+      Object latin1_code = arr.get(JSRegExp::kIrregexpLatin1CodeIndex);
+      Object uc16_code = arr.get(JSRegExp::kIrregexpUC16CodeIndex);
+      Object latin1_bytecode = arr.get(JSRegExp::kIrregexpLatin1BytecodeIndex);
+      Object uc16_bytecode = arr.get(JSRegExp::kIrregexpUC16BytecodeIndex);
+
+      bool is_compiled = latin1_code.IsCode();
+      if (is_compiled) {
+        CHECK_EQ(Code::cast(latin1_code).builtin_index(),
+                 Builtins::kRegExpExperimentalTrampoline);
+        CHECK_EQ(uc16_code, latin1_code);
+
+        CHECK(latin1_bytecode.IsByteArray());
+        CHECK_EQ(uc16_bytecode, latin1_bytecode);
+      } else {
+        CHECK_EQ(latin1_code, uninitialized);
+        CHECK_EQ(uc16_code, uninitialized);
+
+        CHECK_EQ(latin1_bytecode, uninitialized);
+        CHECK_EQ(uc16_bytecode, uninitialized);
+      }
+
+      CHECK_EQ(arr.get(JSRegExp::kIrregexpMaxRegisterCountIndex),
+               uninitialized);
+      CHECK(arr.get(JSRegExp::kIrregexpCaptureCountIndex).IsSmi());
+      CHECK_GE(Smi::ToInt(arr.get(JSRegExp::kIrregexpCaptureCountIndex)), 0);
+      CHECK_EQ(arr.get(JSRegExp::kIrregexpTicksUntilTierUpIndex),
+               uninitialized);
+      CHECK_EQ(arr.get(JSRegExp::kIrregexpBacktrackLimit), uninitialized);
       break;
     }
     case JSRegExp::IRREGEXP: {
@@ -1263,6 +1299,7 @@ void JSRegExp::JSRegExpVerify(Isolate* isolate) {
       CHECK_IMPLIES(uc16_data.IsSmi(), uc16_bytecode.IsSmi());
 
       CHECK(arr.get(JSRegExp::kIrregexpCaptureCountIndex).IsSmi());
+      CHECK_GE(Smi::ToInt(arr.get(JSRegExp::kIrregexpCaptureCountIndex)), 0);
       CHECK(arr.get(JSRegExp::kIrregexpMaxRegisterCountIndex).IsSmi());
       CHECK(arr.get(JSRegExp::kIrregexpTicksUntilTierUpIndex).IsSmi());
       CHECK(arr.get(JSRegExp::kIrregexpBacktrackLimit).IsSmi());
@@ -1317,13 +1354,10 @@ void JSDataView::JSDataViewVerify(Isolate* isolate) {
   }
 }
 
-USE_TORQUE_VERIFIER(Foreign)
-
 void AsyncGeneratorRequest::AsyncGeneratorRequestVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::AsyncGeneratorRequestVerify(*this, isolate);
   CHECK_GE(resume_mode(), JSGeneratorObject::kNext);
   CHECK_LE(resume_mode(), JSGeneratorObject::kThrow);
-  next().ObjectVerify(isolate);
 }
 
 void BigIntBase::BigIntBaseVerify(Isolate* isolate) {
@@ -1364,12 +1398,19 @@ void SourceTextModule::SourceTextModuleVerify(Isolate* isolate) {
   } else if (status() == kEvaluating || status() == kEvaluated) {
     CHECK(code().IsJSGeneratorObject());
   } else {
-    CHECK((status() == kInstantiated && code().IsJSGeneratorObject()) ||
-          (status() == kInstantiating && code().IsJSFunction()) ||
-          (status() == kPreInstantiating && code().IsSharedFunctionInfo()) ||
-          (status() == kUninstantiated && code().IsSharedFunctionInfo()));
-    CHECK(top_level_capability().IsUndefined() && !AsyncParentModuleCount() &&
-          !pending_async_dependencies() && !async_evaluating());
+    if (status() == kInstantiated) {
+      CHECK(code().IsJSGeneratorObject());
+    } else if (status() == kInstantiating) {
+      CHECK(code().IsJSFunction());
+    } else if (status() == kPreInstantiating) {
+      CHECK(code().IsSharedFunctionInfo());
+    } else if (status() == kUninstantiated) {
+      CHECK(code().IsSharedFunctionInfo());
+    }
+    CHECK(top_level_capability().IsUndefined());
+    CHECK(!AsyncParentModuleCount());
+    CHECK(!pending_async_dependencies());
+    CHECK(!async_evaluating());
   }
 
   CHECK_EQ(requested_modules().length(), info().module_requests().length());
@@ -1439,11 +1480,13 @@ void ObjectBoilerplateDescription::ObjectBoilerplateDescriptionVerify(
   CHECK_GE(this->length(),
            ObjectBoilerplateDescription::kDescriptionStartIndex);
   this->FixedArrayVerify(isolate);
+  for (int i = 0; i < length(); ++i) {
+    // No ThinStrings in the boilerplate.
+    CHECK(!get(isolate, i).IsThinString(isolate));
+  }
 }
 
 USE_TORQUE_VERIFIER(AsmWasmData)
-
-USE_TORQUE_VERIFIER(WasmDebugInfo)
 
 void WasmInstanceObject::WasmInstanceObjectVerify(Isolate* isolate) {
   JSObjectVerify(isolate);
@@ -1461,8 +1504,10 @@ void WasmInstanceObject::WasmInstanceObjectVerify(Isolate* isolate) {
 void WasmExportedFunctionData::WasmExportedFunctionDataVerify(
     Isolate* isolate) {
   TorqueGeneratedClassVerifiers::WasmExportedFunctionDataVerify(*this, isolate);
-  CHECK(wrapper_code().kind() == Code::JS_TO_WASM_FUNCTION ||
-        wrapper_code().kind() == Code::C_WASM_ENTRY);
+  CHECK(wrapper_code().kind() == CodeKind::JS_TO_WASM_FUNCTION ||
+        wrapper_code().kind() == CodeKind::C_WASM_ENTRY ||
+        (wrapper_code().is_builtin() &&
+         wrapper_code().builtin_index() == Builtins::kGenericJSToWasmWrapper));
 }
 
 USE_TORQUE_VERIFIER(WasmModuleObject)
@@ -1501,8 +1546,6 @@ void StoreHandler::StoreHandlerVerify(Isolate* isolate) {
   // TODO(ishell): check handler integrity
 }
 
-USE_TORQUE_VERIFIER(AccessorInfo)
-
 void CallHandlerInfo::CallHandlerInfoVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::CallHandlerInfoVerify(*this, isolate);
   CHECK(map() == ReadOnlyRoots(isolate).side_effect_call_handler_info_map() ||
@@ -1511,8 +1554,6 @@ void CallHandlerInfo::CallHandlerInfoVerify(Isolate* isolate) {
         map() == ReadOnlyRoots(isolate)
                      .next_call_side_effect_free_call_handler_info_map());
 }
-
-USE_TORQUE_VERIFIER(WasmCapiFunctionData)
 
 USE_TORQUE_VERIFIER(WasmJSFunctionData)
 
@@ -1525,8 +1566,6 @@ void AllocationSite::AllocationSiteVerify(Isolate* isolate) {
         transition_info_or_boilerplate().IsJSObject());
   CHECK(nested_site().IsAllocationSite() || nested_site() == Smi::zero());
 }
-
-USE_TORQUE_VERIFIER(AllocationMemento)
 
 void Script::ScriptVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::ScriptVerify(*this, isolate);
@@ -1555,8 +1594,6 @@ void NormalizedMapCache::NormalizedMapCacheVerify(Isolate* isolate) {
   }
 }
 
-USE_TORQUE_VERIFIER(StackFrameInfo)
-
 void PreparseData::PreparseDataVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::PreparseDataVerify(*this, isolate);
   CHECK_LE(0, data_length());
@@ -1570,32 +1607,6 @@ void PreparseData::PreparseDataVerify(Isolate* isolate) {
 }
 
 USE_TORQUE_VERIFIER(InterpreterData)
-
-#ifdef V8_INTL_SUPPORT
-
-USE_TORQUE_VERIFIER(JSV8BreakIterator)
-
-USE_TORQUE_VERIFIER(JSCollator)
-
-USE_TORQUE_VERIFIER(JSDateTimeFormat)
-
-USE_TORQUE_VERIFIER(JSDisplayNames)
-
-USE_TORQUE_VERIFIER(JSListFormat)
-
-USE_TORQUE_VERIFIER(JSLocale)
-
-USE_TORQUE_VERIFIER(JSNumberFormat)
-
-USE_TORQUE_VERIFIER(JSPluralRules)
-
-USE_TORQUE_VERIFIER(JSRelativeTimeFormat)
-
-USE_TORQUE_VERIFIER(JSSegmentIterator)
-
-USE_TORQUE_VERIFIER(JSSegmenter)
-
-#endif  // V8_INTL_SUPPORT
 
 #endif  // VERIFY_HEAP
 
@@ -1708,18 +1719,18 @@ void JSObject::SpillInformation::Print() {
   PrintF("\n");
 }
 
-bool DescriptorArray::IsSortedNoDuplicates(int valid_entries) {
-  if (valid_entries == -1) valid_entries = number_of_descriptors();
+bool DescriptorArray::IsSortedNoDuplicates() {
   Name current_key;
   uint32_t current = 0;
   for (int i = 0; i < number_of_descriptors(); i++) {
     Name key = GetSortedKey(i);
+    CHECK(key.HasHashCode());
     if (key == current_key) {
       Print();
       return false;
     }
     current_key = key;
-    uint32_t hash = GetSortedKey(i).Hash();
+    uint32_t hash = key.hash();
     if (hash < current) {
       Print();
       return false;
@@ -1729,8 +1740,7 @@ bool DescriptorArray::IsSortedNoDuplicates(int valid_entries) {
   return true;
 }
 
-bool TransitionArray::IsSortedNoDuplicates(int valid_entries) {
-  DCHECK_EQ(valid_entries, -1);
+bool TransitionArray::IsSortedNoDuplicates() {
   Name prev_key;
   PropertyKind prev_kind = kData;
   PropertyAttributes prev_attributes = NONE;
@@ -1738,7 +1748,8 @@ bool TransitionArray::IsSortedNoDuplicates(int valid_entries) {
 
   for (int i = 0; i < number_of_transitions(); i++) {
     Name key = GetSortedKey(i);
-    uint32_t hash = key.Hash();
+    CHECK(key.HasHashCode());
+    uint32_t hash = key.hash();
     PropertyKind kind = kData;
     PropertyAttributes attributes = NONE;
     if (!TransitionsAccessor::IsSpecialTransition(key.GetReadOnlyRoots(),

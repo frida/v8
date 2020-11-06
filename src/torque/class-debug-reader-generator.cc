@@ -53,7 +53,7 @@ class ValueTypeFieldIterator {
     if (const auto type_wrapped_in_smi =
             Type::MatchUnaryGeneric(type_, TypeOracle::GetSmiTaggedGeneric())) {
       type = *type_wrapped_in_smi;
-      bitfield_start_offset = kSmiTagSize + kSmiShiftSize;
+      bitfield_start_offset = TargetArchitecture::SmiTagAndShiftSize();
     }
     if (const BitFieldStructType* bit_field_struct_type =
             BitFieldStructType::DynamicCast(type)) {
@@ -532,7 +532,7 @@ void GenerateClassDebugReader(const ClassType& type, std::ostream& h_contents,
 
 void ImplementationVisitor::GenerateClassDebugReaders(
     const std::string& output_directory) {
-  const std::string file_name = "class-debug-readers-tq";
+  const std::string file_name = "class-debug-readers";
   std::stringstream h_contents;
   std::stringstream cc_contents;
   h_contents << "// Provides the ability to read object properties in\n";

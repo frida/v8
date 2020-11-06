@@ -8,6 +8,7 @@
 #include "src/base/platform/condition-variable.h"
 #include "src/base/platform/mutex.h"
 #include "src/handles/persistent-handles.h"
+#include "src/heap/local-heap.h"
 #include "src/objects/visitors.h"
 
 namespace v8 {
@@ -18,7 +19,7 @@ class LocalHeap;
 class RootVisitor;
 
 // Used to bring all background threads with heap access to a safepoint such
-// that e.g. a garabge collection can be performed.
+// that e.g. a garbage collection can be performed.
 class GlobalSafepoint {
  public:
   explicit GlobalSafepoint(Heap* heap);
@@ -32,11 +33,17 @@ class GlobalSafepoint {
   // Iterate handles in local heaps
   void Iterate(RootVisitor* visitor);
 
-  // Use these methods now instead of the more intrusive SafepointScope
-  void Start();
-  void End();
+  // Iterate local heaps
+  template <typename Callback>
+  void IterateLocalHeaps(Callback callback) {
+    DCHECK(IsActive());
+    for (LocalHeap* current = local_heaps_head_; current;
+         current = current->next_) {
+      callback(current);
+    }
+  }
 
-  bool IsActive() { return is_active_; }
+  bool IsActive() { return active_safepoint_scopes_ > 0; }
 
  private:
   class Barrier {
@@ -52,11 +59,39 @@ class GlobalSafepoint {
     void Wait();
   };
 
-  void StopThreads();
-  void ResumeThreads();
+  void EnterSafepointScope();
+  void LeaveSafepointScope();
 
-  void AddLocalHeap(LocalHeap* local_heap);
-  void RemoveLocalHeap(LocalHeap* local_heap);
+  template <typename Callback>
+  void AddLocalHeap(LocalHeap* local_heap, Callback callback) {
+    // Safepoint holds this lock in order to stop threads from starting or
+    // stopping.
+    base::MutexGuard guard(&local_heaps_mutex_);
+
+    // Additional code protected from safepoint
+    callback();
+
+    // Add list to doubly-linked list
+    if (local_heaps_head_) local_heaps_head_->prev_ = local_heap;
+    local_heap->prev_ = nullptr;
+    local_heap->next_ = local_heaps_head_;
+    local_heaps_head_ = local_heap;
+  }
+
+  template <typename Callback>
+  void RemoveLocalHeap(LocalHeap* local_heap, Callback callback) {
+    base::MutexGuard guard(&local_heaps_mutex_);
+
+    // Additional code protected from safepoint
+    callback();
+
+    // Remove list from doubly-linked list
+    if (local_heap->next_) local_heap->next_->prev_ = local_heap->prev_;
+    if (local_heap->prev_)
+      local_heap->prev_->next_ = local_heap->next_;
+    else
+      local_heaps_head_ = local_heap->next_;
+  }
 
   Barrier barrier_;
   Heap* heap_;
@@ -64,7 +99,9 @@ class GlobalSafepoint {
   base::Mutex local_heaps_mutex_;
   LocalHeap* local_heaps_head_;
 
-  bool is_active_;
+  int active_safepoint_scopes_;
+
+  LocalHeap* local_heap_of_this_thread_;
 
   friend class SafepointScope;
   friend class LocalHeap;

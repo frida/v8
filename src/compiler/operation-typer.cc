@@ -1040,32 +1040,27 @@ Type OperationTyper::NumberMax(Type lhs, Type rhs) {
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
-
+  if (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero())) {
+    type = Type::Union(type, Type::MinusZero(), zone());
+    // In order to ensure monotonicity of the computation below, we additionally
+    // pretend +0 is present (for simplicity on both sides).
+    lhs = Type::Union(lhs, cache_->kSingletonZero, zone());
+    rhs = Type::Union(rhs, cache_->kSingletonZero, zone());
+  }
   if (!lhs.Is(cache_->kIntegerOrMinusZeroOrNaN) ||
       !rhs.Is(cache_->kIntegerOrMinusZeroOrNaN)) {
     return Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
   }
 
-  bool const lhs_maybe_minus_zero = lhs.Maybe(Type::MinusZero());
-  bool const rhs_maybe_minus_zero = rhs.Maybe(Type::MinusZero());
   lhs = Type::Intersect(lhs, cache_->kInteger, zone());
   rhs = Type::Intersect(rhs, cache_->kInteger, zone());
+  DCHECK(!lhs.IsNone());
+  DCHECK(!rhs.IsNone());
 
-  bool maybe_minus_zero = lhs_maybe_minus_zero || rhs_maybe_minus_zero;
-  if (!lhs.IsNone() || !rhs.IsNone()) {
-    double min = std::max(lhs.IsNone() ? -V8_INFINITY : lhs.Min(),
-                          rhs.IsNone() ? -V8_INFINITY : rhs.Min());
-    double max = std::max(lhs.IsNone() ? -V8_INFINITY : lhs.Max(),
-                          rhs.IsNone() ? -V8_INFINITY : rhs.Max());
-    type = Type::Union(type, Type::Range(min, max, zone()), zone());
-    maybe_minus_zero =
-        maybe_minus_zero && (min < 0.0 || (min == 0.0 && lhs_maybe_minus_zero &&
-                                           rhs_maybe_minus_zero));
-  }
+  double min = std::max(lhs.Min(), rhs.Min());
+  double max = std::max(lhs.Max(), rhs.Max());
+  type = Type::Union(type, Type::Range(min, max, zone()), zone());
 
-  if (maybe_minus_zero) {
-    type = Type::Union(type, Type::MinusZero(), zone());
-  }
   return type;
 }
 
@@ -1080,29 +1075,27 @@ Type OperationTyper::NumberMin(Type lhs, Type rhs) {
   if (lhs.Maybe(Type::NaN()) || rhs.Maybe(Type::NaN())) {
     type = Type::Union(type, Type::NaN(), zone());
   }
-
+  if (lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero())) {
+    type = Type::Union(type, Type::MinusZero(), zone());
+    // In order to ensure monotonicity of the computation below, we additionally
+    // pretend +0 is present (for simplicity on both sides).
+    lhs = Type::Union(lhs, cache_->kSingletonZero, zone());
+    rhs = Type::Union(rhs, cache_->kSingletonZero, zone());
+  }
   if (!lhs.Is(cache_->kIntegerOrMinusZeroOrNaN) ||
       !rhs.Is(cache_->kIntegerOrMinusZeroOrNaN)) {
     return Type::Union(type, Type::Union(lhs, rhs, zone()), zone());
   }
 
-  bool maybe_minus_zero =
-      lhs.Maybe(Type::MinusZero()) || rhs.Maybe(Type::MinusZero());
   lhs = Type::Intersect(lhs, cache_->kInteger, zone());
   rhs = Type::Intersect(rhs, cache_->kInteger, zone());
+  DCHECK(!lhs.IsNone());
+  DCHECK(!rhs.IsNone());
 
-  if (!lhs.IsNone() || !rhs.IsNone()) {
-    double min = std::min(lhs.IsNone() ? +V8_INFINITY : lhs.Min(),
-                          rhs.IsNone() ? +V8_INFINITY : rhs.Min());
-    double max = std::min(lhs.IsNone() ? +V8_INFINITY : lhs.Max(),
-                          rhs.IsNone() ? +V8_INFINITY : rhs.Max());
-    type = Type::Union(type, Type::Range(min, max, zone()), zone());
-    maybe_minus_zero = maybe_minus_zero && max >= 0.0;
-  }
+  double min = std::min(lhs.Min(), rhs.Min());
+  double max = std::min(lhs.Max(), rhs.Max());
+  type = Type::Union(type, Type::Range(min, max, zone()), zone());
 
-  if (maybe_minus_zero) {
-    type = Type::Union(type, Type::MinusZero(), zone());
-  }
   return type;
 }
 
@@ -1258,7 +1251,6 @@ Type OperationTyper::StrictEqual(Type lhs, Type rhs) {
     // Types are equal and are inhabited only by a single semantic value,
     // which is not nan due to the earlier check.
     DCHECK(lhs.Is(rhs));
-    DCHECK(lhs.Is(Type::NonInternal()) || lhs.Is(Type::Hole()));
     return singleton_true();
   }
   if ((lhs.Is(Type::Unique()) || rhs.Is(Type::Unique())) && !lhs.Maybe(rhs)) {

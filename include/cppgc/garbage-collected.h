@@ -7,37 +7,16 @@
 
 #include <type_traits>
 
-#include "include/cppgc/internals.h"
-#include "include/cppgc/platform.h"
-#include "include/cppgc/type_traits.h"
+#include "cppgc/internal/api-constants.h"
+#include "cppgc/platform.h"
+#include "cppgc/trace-trait.h"
+#include "cppgc/type-traits.h"
 
 namespace cppgc {
+
+class Visitor;
+
 namespace internal {
-
-template <typename T, typename = void>
-struct IsGarbageCollectedMixinType : std::false_type {
-  static_assert(sizeof(T), "T must be fully defined");
-};
-
-template <typename T>
-struct IsGarbageCollectedMixinType<
-    T,
-    void_t<typename std::remove_const_t<T>::IsGarbageCollectedMixinTypeMarker>>
-    : std::true_type {
-  static_assert(sizeof(T), "T must be fully defined");
-};
-
-template <typename T, typename = void>
-struct IsGarbageCollectedType : IsGarbageCollectedMixinType<T> {
-  static_assert(sizeof(T), "T must be fully defined");
-};
-
-template <typename T>
-struct IsGarbageCollectedType<
-    T, void_t<typename std::remove_const_t<T>::IsGarbageCollectedTypeMarker>>
-    : std::true_type {
-  static_assert(sizeof(T), "T must be fully defined");
-};
 
 class GarbageCollectedBase {
  public:
@@ -59,6 +38,41 @@ class GarbageCollectedBase {
 
 }  // namespace internal
 
+/**
+ * Base class for managed objects. Only descendent types of `GarbageCollected`
+ * can be constructed using `MakeGarbageCollected()`. Must be inherited from as
+ * left-most base class.
+ *
+ * Types inheriting from GarbageCollected must provide a method of
+ * signature `void Trace(cppgc::Visitor*) const` that dispatchs all managed
+ * pointers to the visitor and delegates to garbage-collected base classes.
+ * The method must be virtual if the type is not directly a child of
+ * GarbageCollected and marked as final.
+ *
+ * \code
+ * // Example using final class.
+ * class FinalType final : public GarbageCollected<FinalType> {
+ *  public:
+ *   void Trace(cppgc::Visitor* visitor) const {
+ *     // Dispatch using visitor->Trace(...);
+ *   }
+ * };
+ *
+ * // Example using non-final base class.
+ * class NonFinalBase : public GarbageCollected<NonFinalBase> {
+ *  public:
+ *   virtual void Trace(cppgc::Visitor*) const {}
+ * };
+ *
+ * class FinalChild final : public NonFinalBase {
+ *  public:
+ *   void Trace(cppgc::Visitor* visitor) const final {
+ *     // Dispatch using visitor->Trace(...);
+ *     NonFinalBase::Trace(visitor);
+ *   }
+ * };
+ * \endcode
+ */
 template <typename>
 class GarbageCollected : public internal::GarbageCollectedBase {
  public:
@@ -68,74 +82,34 @@ class GarbageCollected : public internal::GarbageCollectedBase {
   GarbageCollected() = default;
 };
 
+/**
+ * Base class for managed mixin objects. Such objects cannot be constructed
+ * directly but must be mixed into the inheritance hierarchy of a
+ * GarbageCollected object.
+ *
+ * Types inheriting from GarbageCollectedMixin must override a virtual method
+ * of signature `void Trace(cppgc::Visitor*) const` that dispatchs all managed
+ * pointers to the visitor and delegates to base classes.
+ *
+ * \code
+ * class Mixin : public GarbageCollectedMixin {
+ *  public:
+ *   void Trace(cppgc::Visitor* visitor) const override {
+ *     // Dispatch using visitor->Trace(...);
+ *   }
+ * };
+ * \endcode
+ */
 class GarbageCollectedMixin : public internal::GarbageCollectedBase {
  public:
   using IsGarbageCollectedMixinTypeMarker = void;
 
-  // Sentinel used to mark not-fully-constructed mixins.
-  static constexpr void* kNotFullyConstructedObject = nullptr;
-
-  // TODO(chromium:1056170): Add virtual Trace method.
-
- protected:
-  // Provide default implementation that indicate that the vtable is not yet
-  // set up properly. This is used to to get GCInfo objects for mixins so that
-  // these objects can be processed later on.
-  virtual const void* GetObjectStart() const {
-    return kNotFullyConstructedObject;
-  }
-
-  GarbageCollectedMixin() = default;
+  /**
+   * This Trace method must be overriden by objects inheriting from
+   * GarbageCollectedMixin.
+   */
+  virtual void Trace(cppgc::Visitor*) const {}
 };
-
-namespace internal {
-
-class __thisIsHereToForceASemicolonAfterThisMacro {};
-
-}  // namespace internal
-
-// The USING_GARBAGE_COLLECTED_MIXIN macro defines all methods and markers
-// needed for handling mixins. HasUsingGarbageCollectedMixinMacro is used
-// by the clang GC plugin to check for proper usages of the
-// USING_GARBAGE_COLLECTED_MIXIN macro.
-#define USING_GARBAGE_COLLECTED_MIXIN()                                      \
- public:                                                                     \
-  typedef int HasUsingGarbageCollectedMixinMacro;                            \
-  const void* GetObjectStart() const override {                              \
-    static_assert(                                                           \
-        internal::IsSubclassOfTemplate<                                      \
-            std::remove_const_t<std::remove_pointer_t<decltype(this)>>,      \
-            cppgc::GarbageCollected>::value,                                 \
-        "Only garbage collected objects can have garbage collected mixins"); \
-    return this;                                                             \
-  }                                                                          \
-                                                                             \
- private:                                                                    \
-  friend class internal::__thisIsHereToForceASemicolonAfterThisMacro
-
-// Merge two or more Mixins into one:
-//
-//  class A : public GarbageCollectedMixin {};
-//  class B : public GarbageCollectedMixin {};
-//  class C : public A, public B {
-//    // C::GetObjectStart is now ambiguous because there are two
-//    // candidates: A::GetObjectStart and B::GetObjectStart.  Ditto for
-//    // other functions.
-//
-//    MERGE_GARBAGE_COLLECTED_MIXINS();
-//    // The macro defines C::GetObjectStart, similar to GarbageCollectedMixin,ß
-//    // so that they are no longer ambiguous.
-//    // USING_GARBAGE_COLLECTED_MIXIN() overrides them later and provides the
-//    // implementations.
-//  };
-#define MERGE_GARBAGE_COLLECTED_MIXINS()        \
- public:                                        \
-  const void* GetObjectStart() const override { \
-    return kNotFullyConstructedObject;          \
-  }                                             \
-                                                \
- private:                                       \
-  friend class internal::__thisIsHereToForceASemicolonAfterThisMacro
 
 }  // namespace cppgc
 

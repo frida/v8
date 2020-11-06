@@ -92,9 +92,7 @@ class CPURegister : public RegisterBase<CPURegister, kRegAfterLast> {
   }
 
   static constexpr CPURegister Create(int code, int size, RegisterType type) {
-#if V8_HAS_CXX14_CONSTEXPR
-    DCHECK(IsValid(code, size, type));
-#endif
+    CONSTEXPR_DCHECK(IsValid(code, size, type));
     return CPURegister{code, size, type};
   }
 
@@ -283,6 +281,7 @@ VectorFormat VectorFormatDoubleLanes(VectorFormat vform);
 VectorFormat VectorFormatHalfLanes(VectorFormat vform);
 VectorFormat ScalarFormatFromLaneSize(int lanesize);
 VectorFormat VectorFormatHalfWidthDoubleLanes(VectorFormat vform);
+VectorFormat VectorFormatFillQ(int laneSize);
 VectorFormat VectorFormatFillQ(VectorFormat vform);
 VectorFormat ScalarFormatFromFormat(VectorFormat vform);
 V8_EXPORT_PRIVATE unsigned RegisterSizeInBitsFromFormat(VectorFormat vform);
@@ -304,9 +303,7 @@ class VRegister : public CPURegister {
   }
 
   static constexpr VRegister Create(int code, int size, int lane_count = 1) {
-#if V8_HAS_CXX14_CONSTEXPR
-    DCHECK(IsValidLaneCount(lane_count));
-#endif
+    CONSTEXPR_DCHECK(IsValidLaneCount(lane_count));
     return VRegister(CPURegister::Create(code, size, CPURegister::kVRegister),
                      lane_count);
   }
@@ -347,6 +344,10 @@ class VRegister : public CPURegister {
   }
   VRegister V1D() const {
     return VRegister::Create(code(), kDRegSizeInBits, 1);
+  }
+
+  VRegister Format(VectorFormat f) const {
+    return VRegister::Create(code(), f);
   }
 
   bool Is8B() const { return (Is64Bits() && (lane_count_ == 8)); }
@@ -470,8 +471,9 @@ ALIAS_REGISTER(Register, padreg, x31);
 // Keeps the 0 double value.
 ALIAS_REGISTER(VRegister, fp_zero, d15);
 // MacroAssembler fixed V Registers.
-ALIAS_REGISTER(VRegister, fp_fixed1, d28);
-ALIAS_REGISTER(VRegister, fp_fixed2, d29);
+// d29 is not part of ALLOCATABLE_DOUBLE_REGISTERS, so use 27 and 28.
+ALIAS_REGISTER(VRegister, fp_fixed1, d27);
+ALIAS_REGISTER(VRegister, fp_fixed2, d28);
 
 // MacroAssembler scratch V registers.
 ALIAS_REGISTER(VRegister, fp_scratch, d30);
@@ -693,6 +695,8 @@ constexpr Register kRuntimeCallArgCountRegister = x0;
 constexpr Register kRuntimeCallArgvRegister = x11;
 constexpr Register kWasmInstanceRegister = x7;
 constexpr Register kWasmCompileLazyFuncIndexRegister = x8;
+
+constexpr DoubleRegister kFPReturnRegister0 = d0;
 
 }  // namespace internal
 }  // namespace v8

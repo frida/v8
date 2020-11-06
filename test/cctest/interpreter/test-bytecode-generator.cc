@@ -2591,6 +2591,10 @@ TEST(ClassDeclarations) {
 }
 
 TEST(ClassAndSuperClass) {
+  // Different bytecodes are generated with and without --future temporarily,
+  // see crbug.com/v8/9237 . TODO(marja): remove this hack once --super-ic is on
+  // by default.
+  FLAG_super_ic = false;
   InitializedIgnitionHandleScope scope;
   BytecodeExpectationsPrinter printer(CcTest::isolate());
   printer.set_wrap(false);
@@ -2754,6 +2758,42 @@ TEST(PrivateClassFields) {
 
   CHECK(CompareTexts(BuildActual(printer, snippets),
                      LoadGolden("PrivateClassFields.golden")));
+}
+
+TEST(PrivateClassFieldAccess) {
+  InitializedIgnitionHandleScope scope;
+  BytecodeExpectationsPrinter printer(CcTest::isolate());
+  printer.set_wrap(false);
+  printer.set_test_function_name("test");
+
+  const char* snippets[] = {
+      "class A {\n"
+      "  #a;\n"
+      "  #b;\n"
+      "  constructor() {\n"
+      "    this.#a = this.#b;\n"
+      "  }\n"
+      "}\n"
+      "\n"
+      "var test = A;\n"
+      "new test;\n",
+
+      "class B {\n"
+      "  #a;\n"
+      "  #b;\n"
+      "  constructor() {\n"
+      "    this.#a = this.#b;\n"
+      "  }\n"
+      "  force(str) {\n"
+      "    eval(str);\n"
+      "  }\n"
+      "}\n"
+      "\n"
+      "var test = B;\n"
+      "new test;\n"};
+
+  CHECK(CompareTexts(BuildActual(printer, snippets),
+                     LoadGolden("PrivateClassFieldAccess.golden")));
 }
 
 TEST(PrivateMethodDeclaration) {

@@ -22,8 +22,8 @@ namespace compiler {
   } while (false)
 
 namespace {
-bool IsSmall(BytecodeArrayRef const& bytecode) {
-  return bytecode.length() <= FLAG_max_inlined_bytecode_size_small;
+bool IsSmall(int const size) {
+  return size <= FLAG_max_inlined_bytecode_size_small;
 }
 
 bool CanConsiderForInlining(JSHeapBroker* broker,
@@ -77,7 +77,7 @@ JSInliningHeuristic::Candidate JSInliningHeuristic::CollectFunctions(
   out.node = node;
 
   HeapObjectMatcher m(callee);
-  if (m.HasValue() && m.Ref(broker()).IsJSFunction()) {
+  if (m.HasResolvedValue() && m.Ref(broker()).IsJSFunction()) {
     out.functions[0] = m.Ref(broker()).AsJSFunction();
     JSFunctionRef function = out.functions[0].value();
     if (CanConsiderForInlining(broker(), function)) {
@@ -94,7 +94,7 @@ JSInliningHeuristic::Candidate JSInliningHeuristic::CollectFunctions(
     }
     for (int n = 0; n < value_input_count; ++n) {
       HeapObjectMatcher m(callee->InputAt(n));
-      if (!m.HasValue() || !m.Ref(broker()).IsJSFunction()) {
+      if (!m.HasResolvedValue() || !m.Ref(broker()).IsJSFunction()) {
         out.num_functions = 0;
         return out;
       }
@@ -124,8 +124,9 @@ JSInliningHeuristic::Candidate JSInliningHeuristic::CollectFunctions(
   }
   if (m.IsJSCreateClosure()) {
     DCHECK(!out.functions[0].has_value());
-    CreateClosureParameters const& p = CreateClosureParametersOf(m.op());
-    FeedbackCellRef feedback_cell(broker(), p.feedback_cell());
+    JSCreateClosureNode n(callee);
+    CreateClosureParameters const& p = n.Parameters();
+    FeedbackCellRef feedback_cell = n.GetFeedbackCellRefChecked(broker());
     SharedFunctionInfoRef shared_info(broker(), p.shared_info());
     out.shared_info = shared_info;
     if (feedback_cell.value().IsFeedbackVector() &&
@@ -200,7 +201,16 @@ Reduction JSInliningHeuristic::Reduce(Node* node) {
       can_inline_candidate = true;
       BytecodeArrayRef bytecode = candidate.bytecode[i].value();
       candidate.total_size += bytecode.length();
-      candidate_is_small = candidate_is_small && IsSmall(bytecode);
+      unsigned inlined_bytecode_size = 0;
+      if (candidate.functions[i].has_value()) {
+        JSFunctionRef function = candidate.functions[i].value();
+        if (function.HasAttachedOptimizedCode()) {
+          inlined_bytecode_size = function.code().inlined_bytecode_size();
+          candidate.total_size += inlined_bytecode_size;
+        }
+      }
+      candidate_is_small = candidate_is_small &&
+                           IsSmall(bytecode.length() + inlined_bytecode_size);
     }
   }
   if (!can_inline_candidate) return NoChange();
@@ -250,10 +260,9 @@ void JSInliningHeuristic::Finalize() {
     Candidate candidate = *i;
     candidates_.erase(i);
 
-    // Make sure we don't try to inline dead candidate nodes.
-    if (candidate.node->IsDead()) {
-      continue;
-    }
+    // Ignore this candidate if it's no longer valid.
+    if (!IrOpcode::IsInlineeOpcode(candidate.node->opcode())) continue;
+    if (candidate.node->IsDead()) continue;
 
     // Make sure we have some extra budget left, so that any small functions
     // exposed by this function would be given a chance to inline.
@@ -620,6 +629,8 @@ void JSInliningHeuristic::CreateOrReuseDispatch(Node* node, Node* callee,
     return;
   }
 
+  STATIC_ASSERT(JSCallOrConstructNode::kHaveIdenticalLayouts);
+
   Node* fallthrough_control = NodeProperties::GetControlInput(node);
   int const num_calls = candidate.num_functions;
 
@@ -645,10 +656,14 @@ void JSInliningHeuristic::CreateOrReuseDispatch(Node* node, Node* callee,
     // We also specialize the new.target of JSConstruct {node}s if it refers
     // to the same node as the {node}'s target input, so that we can later
     // properly inline the JSCreate operations.
-    if (node->opcode() == IrOpcode::kJSConstruct && inputs[0] == inputs[1]) {
-      inputs[1] = target;
+    if (node->opcode() == IrOpcode::kJSConstruct) {
+      // TODO(jgruber, v8:10675): This branch seems unreachable.
+      JSConstructNode n(node);
+      if (inputs[n.TargetIndex()] == inputs[n.NewTargetIndex()]) {
+        inputs[n.NewTargetIndex()] = target;
+      }
     }
-    inputs[0] = target;
+    inputs[JSCallOrConstructNode::TargetIndex()] = target;
     inputs[input_count - 1] = if_successes[i];
     calls[i] = if_successes[i] =
         graph()->NewNode(node->op(), input_count, inputs);
@@ -775,6 +790,13 @@ void JSInliningHeuristic::PrintCandidates() {
       os << "  - target: " << shared;
       if (candidate.bytecode[i].has_value()) {
         os << ", bytecode size: " << candidate.bytecode[i]->length();
+        if (candidate.functions[i].has_value()) {
+          JSFunctionRef function = candidate.functions[i].value();
+          if (function.HasAttachedOptimizedCode()) {
+            os << ", existing opt code's inlined bytecode size: "
+               << function.code().inlined_bytecode_size();
+          }
+        }
       } else {
         os << ", no bytecode";
       }

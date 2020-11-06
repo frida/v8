@@ -3,31 +3,51 @@
 // found in the LICENSE file.
 
 @abstract
+@generateCppClass
 extern class FixedArrayBase extends HeapObject {
+  // length of the array.
   const length: Smi;
 }
 
-extern class FixedArray extends FixedArrayBase { objects[length]: Object; }
+@generateBodyDescriptor
+@generateCppClass
+extern class FixedArray extends FixedArrayBase {
+  objects[length]: Object;
+}
 
 type EmptyFixedArray extends FixedArray;
 
+@generateCppClass
 extern class FixedDoubleArray extends FixedArrayBase {
   floats[length]: float64_or_hole;
 }
 
-extern class WeakFixedArray extends HeapObject { length: Smi; }
+@generateBodyDescriptor
+@generateCppClass
+extern class WeakFixedArray extends HeapObject {
+  const length: Smi;
+  objects[length]: MaybeObject;
+}
 
-extern class ByteArray extends FixedArrayBase {}
+@generateCppClass
+extern class ByteArray extends FixedArrayBase {
+  bytes[length]: uint8;
+}
 
 @hasSameInstanceTypeAsParent
+@generateCppClass
+@doNotGenerateCast
 extern class ArrayList extends FixedArray {
 }
 
 @hasSameInstanceTypeAsParent
-@noVerifier
+@generateCppClass
+@doNotGenerateCast
 extern class TemplateList extends FixedArray {
 }
 
+@generateBodyDescriptor
+@generateCppClass
 extern class WeakArrayList extends HeapObject {
   const capacity: Smi;
   length: Smi;
@@ -71,7 +91,7 @@ extern macro StoreFixedArrayElement(
     FixedArray, intptr, Smi, constexpr WriteBarrierMode): void;
 extern operator '.floats[]=' macro StoreFixedDoubleArrayElement(
     FixedDoubleArray, intptr, float64): void;
-extern operator '.floats[]=' macro StoreFixedDoubleArrayElementSmi(
+extern operator '.floats[]=' macro StoreFixedDoubleArrayElement(
     FixedDoubleArray, Smi, float64): void;
 extern operator '.floats[]' macro LoadFixedDoubleArrayElement(
     FixedDoubleArray, intptr): float64;
@@ -82,6 +102,9 @@ operator '[]=' macro StoreFixedDoubleArrayDirect(
 operator '[]=' macro StoreFixedArrayDirect(a: FixedArray, i: Smi, v: Object) {
   a.objects[i] = v;
 }
+
+extern macro AllocateFixedArray(
+    constexpr ElementsKind, intptr, constexpr AllocationFlag): FixedArrayBase;
 
 extern macro AllocateZeroedFixedArray(intptr): FixedArray;
 extern macro AllocateZeroedFixedDoubleArray(intptr): FixedDoubleArray;
@@ -106,7 +129,7 @@ macro ExtractFixedArray(
   return NewFixedArray(
       capacity,
       IteratorSequence<Object>(
-          (& source.objects).Iterator(first, first + count),
+          (&source.objects).Iterator(first, first + count),
           ConstantIterator(TheHole)));
 }
 macro ExtractFixedDoubleArray(
@@ -116,12 +139,19 @@ macro ExtractFixedDoubleArray(
   return NewFixedDoubleArray(
       capacity,
       IteratorSequence<float64_or_hole>(
-          (& source.floats).Iterator(first, first + count),
+          (&source.floats).Iterator(first, first + count),
           ConstantIterator(kDoubleHole)));
+}
+
+namespace runtime {
+extern runtime FatalProcessOutOfMemoryInvalidArrayLength(NoContext): never;
 }
 
 macro NewFixedArray<Iterator: type>(length: intptr, it: Iterator): FixedArray {
   if (length == 0) return kEmptyFixedArray;
+  if (length > kFixedArrayMaxLength) deferred {
+      runtime::FatalProcessOutOfMemoryInvalidArrayLength(kNoContext);
+    }
   return new
   FixedArray{map: kFixedArrayMap, length: Convert<Smi>(length), objects: ...it};
 }
@@ -129,6 +159,9 @@ macro NewFixedArray<Iterator: type>(length: intptr, it: Iterator): FixedArray {
 macro NewFixedDoubleArray<Iterator: type>(
     length: intptr, it: Iterator): FixedDoubleArray|EmptyFixedArray {
   if (length == 0) return kEmptyFixedArray;
+  if (length > kFixedDoubleArrayMaxLength) deferred {
+      runtime::FatalProcessOutOfMemoryInvalidArrayLength(kNoContext);
+    }
   return new FixedDoubleArray{
     map: kFixedDoubleArrayMap,
     length: Convert<Smi>(length),

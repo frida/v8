@@ -147,15 +147,7 @@ enum PreShiftImmMode {
 
 class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, CodeObjectRequired create_code_object,
-                 std::unique_ptr<AssemblerBuffer> buffer = {})
-      : TurboAssemblerBase(isolate, create_code_object, std::move(buffer)) {}
-
-  TurboAssembler(Isolate* isolate, const AssemblerOptions& options,
-                 CodeObjectRequired create_code_object,
-                 std::unique_ptr<AssemblerBuffer> buffer = {})
-      : TurboAssemblerBase(isolate, options, create_code_object,
-                           std::move(buffer)) {}
+  using TurboAssemblerBase::TurboAssemblerBase;
 
 #if DEBUG
   void set_allow_macro_instructions(bool value) {
@@ -511,13 +503,13 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void Cbnz(const Register& rt, Label* label);
   void Cbz(const Register& rt, Label* label);
 
-  void Paciasp() {
+  void Pacibsp() {
     DCHECK(allow_macro_instructions_);
-    paciasp();
+    pacibsp();
   }
-  void Autiasp() {
+  void Autibsp() {
     DCHECK(allow_macro_instructions_);
-    autiasp();
+    autibsp();
   }
 
   // The 1716 pac and aut instructions encourage people to use x16 and x17
@@ -527,7 +519,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   //     Register temp = temps.AcquireX();  // temp will be x16
   //     __ Mov(x17, ptr);
   //     __ Mov(x16, modifier);  // Will override temp!
-  //     __ Pacia1716();
+  //     __ Pacib1716();
   //
   // To work around this issue, you must exclude x16 and x17 from the scratch
   // register list. You may need to replace them with other registers:
@@ -537,18 +529,18 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   //     temps.Include(x10, x11);
   //     __ Mov(x17, ptr);
   //     __ Mov(x16, modifier);
-  //     __ Pacia1716();
-  void Pacia1716() {
+  //     __ Pacib1716();
+  void Pacib1716() {
     DCHECK(allow_macro_instructions_);
     DCHECK(!TmpList()->IncludesAliasOf(x16));
     DCHECK(!TmpList()->IncludesAliasOf(x17));
-    pacia1716();
+    pacib1716();
   }
-  void Autia1716() {
+  void Autib1716() {
     DCHECK(allow_macro_instructions_);
     DCHECK(!TmpList()->IncludesAliasOf(x16));
     DCHECK(!TmpList()->IncludesAliasOf(x17));
-    autia1716();
+    autib1716();
   }
 
   inline void Dmb(BarrierDomain domain, BarrierType type);
@@ -711,7 +703,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void CopySlots(Register dst, Register src, Register slot_count);
 
   // Copy count double words from the address in register src to the address
-  // in register dst. There are two modes for this function:
+  // in register dst. There are three modes for this function:
   // 1) Address dst must be less than src, or the gap between them must be
   //    greater than or equal to count double words, otherwise the result is
   //    unpredictable. This is the default mode.
@@ -719,10 +711,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   //    greater than or equal to count double words, otherwise the result is
   //    undpredictable. In this mode, src and dst specify the last (highest)
   //    address of the regions to copy from and to.
+  // 3) The same as mode 1, but the words are copied in the reversed order.
   // The case where src == dst is not supported.
   // The function may corrupt its register arguments. The registers must not
   // alias each other.
-  enum CopyDoubleWordsMode { kDstLessThanSrc, kSrcLessThanDst };
+  enum CopyDoubleWordsMode {
+    kDstLessThanSrc,
+    kSrcLessThanDst,
+    kDstLessThanSrcAndReverse
+  };
   void CopyDoubleWords(Register dst, Register src, Register count,
                        CopyDoubleWordsMode mode = kDstLessThanSrc);
 
@@ -971,6 +968,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // Load the builtin given by the Smi in |builtin_index| into the same
   // register.
   void LoadEntryFromBuiltinIndex(Register builtin_index);
+  void LoadEntryFromBuiltinIndex(Builtins::Name builtin_index,
+                                 Register destination);
   void CallBuiltinByIndex(Register builtin_index) override;
   void CallBuiltin(int builtin_index);
 
@@ -983,8 +982,9 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   // The return address on the stack is used by frame iteration.
   void StoreReturnAddressAndCall(Register target);
 
-  void CallForDeoptimization(Address target, int deopt_id, Label* exit,
-                             DeoptimizeKind kind);
+  void CallForDeoptimization(Builtins::Name target, int deopt_id, Label* exit,
+                             DeoptimizeKind kind,
+                             Label* jump_deoptimization_entry_label);
 
   // Calls a C function.
   // The called function is not allowed to trigger a
@@ -1010,6 +1010,12 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void Fcvtzs(const VRegister& vd, const VRegister& vn, int fbits = 0) {
     DCHECK(allow_macro_instructions());
     fcvtzs(vd, vn, fbits);
+  }
+
+  void Fjcvtzs(const Register& rd, const VRegister& vn) {
+    DCHECK(allow_macro_instructions());
+    DCHECK(!rd.IsZero());
+    fjcvtzs(rd, vn);
   }
 
   inline void Fcvtzu(const Register& rd, const VRegister& fn);
@@ -1273,6 +1279,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   inline void Mrs(const Register& rt, SystemRegister sysreg);
   inline void Msr(SystemRegister sysreg, const Register& rt);
 
+  // Prologue claims an extra slot due to arm64's alignement constraints.
+  static constexpr int kExtraSlotClaimedByPrologue = 1;
   // Generates function prologue code.
   void Prologue();
 
@@ -1709,6 +1717,12 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   inline void PopWRegList(RegList regs) {
     PopSizeRegList(regs, kWRegSizeInBits);
   }
+  inline void PushQRegList(RegList regs) {
+    PushSizeRegList(regs, kQRegSizeInBits, CPURegister::kVRegister);
+  }
+  inline void PopQRegList(RegList regs) {
+    PopSizeRegList(regs, kQRegSizeInBits, CPURegister::kVRegister);
+  }
   inline void PushDRegList(RegList regs) {
     PushSizeRegList(regs, kDRegSizeInBits, CPURegister::kVRegister);
   }
@@ -1769,6 +1783,8 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void DecodeField(Register reg) {
     DecodeField<Field>(reg, reg);
   }
+
+  Operand ReceiverOperand(const Register arg_count);
 
   // ---- SMI and Number Utilities ----
 
@@ -2085,7 +2101,7 @@ class UseScratchRegisterScope {
 #endif
     available_->Remove(list);
   }
-  void Include(const Register& reg1, const Register& reg2) {
+  void Include(const Register& reg1, const Register& reg2 = NoReg) {
     CPURegList list(reg1, reg2);
     Include(list);
   }

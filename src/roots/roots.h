@@ -5,6 +5,7 @@
 #ifndef V8_ROOTS_ROOTS_H_
 #define V8_ROOTS_ROOTS_H_
 
+#include "src/base/macros.h"
 #include "src/builtins/accessors.h"
 #include "src/common/globals.h"
 #include "src/handles/handles.h"
@@ -18,7 +19,6 @@ namespace internal {
 
 // Forward declarations.
 enum ElementsKind : uint8_t;
-class OffThreadIsolate;
 template <typename T>
 class Handle;
 class Heap;
@@ -86,6 +86,7 @@ class Symbol;
   V(Map, code_data_container_map, CodeDataContainerMap)                        \
   V(Map, coverage_info_map, CoverageInfoMap)                                   \
   V(Map, descriptor_array_map, DescriptorArrayMap)                             \
+  V(Map, strong_descriptor_array_map, StrongDescriptorArrayMap)                \
   V(Map, fixed_double_array_map, FixedDoubleArrayMap)                          \
   V(Map, global_dictionary_map, GlobalDictionaryMap)                           \
   V(Map, many_closures_cell_map, ManyClosuresCellMap)                          \
@@ -105,17 +106,16 @@ class Symbol;
   V(Map, next_call_side_effect_free_call_handler_info_map,                     \
     NextCallSideEffectFreeCallHandlerInfoMap)                                  \
   V(Map, simple_number_dictionary_map, SimpleNumberDictionaryMap)              \
-  V(Map, sloppy_arguments_elements_map, SloppyArgumentsElementsMap)            \
   V(Map, small_ordered_hash_map_map, SmallOrderedHashMapMap)                   \
   V(Map, small_ordered_hash_set_map, SmallOrderedHashSetMap)                   \
   V(Map, small_ordered_name_dictionary_map, SmallOrderedNameDictionaryMap)     \
   V(Map, source_text_module_map, SourceTextModuleMap)                          \
-  V(Map, string_table_map, StringTableMap)                                     \
   V(Map, synthetic_module_map, SyntheticModuleMap)                             \
   V(Map, uncompiled_data_without_preparse_data_map,                            \
     UncompiledDataWithoutPreparseDataMap)                                      \
   V(Map, uncompiled_data_with_preparse_data_map,                               \
     UncompiledDataWithPreparseDataMap)                                         \
+  V(Map, wasm_type_info_map, WasmTypeInfoMap)                                  \
   V(Map, weak_fixed_array_map, WeakFixedArrayMap)                              \
   V(Map, weak_array_list_map, WeakArrayListMap)                                \
   V(Map, ephemeron_hash_table_map, EphemeronHashTableMap)                      \
@@ -153,6 +153,7 @@ class Symbol;
   V(Map, optimized_out_map, OptimizedOutMap)                                   \
   V(Map, stale_register_map, StaleRegisterMap)                                 \
   V(Map, self_reference_marker_map, SelfReferenceMarkerMap)                    \
+  V(Map, basic_block_counters_marker_map, BasicBlockCountersMarkerMap)         \
   /* Canonical empty values */                                                 \
   V(EnumCache, empty_enum_cache, EmptyEnumCache)                               \
   V(PropertyArray, empty_property_array, EmptyPropertyArray)                   \
@@ -163,14 +164,15 @@ class Symbol;
     EmptyArrayBoilerplateDescription)                                          \
   V(ClosureFeedbackCellArray, empty_closure_feedback_cell_array,               \
     EmptyClosureFeedbackCellArray)                                             \
-  V(FixedArray, empty_sloppy_arguments_elements, EmptySloppyArgumentsElements) \
   V(NumberDictionary, empty_slow_element_dictionary,                           \
     EmptySlowElementDictionary)                                                \
-  V(FixedArray, empty_ordered_hash_map, EmptyOrderedHashMap)                   \
-  V(FixedArray, empty_ordered_hash_set, EmptyOrderedHashSet)                   \
+  V(OrderedHashMap, empty_ordered_hash_map, EmptyOrderedHashMap)               \
+  V(OrderedHashSet, empty_ordered_hash_set, EmptyOrderedHashSet)               \
   V(FeedbackMetadata, empty_feedback_metadata, EmptyFeedbackMetadata)          \
   V(PropertyCell, empty_property_cell, EmptyPropertyCell)                      \
   V(NameDictionary, empty_property_dictionary, EmptyPropertyDictionary)        \
+  V(OrderedNameDictionary, empty_ordered_property_dictionary,                  \
+    EmptyOrderedPropertyDictionary)                                            \
   V(InterceptorInfo, noop_interceptor_info, NoOpInterceptorInfo)               \
   V(WeakFixedArray, empty_weak_fixed_array, EmptyWeakFixedArray)               \
   V(WeakArrayList, empty_weak_array_list, EmptyWeakArrayList)                  \
@@ -182,6 +184,8 @@ class Symbol;
   V(HeapNumber, minus_infinity_value, MinusInfinityValue)                      \
   /* Marker for self-references during code-generation */                      \
   V(HeapObject, self_reference_marker, SelfReferenceMarker)                    \
+  /* Marker for basic-block usage counters array during code-generation */     \
+  V(Oddball, basic_block_counters_marker, BasicBlockCountersMarker)            \
   /* Canonical off-heap trampoline data */                                     \
   V(ByteArray, off_heap_trampoline_relocation_info,                            \
     OffHeapTrampolineRelocationInfo)                                           \
@@ -203,6 +207,10 @@ class Symbol;
   /* Maps */                                                                   \
   V(Map, external_map, ExternalMap)                                            \
   V(Map, message_object_map, JSMessageObjectMap)                               \
+  V(Map, wasm_rttcanon_eqref_map, WasmRttEqrefMap)                             \
+  V(Map, wasm_rttcanon_externref_map, WasmRttExternrefMap)                     \
+  V(Map, wasm_rttcanon_funcref_map, WasmRttFuncrefMap)                         \
+  V(Map, wasm_rttcanon_i31ref_map, WasmRttI31refMap)                           \
   /* Canonical empty values */                                                 \
   V(Script, empty_script, EmptyScript)                                         \
   V(FeedbackCell, many_closures_cell, ManyClosuresCell)                        \
@@ -214,6 +222,7 @@ class Symbol;
   V(PropertyCell, array_species_protector, ArraySpeciesProtector)              \
   V(PropertyCell, typed_array_species_protector, TypedArraySpeciesProtector)   \
   V(PropertyCell, promise_species_protector, PromiseSpeciesProtector)          \
+  V(PropertyCell, regexp_species_protector, RegExpSpeciesProtector)            \
   V(PropertyCell, string_length_protector, StringLengthProtector)              \
   V(PropertyCell, array_iterator_protector, ArrayIteratorProtector)            \
   V(PropertyCell, array_buffer_detaching_protector,                            \
@@ -229,7 +238,49 @@ class Symbol;
   V(FixedArray, string_split_cache, StringSplitCache)                          \
   V(FixedArray, regexp_multiple_cache, RegExpMultipleCache)                    \
   /* Indirection lists for isolate-independent builtins */                     \
-  V(FixedArray, builtins_constants_table, BuiltinsConstantsTable)
+  V(FixedArray, builtins_constants_table, BuiltinsConstantsTable)              \
+  /* Internal SharedFunctionInfos */                                           \
+  V(SharedFunctionInfo, async_function_await_reject_shared_fun,                \
+    AsyncFunctionAwaitRejectSharedFun)                                         \
+  V(SharedFunctionInfo, async_function_await_resolve_shared_fun,               \
+    AsyncFunctionAwaitResolveSharedFun)                                        \
+  V(SharedFunctionInfo, async_generator_await_reject_shared_fun,               \
+    AsyncGeneratorAwaitRejectSharedFun)                                        \
+  V(SharedFunctionInfo, async_generator_await_resolve_shared_fun,              \
+    AsyncGeneratorAwaitResolveSharedFun)                                       \
+  V(SharedFunctionInfo, async_generator_yield_resolve_shared_fun,              \
+    AsyncGeneratorYieldResolveSharedFun)                                       \
+  V(SharedFunctionInfo, async_generator_return_resolve_shared_fun,             \
+    AsyncGeneratorReturnResolveSharedFun)                                      \
+  V(SharedFunctionInfo, async_generator_return_closed_reject_shared_fun,       \
+    AsyncGeneratorReturnClosedRejectSharedFun)                                 \
+  V(SharedFunctionInfo, async_generator_return_closed_resolve_shared_fun,      \
+    AsyncGeneratorReturnClosedResolveSharedFun)                                \
+  V(SharedFunctionInfo, async_iterator_value_unwrap_shared_fun,                \
+    AsyncIteratorValueUnwrapSharedFun)                                         \
+  V(SharedFunctionInfo, promise_all_resolve_element_shared_fun,                \
+    PromiseAllResolveElementSharedFun)                                         \
+  V(SharedFunctionInfo, promise_all_settled_resolve_element_shared_fun,        \
+    PromiseAllSettledResolveElementSharedFun)                                  \
+  V(SharedFunctionInfo, promise_all_settled_reject_element_shared_fun,         \
+    PromiseAllSettledRejectElementSharedFun)                                   \
+  V(SharedFunctionInfo, promise_any_reject_element_shared_fun,                 \
+    PromiseAnyRejectElementSharedFun)                                          \
+  V(SharedFunctionInfo, promise_capability_default_reject_shared_fun,          \
+    PromiseCapabilityDefaultRejectSharedFun)                                   \
+  V(SharedFunctionInfo, promise_capability_default_resolve_shared_fun,         \
+    PromiseCapabilityDefaultResolveSharedFun)                                  \
+  V(SharedFunctionInfo, promise_catch_finally_shared_fun,                      \
+    PromiseCatchFinallySharedFun)                                              \
+  V(SharedFunctionInfo, promise_get_capabilities_executor_shared_fun,          \
+    PromiseGetCapabilitiesExecutorSharedFun)                                   \
+  V(SharedFunctionInfo, promise_then_finally_shared_fun,                       \
+    PromiseThenFinallySharedFun)                                               \
+  V(SharedFunctionInfo, promise_thrower_finally_shared_fun,                    \
+    PromiseThrowerFinallySharedFun)                                            \
+  V(SharedFunctionInfo, promise_value_thunk_finally_shared_fun,                \
+    PromiseValueThunkFinallySharedFun)                                         \
+  V(SharedFunctionInfo, proxy_revoke_shared_fun, ProxyRevokeSharedFun)
 
 // These root references can be updated by the mutator.
 #define STRONG_MUTABLE_MOVABLE_ROOT_LIST(V)                                \
@@ -243,7 +294,6 @@ class Symbol;
   V(FixedArray, materialized_objects, MaterializedObjects)                 \
   V(WeakArrayList, detached_contexts, DetachedContexts)                    \
   V(WeakArrayList, retaining_path_targets, RetainingPathTargets)           \
-  V(WeakArrayList, retained_maps, RetainedMaps)                            \
   /* Feedback vectors that we need for code coverage or type profile */    \
   V(Object, feedback_vectors_for_profiling_tools,                          \
     FeedbackVectorsForProfilingTools)                                      \
@@ -258,6 +308,7 @@ class Symbol;
     InterpreterEntryTrampolineForProfiling)                                \
   V(Object, pending_optimize_for_test_bytecode,                            \
     PendingOptimizeForTestBytecode)                                        \
+  V(ArrayList, basic_block_profiling_data, BasicBlockProfilingData)        \
   V(WeakArrayList, shared_wasm_memories, SharedWasmMemories)
 
 // Entries in this list are limited to Smis and are not visited during GC.
@@ -302,21 +353,20 @@ class Symbol;
 #define ACCESSOR_INFO_ROOT_LIST(V) \
   ACCESSOR_INFO_LIST_GENERATOR(ACCESSOR_INFO_ROOT_LIST_ADAPTER, V)
 
-#define READ_ONLY_ROOT_LIST(V)       \
-  STRONG_READ_ONLY_ROOT_LIST(V)      \
-  INTERNALIZED_STRING_ROOT_LIST(V)   \
-  PRIVATE_SYMBOL_ROOT_LIST(V)        \
-  PUBLIC_SYMBOL_ROOT_LIST(V)         \
-  WELL_KNOWN_SYMBOL_ROOT_LIST(V)     \
-  STRUCT_MAPS_LIST(V)                \
-  TORQUE_INTERNAL_CLASS_MAPS_LIST(V) \
-  ALLOCATION_SITE_MAPS_LIST(V)       \
+#define READ_ONLY_ROOT_LIST(V)     \
+  STRONG_READ_ONLY_ROOT_LIST(V)    \
+  INTERNALIZED_STRING_ROOT_LIST(V) \
+  PRIVATE_SYMBOL_ROOT_LIST(V)      \
+  PUBLIC_SYMBOL_ROOT_LIST(V)       \
+  WELL_KNOWN_SYMBOL_ROOT_LIST(V)   \
+  STRUCT_MAPS_LIST(V)              \
+  TORQUE_DEFINED_MAP_ROOT_LIST(V)  \
+  ALLOCATION_SITE_MAPS_LIST(V)     \
   DATA_HANDLER_MAPS_LIST(V)
 
 #define MUTABLE_ROOT_LIST(V)                \
   STRONG_MUTABLE_IMMOVABLE_ROOT_LIST(V)     \
   STRONG_MUTABLE_MOVABLE_ROOT_LIST(V)       \
-  V(StringTable, string_table, StringTable) \
   SMI_ROOT_LIST(V)
 
 #define ROOT_LIST(V)     \
@@ -346,9 +396,13 @@ enum class RootIndex : uint16_t {
 
   // The strong roots visited by the garbage collector (not including read-only
   // roots).
+#define ROOT(...) +1
+  kMutableRootsCount = 0
+      STRONG_MUTABLE_IMMOVABLE_ROOT_LIST(ROOT)
+      STRONG_MUTABLE_MOVABLE_ROOT_LIST(ROOT),
+#undef ROOT
   kFirstStrongRoot = kLastReadOnlyRoot + 1,
-  // (kStringTable is not a strong root).
-  kLastStrongRoot = kStringTable - 1,
+  kLastStrongRoot = kFirstStrongRoot + kMutableRootsCount - 1,
 
   // All of the strong roots plus the read-only roots.
   kFirstStrongOrReadOnlyRoot = kFirstRoot,
@@ -359,7 +413,7 @@ enum class RootIndex : uint16_t {
   kLastImmortalImmovableRoot =
       kFirstImmortalImmovableRoot + kImmortalImmovableRootsCount - 1,
 
-  kFirstSmiRoot = kStringTable + 1,
+  kFirstSmiRoot = kLastStrongRoot + 1,
   kLastSmiRoot = kLastRoot
 };
 // clang-format on
@@ -382,6 +436,12 @@ class RootsTable {
     size_t index = static_cast<size_t>(root_index);
     DCHECK_LT(index, kEntriesCount);
     return roots_[index];
+  }
+
+  FullObjectSlot slot(RootIndex root_index) {
+    size_t index = static_cast<size_t>(root_index);
+    DCHECK_LT(index, kEntriesCount);
+    return FullObjectSlot(&roots_[index]);
   }
 
   static const char* name(RootIndex root_index) {
@@ -417,42 +477,42 @@ class RootsTable {
   }
 
   // Used for iterating over all of the read-only and mutable strong roots.
-  FullObjectSlot strong_or_read_only_roots_begin() {
+  FullObjectSlot strong_or_read_only_roots_begin() const {
     STATIC_ASSERT(static_cast<size_t>(RootIndex::kLastReadOnlyRoot) ==
                   static_cast<size_t>(RootIndex::kFirstStrongRoot) - 1);
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kFirstStrongOrReadOnlyRoot)]);
   }
-  FullObjectSlot strong_or_read_only_roots_end() {
+  FullObjectSlot strong_or_read_only_roots_end() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kLastStrongOrReadOnlyRoot) + 1]);
   }
 
   // The read-only, strong and Smi roots as defined by these accessors are all
   // disjoint.
-  FullObjectSlot read_only_roots_begin() {
+  FullObjectSlot read_only_roots_begin() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kFirstReadOnlyRoot)]);
   }
-  FullObjectSlot read_only_roots_end() {
+  FullObjectSlot read_only_roots_end() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kLastReadOnlyRoot) + 1]);
   }
 
-  FullObjectSlot strong_roots_begin() {
+  FullObjectSlot strong_roots_begin() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kFirstStrongRoot)]);
   }
-  FullObjectSlot strong_roots_end() {
+  FullObjectSlot strong_roots_end() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kLastStrongRoot) + 1]);
   }
 
-  FullObjectSlot smi_roots_begin() {
+  FullObjectSlot smi_roots_begin() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kFirstSmiRoot)]);
   }
-  FullObjectSlot smi_roots_end() {
+  FullObjectSlot smi_roots_end() const {
     return FullObjectSlot(
         &roots_[static_cast<size_t>(RootIndex::kLastSmiRoot) + 1]);
   }
@@ -469,9 +529,11 @@ class RootsTable {
   friend class Isolate;
   friend class Heap;
   friend class Factory;
+  friend class PointerCompressedReadOnlyArtifacts;
   friend class ReadOnlyHeap;
   friend class ReadOnlyRoots;
   friend class RootsSerializer;
+  friend class SoleReadOnlyHeap;
 };
 
 class ReadOnlyRoots {
@@ -481,32 +543,42 @@ class ReadOnlyRoots {
 
   V8_INLINE explicit ReadOnlyRoots(Heap* heap);
   V8_INLINE explicit ReadOnlyRoots(Isolate* isolate);
-  V8_INLINE explicit ReadOnlyRoots(OffThreadIsolate* isolate);
+  V8_INLINE explicit ReadOnlyRoots(LocalIsolate* isolate);
 
-#define ROOT_ACCESSOR(Type, name, CamelName) \
-  V8_INLINE class Type name() const;         \
+#define ROOT_ACCESSOR(Type, name, CamelName)     \
+  V8_INLINE class Type name() const;             \
+  V8_INLINE class Type unchecked_##name() const; \
   V8_INLINE Handle<Type> name##_handle() const;
 
   READ_ONLY_ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
+
+  // Get the address of a given read-only root index, without type checks.
+  V8_INLINE Address at(RootIndex root_index) const;
 
   // Iterate over all the read-only roots. This is not necessary for garbage
   // collection and is usually only performed as part of (de)serialization or
   // heap verification.
   void Iterate(RootVisitor* visitor);
 
+ private:
 #ifdef DEBUG
-  V8_EXPORT_PRIVATE bool CheckType(RootIndex index) const;
+#define ROOT_TYPE_CHECK(Type, name, CamelName) \
+  V8_EXPORT_PRIVATE bool CheckType_##name() const;
+
+  READ_ONLY_ROOT_LIST(ROOT_TYPE_CHECK)
+#undef ROOT_TYPE_CHECK
 #endif
 
- private:
-  V8_INLINE explicit ReadOnlyRoots(Address* ro_roots);
+  V8_INLINE explicit ReadOnlyRoots(Address* ro_roots)
+      : read_only_roots_(ro_roots) {}
 
-  V8_INLINE Address& at(RootIndex root_index) const;
+  V8_INLINE Address* GetLocation(RootIndex root_index) const;
 
   Address* read_only_roots_;
 
   friend class ReadOnlyHeap;
+  friend class DeserializerAllocator;
 };
 
 }  // namespace internal

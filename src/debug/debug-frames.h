@@ -11,22 +11,20 @@
 #include "src/execution/isolate.h"
 #include "src/execution/v8threads.h"
 #include "src/objects/objects.h"
-#include "src/wasm/wasm-interpreter.h"
 
 namespace v8 {
 namespace internal {
 
 class JavaScriptFrame;
-class StandardFrame;
+class CommonFrame;
+class WasmFrame;
 
 class FrameInspector {
  public:
-  FrameInspector(StandardFrame* frame, int inlined_frame_index,
-                 Isolate* isolate);
+  FrameInspector(CommonFrame* frame, int inlined_frame_index, Isolate* isolate);
 
   ~FrameInspector();
 
-  int GetParametersCount();
   Handle<JSFunction> GetFunction() const { return function_; }
   Handle<Script> GetScript() { return script_; }
   Handle<Object> GetParameter(int index);
@@ -49,10 +47,9 @@ class FrameInspector {
   bool ParameterIsShadowedByContextLocal(Handle<ScopeInfo> info,
                                          Handle<String> parameter_name);
 
-  StandardFrame* frame_;
+  CommonFrame* frame_;
   int inlined_frame_index_;
   std::unique_ptr<DeoptimizedFrameInfo> deoptimized_frame_;
-  wasm::WasmInterpreter::FramePtr wasm_interpreted_frame_;
   Isolate* isolate_;
   Handle<Script> script_;
   Handle<Object> receiver_;

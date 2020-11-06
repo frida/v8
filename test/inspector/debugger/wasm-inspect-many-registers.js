@@ -2,12 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --debug-in-liftoff
-
 const {session, contextGroup, Protocol} =
     InspectorTest.start('Test inspecting register values in Liftoff.');
 
-utils.load('test/mjsunit/wasm/wasm-module-builder.js');
+utils.load('test/inspector/wasm-inspector-test.js');
 
 const num_locals = 10;
 const configs = {
@@ -17,40 +15,18 @@ const configs = {
   f64: {type: kWasmF64, add: kExprF64Add, from_i32: kExprF64SConvertI32}
 };
 
-function instantiate(bytes) {
-  let buffer = new ArrayBuffer(bytes.length);
-  let view = new Uint8Array(buffer);
-  for (let i = 0; i < bytes.length; ++i) {
-    view[i] = bytes[i] | 0;
-  }
-
-  let module = new WebAssembly.Module(buffer);
-  return new WebAssembly.Instance(module);
-}
-
-const evalWithUrl = (code, url) => Protocol.Runtime.evaluate(
-    {'expression': code + '\n//# sourceURL=v8://test/' + url});
-
 Protocol.Debugger.onPaused(async msg => {
   let loc = msg.params.callFrames[0].location;
   let line = [`Paused at offset ${loc.columnNumber}`];
   // Inspect only the top wasm frame.
   var frame = msg.params.callFrames[0];
   for (var scope of frame.scopeChain) {
-    if (scope.type == 'global') continue;
+    if (scope.type == 'module') continue;
     var scope_properties =
         await Protocol.Runtime.getProperties({objectId: scope.object.objectId});
-    if (scope.type == 'local') {
-      for (var value of scope_properties.result.result) {
-        let msg = await Protocol.Runtime.getProperties(
-          {objectId: value.value.objectId});
-        let str = msg.result.result.map(elem => elem.value.value).join(', ');
-        line.push(`${value.name}: [${str}]`);
-      }
-    } else {
-      let str = scope_properties.result.result.map(elem => elem.value.value).join(', ');
-      line.push(`${scope.type}: [${str}]`);
-    }
+    let str = scope_properties.result.result.map(
+        elem => WasmInspectorTest.getWasmValue(elem.value)).join(', ');
+    line.push(`${scope.type}: [${str}]`);
   }
   InspectorTest.log(line.join('; '));
   Protocol.Debugger.resume();
@@ -94,9 +70,7 @@ async function testConfig(config) {
   const [module_bytes, breakpoints] = buildModuleBytes(config);
   const instance_name = `instance_${config}`;
   // Spawn asynchronously:
-  let instantiate_code = evalWithUrl(
-      `const ${instance_name} = instantiate(${JSON.stringify(module_bytes)});`,
-      'instantiate');
+  WasmInspectorTest.instantiate(module_bytes, instance_name);
   InspectorTest.log('Waiting for wasm script.');
   const [, {params: wasm_script}] = await Protocol.Debugger.onceScriptParsed(2);
   InspectorTest.log(`Setting ${breakpoints.length} breakpoints.`);
@@ -110,14 +84,12 @@ async function testConfig(config) {
     });
   }
   InspectorTest.log('Calling main.');
-  await evalWithUrl(`${instance_name}.exports.main()`, `run_${config}`);
+  await WasmInspectorTest.evalWithUrl(`${instance_name}.exports.main()`, `run_${config}`);
   InspectorTest.log('main returned.');
 }
 
 (async function test() {
   await Protocol.Debugger.enable();
-  InspectorTest.log('Installing instantiate function.');
-  await evalWithUrl(instantiate, 'install_instantiate');
   for (let config in configs) {
     await testConfig(config);
   }

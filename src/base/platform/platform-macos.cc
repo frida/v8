@@ -43,21 +43,13 @@
 namespace v8 {
 namespace base {
 
-#ifdef __arm__
-
-bool OS::ArmUsingHardFloat() {
-  return false;
-}
-
-#endif
-
 std::vector<OS::SharedLibraryAddress> OS::GetSharedLibraryAddresses() {
   std::vector<SharedLibraryAddress> result;
   unsigned int images_count = _dyld_image_count();
   for (unsigned int i = 0; i < images_count; ++i) {
     const mach_header* header = _dyld_get_image_header(i);
     if (header == nullptr) continue;
-#if V8_HOST_ARCH_X64 || V8_HOST_ARCH_ARM64
+#if V8_HOST_ARCH_X64
     uint64_t size;
     char* code_ptr = getsectdatafromheader_64(
         reinterpret_cast<const mach_header_64*>(header), SEG_TEXT, SECT_TEXT,
@@ -102,7 +94,7 @@ void OS::AdjustSchedulingParams() {
 }
 
 // static
-void* Stack::GetStackStart() {
+Stack::StackSlot Stack::GetStackStart() {
   return pthread_get_stackaddr_np(pthread_self());
 }
 

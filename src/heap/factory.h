@@ -18,7 +18,9 @@
 #include "src/objects/dictionary.h"
 #include "src/objects/js-array.h"
 #include "src/objects/js-regexp.h"
+#include "src/objects/shared-function-info.h"
 #include "src/objects/string.h"
+#include "torque-generated/class-forward-declarations.h"
 
 namespace v8 {
 namespace internal {
@@ -26,6 +28,7 @@ namespace internal {
 // Forward declarations.
 class AliasedArgumentsEntry;
 class ObjectBoilerplateDescription;
+class BasicBlockProfilerData;
 class BreakPoint;
 class BreakPointInfo;
 class CallableTask;
@@ -60,6 +63,7 @@ class ScriptContextTable;
 class SourceTextModule;
 class StackFrameInfo;
 class StackTraceFrame;
+class StringSet;
 class StoreHandler;
 class SyntheticModule;
 class TemplateObjectDescription;
@@ -67,6 +71,11 @@ class WasmCapiFunctionData;
 class WasmExportedFunctionData;
 class WasmJSFunctionData;
 class WeakCell;
+
+namespace wasm {
+class ValueType;
+}  // namespace wasm
+
 enum class SharedFlag : uint8_t;
 enum class InitializedFlag : uint8_t;
 
@@ -98,6 +107,8 @@ enum FunctionMode {
       kWithReadonlyPrototypeBit | kWithNameBit,
 };
 
+enum class NumberCacheMode { kIgnore, kSetOnly, kBoth };
+
 // Interface for handle based allocation.
 class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
  public:
@@ -108,7 +119,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     return handle(obj, isolate());
   }
 
-#include "torque-generated/factory-tq.inc"
+#include "torque-generated/factory.inc"
 
   Handle<Oddball> NewOddball(Handle<Map> map, const char* to_string,
                              Handle<Object> to_number, const char* type_of,
@@ -116,6 +127,10 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   // Marks self references within code generation.
   Handle<Oddball> NewSelfReferenceMarker();
+
+  // Marks references to a function's basic-block usage counters array during
+  // code generation.
+  Handle<Oddball> NewBasicBlockCountersMarker();
 
   // Allocates a property array initialized with undefined values.
   Handle<PropertyArray> NewPropertyArray(int length);
@@ -149,10 +164,17 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   Handle<FrameArray> NewFrameArray(int number_of_frames);
 
+  // Allocates a |NameDictionary| with an internal capacity calculated such that
+  // |at_least_space_for| entries can be added without reallocating.
+  Handle<NameDictionary> NewNameDictionary(int at_least_space_for);
+
+  // Allocates an |OrderedNameDictionary| of the given capacity. This guarantees
+  // that |capacity| entries can be added without reallocating.
+  Handle<OrderedNameDictionary> NewOrderedNameDictionary(
+      int capacity = OrderedNameDictionary::kInitialCapacity);
+
   Handle<OrderedHashSet> NewOrderedHashSet();
   Handle<OrderedHashMap> NewOrderedHashMap();
-  Handle<OrderedNameDictionary> NewOrderedNameDictionary();
-
   Handle<SmallOrderedHashSet> NewSmallOrderedHashSet(
       int capacity = kSmallOrderedHashSetMinCapacity,
       AllocationType allocation = AllocationType::kYoung);
@@ -184,17 +206,17 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
     return InternalizeUtf8String(CStrVector(str));
   }
 
-  template <typename Char>
-  EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE)
-  Handle<String> InternalizeString(const Vector<const Char>& str,
-                                   bool convert_encoding = false);
+  // Import InternalizeString overloads from base class.
+  using FactoryBase::InternalizeString;
+
+  Handle<String> InternalizeString(Vector<const char> str,
+                                   bool convert_encoding = false) {
+    return InternalizeString(Vector<const uint8_t>::cast(str));
+  }
 
   template <typename SeqString>
   Handle<String> InternalizeString(Handle<SeqString>, int from, int length,
                                    bool convert_encoding = false);
-
-  template <class StringTableKey>
-  Handle<String> InternalizeStringWithKey(StringTableKey* key);
 
   // Internalized strings are created in the old generation (data space).
   inline Handle<String> InternalizeString(Handle<String> string);
@@ -230,7 +252,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       const char (&str)[N],
       AllocationType allocation = AllocationType::kYoung) {
     DCHECK_EQ(N, strlen(str) + 1);
-    return NewStringFromOneByte(StaticCharVector(str), allocation)
+    return NewStringFromOneByte(StaticOneByteVector(str), allocation)
         .ToHandleChecked();
   }
 
@@ -336,7 +358,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
                                           Handle<ScopeInfo> scope_info,
                                           Handle<JSReceiver> extension,
                                           Handle<Context> wrapped,
-                                          Handle<StringSet> whitelist);
+                                          Handle<StringSet> blocklist);
 
   // Create a block context.
   Handle<Context> NewBlockContext(Handle<Context> previous,
@@ -370,8 +392,8 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<CallbackTask> NewCallbackTask(Handle<Foreign> callback,
                                        Handle<Foreign> data);
   Handle<PromiseResolveThenableJobTask> NewPromiseResolveThenableJobTask(
-      Handle<JSPromise> promise_to_resolve, Handle<JSReceiver> then,
-      Handle<JSReceiver> thenable, Handle<Context> context);
+      Handle<JSPromise> promise_to_resolve, Handle<JSReceiver> thenable,
+      Handle<JSReceiver> then, Handle<Context> context);
 
   // Foreign objects are pretenured when allocated by the bootstrapper.
   Handle<Foreign> NewForeign(Address addr);
@@ -407,8 +429,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       AllocationOrigin origin = AllocationOrigin::kRuntime);
 
   Handle<JSObject> NewFunctionPrototype(Handle<JSFunction> function);
-
-  Handle<WeakCell> NewWeakCell();
 
   // Returns a deep copy of the JavaScript object.
   // Properties and elements are copied too.
@@ -541,6 +561,9 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   Handle<JSGeneratorObject> NewJSGeneratorObject(Handle<JSFunction> function);
 
   Handle<JSModuleNamespace> NewJSModuleNamespace();
+
+  Handle<WasmTypeInfo> NewWasmTypeInfo(Address type_address,
+                                       Handle<Map> parent);
 
   Handle<SourceTextModule> NewSourceTextModule(Handle<SharedFunctionInfo> code);
   Handle<SyntheticModule> NewSyntheticModule(
@@ -675,10 +698,13 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   DECLARE_ERROR(WasmRuntimeError)
 #undef DECLARE_ERROR
 
-  Handle<String> NumberToString(Handle<Object> number, bool check_cache = true);
-  Handle<String> SmiToString(Smi number, bool check_cache = true);
-  Handle<String> HeapNumberToString(Handle<HeapNumber> number, double value,
-                                    bool check_cache = true);
+  Handle<String> NumberToString(Handle<Object> number,
+                                NumberCacheMode mode = NumberCacheMode::kBoth);
+  Handle<String> SmiToString(Smi number,
+                             NumberCacheMode mode = NumberCacheMode::kBoth);
+  Handle<String> HeapNumberToString(
+      Handle<HeapNumber> number, double value,
+      NumberCacheMode mode = NumberCacheMode::kBoth);
 
   Handle<String> SizeToString(size_t value, bool check_cache = true);
   inline Handle<String> Uint32ToString(uint32_t value,
@@ -734,7 +760,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   Handle<DebugInfo> NewDebugInfo(Handle<SharedFunctionInfo> shared);
 
-  Handle<WasmValue> NewWasmValue(int32_t value_type, Handle<ByteArray> bytes);
+  Handle<WasmValue> NewWasmValue(int32_t value_type, Handle<Object> ref);
 
   // Return a map for given number of properties using the map cache in the
   // native context.
@@ -749,15 +775,19 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   // Creates a new FixedArray that holds the data associated with the
   // atom regexp and stores it in the regexp.
-  void SetRegExpAtomData(Handle<JSRegExp> regexp, JSRegExp::Type type,
-                         Handle<String> source, JSRegExp::Flags flags,
-                         Handle<Object> match_pattern);
+  void SetRegExpAtomData(Handle<JSRegExp> regexp, Handle<String> source,
+                         JSRegExp::Flags flags, Handle<Object> match_pattern);
 
   // Creates a new FixedArray that holds the data associated with the
   // irregexp regexp and stores it in the regexp.
-  void SetRegExpIrregexpData(Handle<JSRegExp> regexp, JSRegExp::Type type,
-                             Handle<String> source, JSRegExp::Flags flags,
-                             int capture_count, uint32_t backtrack_limit);
+  void SetRegExpIrregexpData(Handle<JSRegExp> regexp, Handle<String> source,
+                             JSRegExp::Flags flags, int capture_count,
+                             uint32_t backtrack_limit);
+
+  // Creates a new FixedArray that holds the data associated with the
+  // experimental regexp and stores it in the regexp.
+  void SetRegExpExperimentalData(Handle<JSRegExp> regexp, Handle<String> source,
+                                 JSRegExp::Flags flags, int capture_count);
 
   // Returns the value for a known global constant (a property of the global
   // object which is neither configurable nor writable) like 'undefined'.
@@ -780,7 +810,7 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   // which tries to gracefully handle allocation failure.
   class V8_EXPORT_PRIVATE CodeBuilder final {
    public:
-    CodeBuilder(Isolate* isolate, const CodeDesc& desc, Code::Kind kind);
+    CodeBuilder(Isolate* isolate, const CodeDesc& desc, CodeKind kind);
 
     // Builds a new code object (fully initialized). All header fields of the
     // returned object are immutable and the code object is write protected.
@@ -803,6 +833,11 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       return *this;
     }
 
+    CodeBuilder& set_inlined_bytecode_size(uint32_t size) {
+      inlined_bytecode_size_ = size;
+      return *this;
+    }
+
     CodeBuilder& set_source_position_table(Handle<ByteArray> table) {
       DCHECK(!table.is_null());
       source_position_table_ = table;
@@ -813,11 +848,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
         Handle<DeoptimizationData> deopt_data) {
       DCHECK(!deopt_data.is_null());
       deoptimization_data_ = deopt_data;
-      return *this;
-    }
-
-    CodeBuilder& set_immovable() {
-      is_movable_ = false;
       return *this;
     }
 
@@ -845,22 +875,28 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
       return *this;
     }
 
+    CodeBuilder& set_profiler_data(BasicBlockProfilerData* profiler_data) {
+      profiler_data_ = profiler_data;
+      return *this;
+    }
+
    private:
     MaybeHandle<Code> BuildInternal(bool retry_allocation_or_fail);
 
     Isolate* const isolate_;
     const CodeDesc& code_desc_;
-    const Code::Kind kind_;
+    const CodeKind kind_;
 
     MaybeHandle<Object> self_reference_;
     int32_t builtin_index_ = Builtins::kNoBuiltinId;
+    uint32_t inlined_bytecode_size_ = 0;
     int32_t kind_specific_flags_ = 0;
     Handle<ByteArray> source_position_table_;
     Handle<DeoptimizationData> deoptimization_data_ =
         DeoptimizationData::Empty(isolate_);
+    BasicBlockProfilerData* profiler_data_ = nullptr;
     bool is_executable_ = true;
     bool read_only_data_container_ = false;
-    bool is_movable_ = true;
     bool is_turbofanned_ = false;
     int stack_slots_ = 0;
   };
@@ -882,8 +918,6 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
   }
   bool CanAllocateInReadOnlySpace();
   bool EmptyStringRootIsInitialized();
-
-  Handle<String> MakeOrFindTwoCharacterString(uint16_t c1, uint16_t c2);
 
   void AddToScriptList(Handle<Script> shared);
   // ------
@@ -929,11 +963,11 @@ class V8_EXPORT_PRIVATE Factory : public FactoryBase<Factory> {
 
   // Attempt to find the number in a small cache.  If we finds it, return
   // the string representation of the number.  Otherwise return undefined.
-  Handle<Object> NumberToStringCacheGet(Object number, int hash);
+  V8_INLINE Handle<Object> NumberToStringCacheGet(Object number, int hash);
 
   // Update the cache with a new number-string pair.
-  Handle<String> NumberToStringCacheSet(Handle<Object> number, int hash,
-                                        const char* string, bool check_cache);
+  V8_INLINE void NumberToStringCacheSet(Handle<Object> number, int hash,
+                                        Handle<String> js_string);
 
   // Creates a new JSArray with the given backing storage. Performs no
   // verification of the backing storage because it may not yet be filled.

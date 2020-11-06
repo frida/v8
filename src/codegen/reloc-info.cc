@@ -6,11 +6,12 @@
 
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/code-reference.h"
+#include "src/codegen/external-reference-encoder.h"
 #include "src/deoptimizer/deoptimize-reason.h"
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/heap/heap-write-barrier-inl.h"
 #include "src/objects/code-inl.h"
-#include "src/snapshot/snapshot.h"
+#include "src/snapshot/embedded/embedded-data.h"
 
 namespace v8 {
 namespace internal {
@@ -368,7 +369,7 @@ void RelocInfo::set_target_address(Address target,
   if (write_barrier_mode == UPDATE_WRITE_BARRIER && !host().is_null() &&
       IsCodeTargetMode(rmode_) && !FLAG_disable_write_barriers) {
     Code target_code = Code::GetCodeFromTargetAddress(target);
-    MarkingBarrierForCode(host(), this, target_code);
+    WriteBarrier::Marking(host(), this, target_code);
   }
 }
 
@@ -470,16 +471,16 @@ void RelocInfo::Print(Isolate* isolate, std::ostream& os) {  // NOLINT
     const Address code_target = target_address();
     Code code = Code::GetCodeFromTargetAddress(code_target);
     DCHECK(code.IsCode());
-    os << " (" << Code::Kind2String(code.kind());
+    os << " (" << CodeKindToString(code.kind());
     if (Builtins::IsBuiltin(code)) {
       os << " " << Builtins::name(code.builtin_index());
     }
     os << ")  (" << reinterpret_cast<const void*>(target_address()) << ")";
-  } else if (IsRuntimeEntry(rmode_) && isolate->deoptimizer_data() != nullptr) {
+  } else if (IsRuntimeEntry(rmode_)) {
     // Deoptimization bailouts are stored as runtime entries.
     DeoptimizeKind type;
     if (Deoptimizer::IsDeoptimizationEntry(isolate, target_address(), &type)) {
-      os << "  (" << Deoptimizer::MessageFor(type)
+      os << "  (" << Deoptimizer::MessageFor(type, false)
          << " deoptimization bailout)";
     }
   } else if (IsConstPool(rmode_)) {

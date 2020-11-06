@@ -227,6 +227,7 @@ void SamplerManager::RemoveSampler(Sampler* sampler) {
 
 void SamplerManager::DoSample(const v8::RegisterState& state) {
   AtomicGuard atomic_guard(&samplers_access_counter_, false);
+  // TODO(petermarshall): Add stat counters for the bailouts here.
   if (!atomic_guard.is_success()) return;
   pthread_t thread_id = pthread_self();
   auto it = sampler_map_.find(thread_id);
@@ -238,7 +239,6 @@ void SamplerManager::DoSample(const v8::RegisterState& state) {
     Isolate* isolate = sampler->isolate();
     // We require a fully initialized and entered isolate.
     if (isolate == nullptr || !isolate->IsInUse()) continue;
-    if (v8::Locker::IsActive() && !Locker::IsLocked(isolate)) continue;
     sampler->SampleStack(state);
   }
 }
@@ -329,9 +329,9 @@ class SignalHandler {
     sa.sa_sigaction = &HandleProfilerSignal;
     sigemptyset(&sa.sa_mask);
 #if V8_OS_QNX
-    sa.sa_flags = SA_SIGINFO;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
 #else
-    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO | SA_ONSTACK;
 #endif
     signal_handler_installed_ =
         (sigaction(SIGPROF, &sa, &old_signal_handler_) == 0);
@@ -447,46 +447,20 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
 
 #if V8_TARGET_ARCH_ARM64
   // Building for the iOS device.
-#ifdef __DARWIN_OPAQUE_ARM_THREAD_STATE64
-  state->pc = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
-  state->sp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
-  state->fp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
-#else
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__pc);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__sp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__fp);
-#endif
-#elif V8_TARGET_ARCH_ARM
-  // Building for the iOS device.
-  state->pc = reinterpret_cast<void *>(mcontext->__ss.__pc);
-  state->sp = reinterpret_cast<void *>(mcontext->__ss.__sp);
-  state->fp = reinterpret_cast<void *>(mcontext->__ss.__r[7]);
 #elif V8_TARGET_ARCH_X64
   // Building for the iOS simulator.
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__rip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__rsp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__rbp);
-#elif V8_TARGET_ARCH_IA32
-  // Building for the iOS simulator.
-  state->pc = reinterpret_cast<void*>(mcontext->__ss.__eip);
-  state->sp = reinterpret_cast<void*>(mcontext->__ss.__esp);
-  state->fp = reinterpret_cast<void*>(mcontext->__ss.__ebp);
 #else
 #error Unexpected iOS target architecture.
 #endif  // V8_TARGET_ARCH_ARM64
 
 #elif V8_OS_MACOSX
-#if V8_HOST_ARCH_ARM64
-  state->pc = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_pc(mcontext->__ss));
-  state->sp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_sp(mcontext->__ss));
-  state->fp = reinterpret_cast<void*>(
-      __darwin_arm_thread_state64_get_fp(mcontext->__ss));
-#elif V8_HOST_ARCH_X64
+#if V8_HOST_ARCH_X64
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__rip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__rsp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__rbp);
@@ -494,7 +468,14 @@ void SignalHandler::FillRegisterState(void* context, RegisterState* state) {
   state->pc = reinterpret_cast<void*>(mcontext->__ss.__eip);
   state->sp = reinterpret_cast<void*>(mcontext->__ss.__esp);
   state->fp = reinterpret_cast<void*>(mcontext->__ss.__ebp);
-#endif  // V8_HOST_ARCH_IA32
+#elif V8_HOST_ARCH_ARM64
+  state->pc =
+      reinterpret_cast<void*>(arm_thread_state64_get_pc(mcontext->__ss));
+  state->sp =
+      reinterpret_cast<void*>(arm_thread_state64_get_sp(mcontext->__ss));
+  state->fp =
+      reinterpret_cast<void*>(arm_thread_state64_get_fp(mcontext->__ss));
+#endif  // V8_HOST_ARCH_*
 #elif V8_OS_FREEBSD
 #if V8_HOST_ARCH_IA32
   state->pc = reinterpret_cast<void*>(mcontext.mc_eip);

@@ -28,13 +28,14 @@ struct DisjunctDecisionRow {
 class RegExpMacroAssembler {
  public:
   // The implementation must be able to handle at least:
-  static const int kMaxRegister = (1 << 16) - 1;
-  static const int kMaxCPOffset = (1 << 15) - 1;
-  static const int kMinCPOffset = -(1 << 15);
+  static constexpr int kMaxRegisterCount = (1 << 16);
+  static constexpr int kMaxRegister = kMaxRegisterCount - 1;
+  static constexpr int kMaxCPOffset = (1 << 15) - 1;
+  static constexpr int kMinCPOffset = -(1 << 15);
 
-  static const int kTableSizeBits = 7;
-  static const int kTableSize = 1 << kTableSizeBits;
-  static const int kTableMask = kTableSize - 1;
+  static constexpr int kTableSizeBits = 7;
+  static constexpr int kTableSize = 1 << kTableSizeBits;
+  static constexpr int kTableMask = kTableSize - 1;
 
   static constexpr int kUseCharactersValue = -1;
 
@@ -87,7 +88,7 @@ class RegExpMacroAssembler {
   virtual void CheckNotBackReference(int start_reg, bool read_backward,
                                      Label* on_no_match) = 0;
   virtual void CheckNotBackReferenceIgnoreCase(int start_reg,
-                                               bool read_backward,
+                                               bool read_backward, bool unicode,
                                                Label* on_no_match) = 0;
   // Check the current character for a match with a literal character.  If we
   // fail to match then goto the on_failure label.  End of input always
@@ -164,11 +165,16 @@ class RegExpMacroAssembler {
   virtual void ClearRegisters(int reg_from, int reg_to) = 0;
   virtual void WriteStackPointerToRegister(int reg) = 0;
 
-  // Compares two-byte strings case insensitively.
+  // Compare two-byte strings case insensitively.
   // Called from generated RegExp code.
-  static int CaseInsensitiveCompareUC16(Address byte_offset1,
-                                        Address byte_offset2,
-                                        size_t byte_length, Isolate* isolate);
+  static int CaseInsensitiveCompareNonUnicode(Address byte_offset1,
+                                              Address byte_offset2,
+                                              size_t byte_length,
+                                              Isolate* isolate);
+  static int CaseInsensitiveCompareUnicode(Address byte_offset1,
+                                           Address byte_offset2,
+                                           size_t byte_length,
+                                           Isolate* isolate);
 
   // Check that we are not in the middle of a surrogate pair.
   void CheckNotInSurrogatePair(int cp_offset, Label* on_failure);
@@ -177,9 +183,18 @@ class RegExpMacroAssembler {
   void set_slow_safe(bool ssc) { slow_safe_compiler_ = ssc; }
   bool slow_safe() { return slow_safe_compiler_; }
 
+  // Controls after how many backtracks irregexp should abort execution.  If it
+  // can fall back to the experimental engine (see `set_can_fallback`), it will
+  // return the appropriate error code, otherwise it will return the number of
+  // matches found so far (perhaps none).
   void set_backtrack_limit(uint32_t backtrack_limit) {
     backtrack_limit_ = backtrack_limit;
   }
+
+  // Set whether or not irregexp can fall back to the experimental engine on
+  // excessive backtracking.  The number of backtracks considered excessive can
+  // be controlled with set_backtrack_limit.
+  void set_can_fallback(bool val) { can_fallback_ = val; }
 
   enum GlobalMode {
     NOT_GLOBAL,
@@ -205,9 +220,12 @@ class RegExpMacroAssembler {
   }
   uint32_t backtrack_limit() const { return backtrack_limit_; }
 
+  bool can_fallback() const { return can_fallback_; }
+
  private:
   bool slow_safe_compiler_;
   uint32_t backtrack_limit_ = JSRegExp::kNoBacktrackLimit;
+  bool can_fallback_ = false;
   GlobalMode global_mode_;
   Isolate* isolate_;
   Zone* zone_;
@@ -222,16 +240,20 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
   // RETRY: Something significant changed during execution, and the matching
   //        should be retried from scratch.
   // EXCEPTION: Something failed during execution. If no exception has been
-  //        thrown, it's an internal out-of-memory, and the caller should
-  //        throw the exception.
+  //            thrown, it's an internal out-of-memory, and the caller should
+  //            throw the exception.
   // FAILURE: Matching failed.
   // SUCCESS: Matching succeeded, and the output array has been filled with
-  //        capture positions.
+  //          capture positions.
+  // FALLBACK_TO_EXPERIMENTAL: Execute the regexp on this subject using the
+  //                           experimental engine instead.
   enum Result {
     FAILURE = RegExp::kInternalRegExpFailure,
     SUCCESS = RegExp::kInternalRegExpSuccess,
     EXCEPTION = RegExp::kInternalRegExpException,
     RETRY = RegExp::kInternalRegExpRetry,
+    FALLBACK_TO_EXPERIMENTAL = RegExp::kInternalRegExpFallbackToExperimental,
+    SMALLEST_REGEXP_RESULT = RegExp::kInternalRegExpSmallestResult,
   };
 
   NativeRegExpMacroAssembler(Isolate* isolate, Zone* zone);
@@ -272,6 +294,13 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
                                        const byte* input_end, int* output,
                                        int output_size, Isolate* isolate,
                                        JSRegExp regexp);
+  void LoadCurrentCharacterImpl(int cp_offset, Label* on_end_of_input,
+                                bool check_bounds, int characters,
+                                int eats_at_least) override;
+  // Load a number of characters at the given offset from the
+  // current position, into the current-character register.
+  virtual void LoadCurrentCharacterUnchecked(int cp_offset,
+                                             int character_count) = 0;
 };
 
 }  // namespace internal

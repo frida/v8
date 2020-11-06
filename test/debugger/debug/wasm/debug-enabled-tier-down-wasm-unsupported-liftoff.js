@@ -2,19 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-anyref
+// Flags: --experimental-wasm-reftypes
 
-load("test/mjsunit/wasm/wasm-module-builder.js");
+// Test that tiering up and tiering down works even if functions cannot be
+// compiled with Liftoff.
+
+load('test/mjsunit/wasm/wasm-module-builder.js');
 
 // Create a simple Wasm module.
 function create_builder(i) {
   const builder = new WasmModuleBuilder();
   builder.addFunction('main', kSig_i_r)
-  .addBody([
-    kExprLocalGet, 0, kExprRefIsNull,
-    ...wasmI32Const(i),
-    kExprI32Add])
-  .exportFunc();
+      .addBody([
+        kExprLocalGet, 0, kExprRefIsNull, ...wasmI32Const(i),
+        kExprI32Add
+      ])
+      .exportFunc();
   return builder;
 }
 

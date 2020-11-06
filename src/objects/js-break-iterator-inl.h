@@ -18,20 +18,14 @@
 namespace v8 {
 namespace internal {
 
-OBJECT_CONSTRUCTORS_IMPL(JSV8BreakIterator, JSObject)
+#include "torque-generated/src/objects/js-break-iterator-tq-inl.inc"
 
-ACCESSORS(JSV8BreakIterator, locale, String, kLocaleOffset)
+TQ_OBJECT_CONSTRUCTORS_IMPL(JSV8BreakIterator)
+
 ACCESSORS(JSV8BreakIterator, break_iterator, Managed<icu::BreakIterator>,
           kBreakIteratorOffset)
 ACCESSORS(JSV8BreakIterator, unicode_string, Managed<icu::UnicodeString>,
           kUnicodeStringOffset)
-ACCESSORS(JSV8BreakIterator, bound_adopt_text, Object, kBoundAdoptTextOffset)
-ACCESSORS(JSV8BreakIterator, bound_first, Object, kBoundFirstOffset)
-ACCESSORS(JSV8BreakIterator, bound_next, Object, kBoundNextOffset)
-ACCESSORS(JSV8BreakIterator, bound_current, Object, kBoundCurrentOffset)
-ACCESSORS(JSV8BreakIterator, bound_break_type, Object, kBoundBreakTypeOffset)
-
-CAST_ACCESSOR(JSV8BreakIterator)
 
 }  // namespace internal
 }  // namespace v8

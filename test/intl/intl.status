@@ -29,13 +29,6 @@
 [ALWAYS, {
 # TODO(jochen): The following test is flaky.
   'overrides/caching': [PASS, FAIL],
-
-  # https://code.google.com/p/v8/issues/detail?id=7481
-  'collator/check-kf-option': [FAIL],
-  'collator/check-kn-option': [FAIL],
-
-  # http://crbug/v8/9930
-  'date-format/format_range_hour_cycle': [FAIL],
 }],  # ALWAYS
 
 ['variant == no_wasm_traps', {
@@ -58,6 +51,7 @@
   # Android's ICU data file does not have the Chinese/Japanese dictionary
   # required for the test to pass.
   'break-iterator/zh-break': [SKIP],
+  'segmenter/word-containing': [SKIP],
   # Unable to change locale on Android:
   'relative-time-format/default-locale-fr-CA': [SKIP],
   'relative-time-format/default-locale-pt-BR': [SKIP],
@@ -65,5 +59,10 @@
   # Unable to change locale and TZ on Android:
   'regress-7770': [SKIP],
 }],  # 'system == android'
+
+################################################################################
+['variant == stress_snapshot', {
+  '*': [SKIP],  # only relevant for mjsunit tests.
+}],
 
 ]

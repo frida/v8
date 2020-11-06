@@ -14,12 +14,25 @@ var prettyPrinted = function prettyPrinted(msg) { return msg; };
 
 // Mock Math.random.
 (function() {
-  let index = 0
+  let index = 1;
   Math.random = function() {
-    index = (index + 1) % 10;
-    return index / 10.0;
+      const x = Math.sin(index++) * 10000;
+      return x - Math.floor(x);
   }
 })();
+
+// Mock Math.pow. Work around an optimization for -0.5.
+(function() {
+  const origMathPow = Math.pow;
+  Math.pow = function(a, b) {
+    if (b === -0.5) {
+      return 0;
+    } else {
+      return origMathPow(a, b);
+    }
+  }
+})();
+
 
 // Mock Date.
 (function() {
@@ -136,6 +149,20 @@ Object.defineProperty(
   Float64Array = mock(Float64Array);
 })();
 
+// Mock buffer access via DataViews because of varying NaN patterns.
+(function() {
+  const origIsNaN = isNaN;
+  const deNaNify = function(value) { return origIsNaN(value) ? 1 : value; };
+  const origSetFloat32 = DataView.prototype.setFloat32;
+  DataView.prototype.setFloat32 = function(offset, value, ...rest) {
+    origSetFloat32.call(this, offset, deNaNify(value), ...rest);
+  };
+  const origSetFloat64 = DataView.prototype.setFloat64;
+  DataView.prototype.setFloat64 = function(offset, value, ...rest) {
+    origSetFloat64.call(this, offset, deNaNify(value), ...rest);
+  };
+})();
+
 // Mock Worker.
 (function() {
   let index = 0;
@@ -159,3 +186,21 @@ Object.defineProperty(
     }
   };
 })();
+
+// Mock Realm.
+Realm.eval = function(realm, code) { return eval(code) };
+
+// Mock the nondeterministic parts of WeakRef and FinalizationRegistry.
+WeakRef.prototype.deref = function() { };
+FinalizationRegistry = function(callback) { };
+FinalizationRegistry.prototype.register = function(target, holdings) { };
+FinalizationRegistry.prototype.unregister = function(unregisterToken) { };
+FinalizationRegistry.prototype.cleanupSome = function() { };
+FinalizationRegistry.prototype[Symbol.toStringTag] = "FinalizationRegistry";
+
+// Mock the nondeterministic Atomics.waitAsync.
+Atomics.waitAsync = function() {
+  // Return a mock "Promise" whose "then" function will call the callback
+  // immediately.
+  return {'value': {'then': function (f) { f(); }}};
+}

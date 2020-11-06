@@ -5,43 +5,56 @@
 #ifndef V8_HEAP_CPPGC_HEAP_H_
 #define V8_HEAP_CPPGC_HEAP_H_
 
-#include <memory>
-#include <vector>
-
-#include "include/cppgc/gc-info.h"
 #include "include/cppgc/heap.h"
-#include "src/heap/cppgc/heap-object-header.h"
+#include "include/cppgc/liveness-broker.h"
+#include "include/cppgc/macros.h"
+#include "src/heap/cppgc/garbage-collector.h"
+#include "src/heap/cppgc/gc-invoker.h"
+#include "src/heap/cppgc/heap-base.h"
+#include "src/heap/cppgc/heap-growing.h"
 
 namespace cppgc {
 namespace internal {
 
-class Stack;
-
-class V8_EXPORT_PRIVATE Heap final : public cppgc::Heap {
+class V8_EXPORT_PRIVATE Heap final : public HeapBase,
+                                     public cppgc::Heap,
+                                     public GarbageCollector {
  public:
-  struct GCConfig {
-    enum class StackState : uint8_t {
-      kEmpty,
-      kNonEmpty,
-    };
-
-    static GCConfig Default() { return {StackState::kNonEmpty}; }
-
-    StackState stack_state = StackState::kNonEmpty;
-  };
-
   static Heap* From(cppgc::Heap* heap) { return static_cast<Heap*>(heap); }
+  static const Heap* From(const cppgc::Heap* heap) {
+    return static_cast<const Heap*>(heap);
+  }
 
-  Heap();
-  ~Heap() final = default;
+  Heap(std::shared_ptr<cppgc::Platform> platform,
+       cppgc::Heap::HeapOptions options);
+  ~Heap() final;
 
-  inline void* Allocate(size_t size, GCInfoIndex index);
+  HeapBase& AsBase() { return *this; }
+  const HeapBase& AsBase() const { return *this; }
 
-  void CollectGarbage(GCConfig config = GCConfig::Default());
+  void CollectGarbage(Config) final;
+  void StartIncrementalGarbageCollection(Config) final;
+  void FinalizeIncrementalGarbageCollectionIfRunning(Config);
+
+  size_t epoch() const final { return epoch_; }
+
+  void DisableHeapGrowingForTesting();
 
  private:
-  std::unique_ptr<Stack> stack_;
-  std::vector<HeapObjectHeader*> objects_;
+  void StartGarbageCollection(Config);
+  void FinalizeGarbageCollection(Config::StackState);
+
+  void FinalizeIncrementalGarbageCollectionIfNeeded(
+      Config::StackState stack_state) final {
+    FinalizeGarbageCollection(stack_state);
+  }
+
+  Config config_;
+  GCInvoker gc_invoker_;
+  HeapGrowing growing_;
+
+  bool gc_in_progress_ = false;
+  size_t epoch_ = 0;
 };
 
 }  // namespace internal

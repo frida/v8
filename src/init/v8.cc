@@ -10,7 +10,6 @@
 #include "src/base/atomicops.h"
 #include "src/base/once.h"
 #include "src/base/platform/platform.h"
-#include "src/base/platform/threading-backend.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/debug/debug.h"
@@ -46,7 +45,6 @@ bool V8::Initialize() {
 }
 
 void V8::TearDown() {
-  Isolate::TearDown();
   wasm::WasmEngine::GlobalTearDown();
 #if defined(USE_SIMULATOR)
   Simulator::GlobalTearDown();
@@ -55,12 +53,9 @@ void V8::TearDown() {
   ElementsAccessor::TearDown();
   RegisteredExtension::UnregisterAll();
   FlagList::ResetAllFlags();  // Frees memory held by string arguments.
-  base::LazyRuntime::TearDown();
 }
 
 void V8::InitializeOncePerProcessImpl() {
-  base::LazyRuntime::SetUp();
-
   FlagList::EnforceFlagImplications();
 
   if (FLAG_predictable && FLAG_random_seed == 0) {
@@ -103,14 +98,15 @@ void V8::InitializeOncePerProcessImpl() {
   // The --jitless and --interpreted-frames-native-stack flags are incompatible
   // since the latter requires code generation while the former prohibits code
   // generation.
-  CHECK_WITH_MSG(!FLAG_interpreted_frames_native_stack || !FLAG_jitless,
-                 "The --jitless and --interpreted-frames-native-stack flags "
-                 "are incompatible.");
+  CHECK(!FLAG_interpreted_frames_native_stack || !FLAG_jitless);
 
   base::OS::Initialize(FLAG_hard_abort, FLAG_gc_fake_mmap);
 
   if (FLAG_random_seed) SetRandomMmapSeed(FLAG_random_seed);
 
+#if defined(V8_USE_PERFETTO)
+  TrackEvent::Register();
+#endif
   Isolate::InitializeOncePerProcess();
 
 #if defined(USE_SIMULATOR)
@@ -131,7 +127,6 @@ void V8::InitializePlatform(v8::Platform* platform) {
   CHECK(!platform_);
   CHECK(platform);
   platform_ = platform;
-  v8::base::SetThreadingBackend(platform->GetThreadingBackend());
   v8::base::SetPrintStackTrace(platform_->GetStackTracePrinter());
   v8::tracing::TracingCategoryObserver::SetUp();
 }

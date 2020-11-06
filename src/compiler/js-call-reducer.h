@@ -64,6 +64,11 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
   // and does a final attempt to reduce the nodes in the waitlist.
   void Finalize() final;
 
+  // JSCallReducer outsources much work to a graph assembler.
+  void RevisitForGraphAssembler(Node* node) { Revisit(node); }
+  Zone* ZoneForGraphAssembler() const { return temp_zone(); }
+  JSGraph* JSGraphForGraphAssembler() const { return jsgraph(); }
+
  private:
   Reduction ReduceBooleanConstructor(Node* node);
   Reduction ReduceCallApiFunction(Node* node,
@@ -114,7 +119,7 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
                                         IterationKind kind);
 
   Reduction ReduceCallOrConstructWithArrayLikeOrSpread(
-      Node* node, int arity, CallFrequency const& frequency,
+      Node* node, int arraylike_or_spread_index, CallFrequency const& frequency,
       FeedbackSource const& feedback, SpeculationMode speculation_mode,
       CallFeedbackRelation feedback_relation);
   Reduction ReduceJSConstruct(Node* node);
@@ -159,7 +164,7 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
                                         const SharedFunctionInfoRef& shared);
   Reduction ReduceTypedArrayPrototypeToStringTag(Node* node);
 
-  Reduction ReduceSoftDeoptimize(Node* node, DeoptimizeReason reason);
+  Reduction ReduceForInsufficientFeedback(Node* node, DeoptimizeReason reason);
 
   Reduction ReduceMathUnary(Node* node, const Operator* op);
   Reduction ReduceMathBinary(Node* node, const Operator* op);
@@ -216,7 +221,10 @@ class V8_EXPORT_PRIVATE JSCallReducer final : public AdvancedReducer {
 
   void CheckIfElementsKind(Node* receiver_elements_kind, ElementsKind kind,
                            Node* control, Node** if_true, Node** if_false);
-  Node* LoadReceiverElementsKind(Node* receiver, Node** effect, Node** control);
+  Node* LoadReceiverElementsKind(Node* receiver, Effect* effect,
+                                 Control control);
+
+  bool IsBuiltinOrApiFunction(JSFunctionRef target_ref) const;
 
   Graph* graph() const;
   JSGraph* jsgraph() const { return jsgraph_; }

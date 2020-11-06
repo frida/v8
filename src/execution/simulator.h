@@ -30,10 +30,6 @@
 #error Unsupported target architecture.
 #endif
 
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-#include <ptrauth.h>
-#endif
-
 namespace v8 {
 namespace internal {
 
@@ -105,11 +101,11 @@ class GeneratedCode {
   using Signature = Return(Args...);
 
   static GeneratedCode FromAddress(Isolate* isolate, Address addr) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(addr));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(addr));
   }
 
   static GeneratedCode FromBuffer(Isolate* isolate, byte* buffer) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(buffer));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(buffer));
   }
 
   static GeneratedCode FromCode(Code code) {
@@ -132,7 +128,7 @@ class GeneratedCode {
 #if defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
     FATAL("Generated code execution not possible during cross-compilation.");
 #endif  // defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
-#if V8_OS_AIX
+#if ABI_USES_FUNCTION_DESCRIPTORS
     // AIX ABI requires function descriptors (FD).  Artificially create a pseudo
     // FD to ensure correct dispatch to generated code.  The 'volatile'
     // declaration is required to avoid the compiler from not observing the
@@ -144,7 +140,7 @@ class GeneratedCode {
     return fn(args...);
 #else
     return fn_ptr_(args...);
-#endif  // V8_OS_AIX
+#endif  // ABI_USES_FUNCTION_DESCRIPTORS
   }
 #endif  // USE_SIMULATOR
 
@@ -152,18 +148,8 @@ class GeneratedCode {
   friend class GeneratedCode<Return(Args...)>;
   Isolate* isolate_;
   Signature* fn_ptr_;
-
   GeneratedCode(Isolate* isolate, Signature* fn_ptr)
       : isolate_(isolate), fn_ptr_(fn_ptr) {}
-
-  template <typename P, typename V>
-  static P ToCodePtr(V value) {
-    P ptr = reinterpret_cast<P>(value);
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-    ptr = ptrauth_sign_unauthenticated(ptr, ptrauth_key_asia, 0);
-#endif
-    return ptr;
-  }
 };
 
 // Allow to use {GeneratedCode<ret(arg1, arg2)>} instead of

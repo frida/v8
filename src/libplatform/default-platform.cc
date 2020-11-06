@@ -15,6 +15,7 @@
 #include "src/base/platform/time.h"
 #include "src/base/sys-info.h"
 #include "src/libplatform/default-foreground-task-runner.h"
+#include "src/libplatform/default-job.h"
 #include "src/libplatform/default-worker-threads-task-runner.h"
 
 namespace v8 {
@@ -38,11 +39,17 @@ std::unique_ptr<v8::Platform> NewDefaultPlatform(
   if (in_process_stack_dumping == InProcessStackDumping::kEnabled) {
     v8::base::debug::EnableInProcessStackDumping();
   }
-  std::unique_ptr<DefaultPlatform> platform(
-      new DefaultPlatform(idle_task_support, std::move(tracing_controller)));
-  platform->SetThreadPoolSize(thread_pool_size);
+  auto platform = std::make_unique<DefaultPlatform>(
+      thread_pool_size, idle_task_support, std::move(tracing_controller));
   platform->EnsureBackgroundTaskRunnerInitialized();
-  return std::move(platform);
+  return platform;
+}
+
+V8_PLATFORM_EXPORT std::unique_ptr<JobHandle> NewDefaultJobHandle(
+    Platform* platform, TaskPriority priority,
+    std::unique_ptr<JobTask> job_task, size_t num_worker_threads) {
+  return std::make_unique<DefaultJobHandle>(std::make_shared<DefaultJobState>(
+      platform, std::move(job_task), priority, num_worker_threads));
 }
 
 bool PumpMessageLoop(v8::Platform* platform, v8::Isolate* isolate,
@@ -64,19 +71,34 @@ void SetTracingController(
       std::unique_ptr<v8::TracingController>(tracing_controller));
 }
 
-const int DefaultPlatform::kMaxThreadPoolSize = 8;
+void NotifyIsolateShutdown(v8::Platform* platform, Isolate* isolate) {
+  static_cast<DefaultPlatform*>(platform)->NotifyIsolateShutdown(isolate);
+}
+
+namespace {
+constexpr int kMaxThreadPoolSize = 16;
+
+int GetActualThreadPoolSize(int thread_pool_size) {
+  DCHECK_GE(thread_pool_size, 0);
+  if (thread_pool_size < 1) {
+    thread_pool_size = base::SysInfo::NumberOfProcessors() - 1;
+  }
+  return std::max(std::min(thread_pool_size, kMaxThreadPoolSize), 1);
+}
+}  // namespace
 
 DefaultPlatform::DefaultPlatform(
-    IdleTaskSupport idle_task_support,
+    int thread_pool_size, IdleTaskSupport idle_task_support,
     std::unique_ptr<v8::TracingController> tracing_controller)
-    : thread_pool_size_(0),
+    : thread_pool_size_(GetActualThreadPoolSize(thread_pool_size)),
       idle_task_support_(idle_task_support),
       tracing_controller_(std::move(tracing_controller)),
-      page_allocator_(new v8::base::PageAllocator()),
-      time_function_for_testing_(nullptr) {
+      page_allocator_(std::make_unique<v8::base::PageAllocator>()) {
   if (!tracing_controller_) {
     tracing::TracingController* controller = new tracing::TracingController();
+#if !defined(V8_USE_PERFETTO)
     controller->Initialize(nullptr);
+#endif
     tracing_controller_.reset(controller);
   }
 }
@@ -87,16 +109,6 @@ DefaultPlatform::~DefaultPlatform() {
   for (const auto& it : foreground_task_runner_map_) {
     it.second->Terminate();
   }
-}
-
-void DefaultPlatform::SetThreadPoolSize(int thread_pool_size) {
-  base::MutexGuard guard(&lock_);
-  DCHECK_GE(thread_pool_size, 0);
-  if (thread_pool_size < 1) {
-    thread_pool_size = base::SysInfo::NumberOfProcessors() - 1;
-  }
-  thread_pool_size_ =
-      std::max(std::min(thread_pool_size, kMaxThreadPoolSize), 1);
 }
 
 namespace {
@@ -199,6 +211,16 @@ bool DefaultPlatform::IdleTasksEnabled(Isolate* isolate) {
   return idle_task_support_ == IdleTaskSupport::kEnabled;
 }
 
+std::unique_ptr<JobHandle> DefaultPlatform::PostJob(
+    TaskPriority priority, std::unique_ptr<JobTask> job_task) {
+  size_t num_worker_threads = NumberOfWorkerThreads();
+  if (priority == TaskPriority::kBestEffort && num_worker_threads > 2) {
+    num_worker_threads = 2;
+  }
+  return NewDefaultJobHandle(this, priority, std::move(job_task),
+                             num_worker_threads);
+}
+
 double DefaultPlatform::MonotonicallyIncreasingTime() {
   if (time_function_for_testing_) return time_function_for_testing_();
   return DefaultTimeFunction();
@@ -226,6 +248,15 @@ Platform::StackTracePrinter DefaultPlatform::GetStackTracePrinter() {
 
 v8::PageAllocator* DefaultPlatform::GetPageAllocator() {
   return page_allocator_.get();
+}
+
+void DefaultPlatform::NotifyIsolateShutdown(Isolate* isolate) {
+  base::MutexGuard guard(&lock_);
+  auto it = foreground_task_runner_map_.find(isolate);
+  if (it != foreground_task_runner_map_.end()) {
+    it->second->Terminate();
+    foreground_task_runner_map_.erase(it);
+  }
 }
 
 }  // namespace platform

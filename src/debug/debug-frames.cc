@@ -6,13 +6,12 @@
 
 #include "src/builtins/accessors.h"
 #include "src/execution/frames-inl.h"
-#include "src/wasm/wasm-interpreter.h"
 #include "src/wasm/wasm-objects-inl.h"
 
 namespace v8 {
 namespace internal {
 
-FrameInspector::FrameInspector(StandardFrame* frame, int inlined_frame_index,
+FrameInspector::FrameInspector(CommonFrame* frame, int inlined_frame_index,
                                Isolate* isolate)
     : frame_(frame),
       inlined_frame_index_(inlined_frame_index),
@@ -43,12 +42,6 @@ FrameInspector::FrameInspector(StandardFrame* frame, int inlined_frame_index,
     DCHECK_NOT_NULL(js_frame);
     deoptimized_frame_.reset(Deoptimizer::DebuggerInspectableFrame(
         js_frame, inlined_frame_index, isolate));
-  } else if (frame_->is_wasm_interpreter_entry()) {
-    wasm_interpreted_frame_ =
-        WasmInterpreterEntryFrame::cast(frame_)
-            ->debug_info()
-            .GetInterpretedFrame(frame_->fp(), inlined_frame_index);
-    DCHECK(wasm_interpreted_frame_);
   }
 }
 
@@ -61,17 +54,10 @@ JavaScriptFrame* FrameInspector::javascript_frame() {
                                         : JavaScriptFrame::cast(frame_);
 }
 
-int FrameInspector::GetParametersCount() {
-  if (is_optimized_) return deoptimized_frame_->parameters_count();
-  if (wasm_interpreted_frame_)
-    return wasm_interpreted_frame_->GetParameterCount();
-  return frame_->ComputeParametersCount();
-}
-
 Handle<Object> FrameInspector::GetParameter(int index) {
   if (is_optimized_) return deoptimized_frame_->GetParameter(index);
-  // TODO(clemensb): Handle wasm_interpreted_frame_.
-  return handle(frame_->GetParameter(index), isolate_);
+  DCHECK(IsJavaScript());
+  return handle(javascript_frame()->GetParameter(index), isolate_);
 }
 
 Handle<Object> FrameInspector::GetExpression(int index) {

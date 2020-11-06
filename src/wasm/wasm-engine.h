@@ -31,14 +31,16 @@ class JSArrayBuffer;
 
 namespace wasm {
 
+#ifdef V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
+namespace gdb_server {
+class GdbServer;
+}  // namespace gdb_server
+#endif  // V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
+
 class AsyncCompileJob;
 class ErrorThrower;
 struct ModuleWireBytes;
 class WasmFeatures;
-
-namespace gdb_server {
-class GdbServer;
-}
 
 class V8_EXPORT_PRIVATE CompilationResultResolver {
  public:
@@ -193,10 +195,6 @@ class V8_EXPORT_PRIVATE WasmEngine {
   void CompileFunction(Isolate* isolate, NativeModule* native_module,
                        uint32_t function_index, ExecutionTier tier);
 
-  // Recompiles all functions at a specific compilation tier.
-  void RecompileAllFunctions(Isolate* isolate, NativeModule* native_module,
-                             ExecutionTier tier);
-
   void TierDownAllModulesPerIsolate(Isolate* isolate);
   void TierUpAllModulesPerIsolate(Isolate* isolate);
 
@@ -208,7 +206,8 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // Imports the shared part of a module from a different Context/Isolate using
   // the the same engine, recreating a full module object in the given Isolate.
   Handle<WasmModuleObject> ImportNativeModule(
-      Isolate* isolate, std::shared_ptr<NativeModule> shared_module);
+      Isolate* isolate, std::shared_ptr<NativeModule> shared_module,
+      Vector<const char> source_url);
 
   WasmCodeManager* code_manager() { return &code_manager_; }
 
@@ -243,12 +242,6 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // Manage the set of Isolates that use this WasmEngine.
   void AddIsolate(Isolate* isolate);
   void RemoveIsolate(Isolate* isolate);
-
-  template <typename T, typename... Args>
-  std::unique_ptr<T> NewBackgroundCompileTask(Args&&... args) {
-    return std::make_unique<T>(&background_compile_task_manager_,
-                               std::forward<Args>(args)...);
-  }
 
   // Trigger code logging for the given code objects in all Isolates which have
   // access to the NativeModule containing this code. This method can be called
@@ -335,10 +328,13 @@ class V8_EXPORT_PRIVATE WasmEngine {
   void FreeDeadCode(const DeadCodeMap&);
   void FreeDeadCodeLocked(const DeadCodeMap&);
 
-  Handle<Script> GetOrCreateScript(Isolate*, NativeModule*,
-                                   Vector<const char> source_map_url,
-                                   WireBytesRef name,
+  Handle<Script> GetOrCreateScript(Isolate*,
+                                   const std::shared_ptr<NativeModule>&,
                                    Vector<const char> source_url = {});
+
+  // Take shared ownership of a compile job handle, such that we can synchronize
+  // on that before the engine dies.
+  void ShepherdCompileJobHandle(std::shared_ptr<JobHandle>);
 
   // Call on process start and exit.
   static void InitializeOncePerProcess();
@@ -374,10 +370,6 @@ class V8_EXPORT_PRIVATE WasmEngine {
   WasmCodeManager code_manager_;
   AccountingAllocator allocator_;
 
-  // Task manager managing all background compile jobs. Before shut down of the
-  // engine, they must all be finished because they access the allocator.
-  CancelableTaskManager background_compile_task_manager_;
-
 #ifdef V8_ENABLE_WASM_GDB_REMOTE_DEBUGGING
   // Implements a GDB-remote stub for WebAssembly debugging.
   std::unique_ptr<gdb_server::GdbServer> gdb_server_;
@@ -404,6 +396,10 @@ class V8_EXPORT_PRIVATE WasmEngine {
   // Set of native modules managed by this engine.
   std::unordered_map<NativeModule*, std::unique_ptr<NativeModuleInfo>>
       native_modules_;
+
+  // Background compile jobs that are still running. We need to join them before
+  // the engine gets deleted. Otherwise we don't care when exactly they finish.
+  std::vector<std::shared_ptr<JobHandle>> compile_job_handles_;
 
   // Size of code that became dead since the last GC. If this exceeds a certain
   // threshold, a new GC is triggered.

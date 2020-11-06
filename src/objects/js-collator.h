@@ -24,12 +24,14 @@
 
 namespace U_ICU_NAMESPACE {
 class Collator;
-}  //  namespace U_ICU_NAMESPACE
+}  // namespace U_ICU_NAMESPACE
 
 namespace v8 {
 namespace internal {
 
-class JSCollator : public JSObject {
+#include "torque-generated/src/objects/js-collator-tq.inc"
+
+class JSCollator : public TorqueGeneratedJSCollator<JSCollator, JSObject> {
  public:
   // ecma402/#sec-initializecollator
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSCollator> New(
@@ -42,18 +44,11 @@ class JSCollator : public JSObject {
 
   V8_EXPORT_PRIVATE static const std::set<std::string>& GetAvailableLocales();
 
-  DECL_CAST(JSCollator)
   DECL_PRINTER(JSCollator)
-  DECL_VERIFIER(JSCollator)
-
-// Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JS_COLLATOR_FIELDS)
 
   DECL_ACCESSORS(icu_collator, Managed<icu::Collator>)
-  DECL_ACCESSORS(bound_compare, Object)
 
-  OBJECT_CONSTRUCTORS(JSCollator, JSObject);
+  TQ_OBJECT_CONSTRUCTORS(JSCollator)
 };
 
 }  // namespace internal

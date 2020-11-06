@@ -7,12 +7,15 @@
 
 #include "src/objects/js-objects.h"
 #include "src/objects/promise.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
 namespace v8 {
 namespace internal {
+
+#include "torque-generated/src/objects/js-promise-tq.inc"
 
 // Representation of promise objects in the specification. Our layout of
 // JSPromise differs a bit from the layout in the specification, for example
@@ -64,15 +67,8 @@ class JSPromise : public TorqueGeneratedJSPromise<JSPromise, JSObject> {
       kHeaderSize + v8::Promise::kEmbedderFieldCount * kEmbedderDataSlotSize;
 
   // Flags layout.
-  // The first two bits store the v8::Promise::PromiseState.
-  static const int kStatusBits = 2;
-  static const int kHasHandlerBit = 2;
-  static const int kHandledHintBit = 3;
-  using AsyncTaskIdField = base::BitField<int, kHandledHintBit + 1, 22>;
+  DEFINE_TORQUE_GENERATED_JS_PROMISE_FLAGS()
 
-  static const int kStatusShift = 0;
-  static const int kStatusMask = 0x3;
-  static const int kHasHandlerMask = 0x4;
   STATIC_ASSERT(v8::Promise::kPending == 0);
   STATIC_ASSERT(v8::Promise::kFulfilled == 1);
   STATIC_ASSERT(v8::Promise::kRejected == 2);

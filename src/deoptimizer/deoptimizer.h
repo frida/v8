@@ -12,12 +12,15 @@
 #include "src/codegen/label.h"
 #include "src/codegen/register-arch.h"
 #include "src/codegen/source-position.h"
+#include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/deoptimizer/deoptimize-reason.h"
 #include "src/diagnostics/code-tracer.h"
 #include "src/execution/frame-constants.h"
 #include "src/execution/isolate.h"
+#include "src/heap/heap.h"
 #include "src/objects/feedback-vector.h"
+#include "src/objects/js-function.h"
 #include "src/objects/shared-function-info.h"
 #include "src/utils/allocation.h"
 #include "src/utils/boxed-float.h"
@@ -34,18 +37,23 @@ class TranslatedFrame;
 class TranslatedState;
 class RegisterValues;
 class MacroAssembler;
+class StrongRootsEntry;
 
 enum class BuiltinContinuationMode;
 
 class TranslatedValue {
  public:
-  // Allocation-less getter of the value.
+  // Allocation-free getter of the value.
   // Returns ReadOnlyRoots::arguments_marker() if allocation would be necessary
-  // to get the value.
+  // to get the value. In the case of numbers, returns a Smi if possible.
   Object GetRawValue() const;
 
-  // Getter for the value, takes care of materializing the subgraph
-  // reachable from this value.
+  // Convenience wrapper around GetRawValue (checked).
+  int GetSmiValue() const;
+
+  // Returns the value, possibly materializing it first (and the whole subgraph
+  // reachable from this value). In the case of numbers, returns a Smi if
+  // possible.
   Handle<Object> GetValue();
 
   bool IsMaterializedObject() const;
@@ -102,15 +110,14 @@ class TranslatedValue {
   static TranslatedValue NewInvalid(TranslatedState* container);
 
   Isolate* isolate() const;
-  void MaterializeSimple();
 
   void set_storage(Handle<HeapObject> storage) { storage_ = storage; }
-  void set_initialized_storage(Handle<Object> storage);
+  void set_initialized_storage(Handle<HeapObject> storage);
   void mark_finished() { materialization_state_ = kFinished; }
   void mark_allocated() { materialization_state_ = kAllocated; }
 
-  Handle<Object> GetStorage() {
-    DCHECK_NE(kUninitialized, materialization_state());
+  Handle<HeapObject> storage() {
+    DCHECK_NE(materialization_state(), kUninitialized);
     return storage_;
   }
 
@@ -120,9 +127,9 @@ class TranslatedValue {
                                 // objects and constructing handles (to get
                                 // to the isolate).
 
-  Handle<Object> storage_;  // Contains the materialized value or the
-                            // byte-array that will be later morphed into
-                            // the materialized object.
+  Handle<HeapObject> storage_;  // Contains the materialized value or the
+                                // byte-array that will be later morphed into
+                                // the materialized object.
 
   struct MaterializedObjectInfo {
     int id_;
@@ -335,8 +342,9 @@ class TranslatedState {
   Isolate* isolate() { return isolate_; }
 
   void Init(Isolate* isolate, Address input_frame_pointer,
-            TranslationIterator* iterator, FixedArray literal_array,
-            RegisterValues* registers, FILE* trace_file, int parameter_count);
+            Address stack_frame_pointer, TranslationIterator* iterator,
+            FixedArray literal_array, RegisterValues* registers,
+            FILE* trace_file, int parameter_count, int actual_argument_count);
 
   void VerifyMaterializedObjects();
   bool DoUpdateFeedback();
@@ -351,8 +359,7 @@ class TranslatedState {
                                 FixedArray literal_array, Address fp,
                                 RegisterValues* registers, FILE* trace_file);
   Address DecompressIfNeeded(intptr_t value);
-  Address ComputeArgumentsPosition(Address input_frame_pointer,
-                                   CreateArgumentsType type, int* length);
+  Address ComputeArgumentsPosition(Address input_frame_pointer, int* length);
   void CreateArgumentsElementsTranslatedValues(int frame_index,
                                                Address input_frame_pointer,
                                                CreateArgumentsType type,
@@ -376,7 +383,7 @@ class TranslatedState {
                                int* value_index, std::stack<int>* worklist);
   void EnsureCapturedObjectAllocatedAt(int object_index,
                                        std::stack<int>* worklist);
-  Handle<Object> InitializeObjectAt(TranslatedValue* slot);
+  Handle<HeapObject> InitializeObjectAt(TranslatedValue* slot);
   void InitializeCapturedObjectAt(int object_index, std::stack<int>* worklist,
                                   const DisallowHeapAllocation& no_allocation);
   void InitializeJSObjectAt(TranslatedFrame* frame, int* value_index,
@@ -392,6 +399,9 @@ class TranslatedState {
   TranslatedValue* ResolveCapturedObject(TranslatedValue* slot);
   TranslatedValue* GetValueByObjectIndex(int object_index);
   Handle<Object> GetValueAndAdvance(TranslatedFrame* frame, int* value_index);
+  TranslatedValue* GetResolvedSlot(TranslatedFrame* frame, int value_index);
+  TranslatedValue* GetResolvedSlotAndAdvance(TranslatedFrame* frame,
+                                             int* value_index);
 
   static uint32_t GetUInt32Slot(Address fp, int slot_index);
   static uint64_t GetUInt64Slot(Address fp, int slot_index);
@@ -402,6 +412,7 @@ class TranslatedState {
   Isolate* isolate_ = nullptr;
   Address stack_frame_pointer_ = kNullAddress;
   int formal_parameter_count_;
+  int actual_argument_count_;
 
   struct ObjectPosition {
     int frame_index_;
@@ -438,7 +449,7 @@ class Deoptimizer : public Malloced {
   static int ComputeSourcePositionFromBytecodeArray(SharedFunctionInfo shared,
                                                     BailoutId node_id);
 
-  static const char* MessageFor(DeoptimizeKind kind);
+  static const char* MessageFor(DeoptimizeKind kind, bool reuse_code);
 
   int output_count() const { return output_count_; }
 
@@ -448,6 +459,8 @@ class Deoptimizer : public Malloced {
 
   // Number of created JS frames. Not all created frames are necessarily JS.
   int jsframe_count() const { return jsframe_count_; }
+
+  bool should_reuse_code() const;
 
   static Deoptimizer* New(Address raw_function, DeoptimizeKind kind,
                           unsigned bailout_id, Address from, int fp_to_sp_delta,
@@ -474,18 +487,26 @@ class Deoptimizer : public Malloced {
   // refer to that code.
   static void DeoptimizeMarkedCode(Isolate* isolate);
 
+  // Check the given address against a list of allowed addresses, to prevent a
+  // potential attacker from using the frame creation process in the
+  // deoptimizer, in particular the signing process, to gain control over the
+  // program.
+  // When building mksnapshot, always return false.
+  static bool IsValidReturnAddress(Address address);
+
   ~Deoptimizer();
 
   void MaterializeHeapObjects();
 
   static void ComputeOutputFrames(Deoptimizer* deoptimizer);
 
-  static Address GetDeoptimizationEntry(Isolate* isolate, DeoptimizeKind kind);
+  V8_EXPORT_PRIVATE static Builtins::Name GetDeoptimizationEntry(
+      Isolate* isolate, DeoptimizeKind kind);
 
   // Returns true if {addr} is a deoptimization entry and stores its type in
-  // {type}. Returns false if {addr} is not a deoptimization entry.
+  // {type_out}. Returns false if {addr} is not a deoptimization entry.
   static bool IsDeoptimizationEntry(Isolate* isolate, Address addr,
-                                    DeoptimizeKind* type);
+                                    DeoptimizeKind* type_out);
 
   // Code generation support.
   static int input_offset() { return offsetof(Deoptimizer, input_); }
@@ -500,25 +521,31 @@ class Deoptimizer : public Malloced {
 
   V8_EXPORT_PRIVATE static int GetDeoptimizedCodeCount(Isolate* isolate);
 
-  static const int kNotDeoptimizationEntry = -1;
-
-  static void EnsureCodeForDeoptimizationEntry(Isolate* isolate,
-                                               DeoptimizeKind kind);
-  static void EnsureCodeForDeoptimizationEntries(Isolate* isolate);
-
   Isolate* isolate() const { return isolate_; }
 
-  static const int kMaxNumberOfEntries = 16384;
+  static constexpr int kMaxNumberOfEntries = 16384;
+
+  // This marker is passed to Deoptimizer::New as {bailout_id} on platforms
+  // that have fixed deopt sizes (see also kSupportsFixedDeoptExitSizes). The
+  // actual deoptimization id is then calculated from the return address.
+  static constexpr unsigned kFixedExitSizeMarker = kMaxUInt32;
 
   // Set to true when the architecture supports deoptimization exit sequences
   // of a fixed size, that can be sorted so that the deoptimization index is
   // deduced from the address of the deoptimization exit.
-  static const bool kSupportsFixedDeoptExitSizes;
+  // TODO(jgruber): Remove this, and support for variable deopt exit sizes,
+  // once all architectures use fixed exit sizes.
+  V8_EXPORT_PRIVATE static const bool kSupportsFixedDeoptExitSizes;
 
   // Size of deoptimization exit sequence. This is only meaningful when
   // kSupportsFixedDeoptExitSizes is true.
-  static const int kNonLazyDeoptExitSize;
-  static const int kLazyDeoptExitSize;
+  V8_EXPORT_PRIVATE static const int kNonLazyDeoptExitSize;
+  V8_EXPORT_PRIVATE static const int kLazyDeoptExitSize;
+
+  // Tracing.
+  static void TraceMarkForDeoptimization(Code code, const char* reason);
+  static void TraceEvictFromOptimizedCodeCache(SharedFunctionInfo sfi,
+                                               const char* reason);
 
  private:
   friend class FrameWriter;
@@ -528,11 +555,7 @@ class Deoptimizer : public Malloced {
   Deoptimizer(Isolate* isolate, JSFunction function, DeoptimizeKind kind,
               unsigned bailout_id, Address from, int fp_to_sp_delta);
   Code FindOptimizedCode();
-  void PrintFunctionName();
   void DeleteFrameDescriptions();
-
-  static bool IsDeoptimizationEntry(Isolate* isolate, Address addr,
-                                    DeoptimizeKind type);
 
   void DoComputeOutputFrames();
   void DoComputeInterpretedFrame(TranslatedFrame* translated_frame,
@@ -555,16 +578,29 @@ class Deoptimizer : public Malloced {
   static unsigned ComputeIncomingArgumentSize(SharedFunctionInfo shared);
   static unsigned ComputeOutgoingArgumentSize(Code code, unsigned bailout_id);
 
-  static void GenerateDeoptimizationEntries(MacroAssembler* masm,
-                                            Isolate* isolate,
-                                            DeoptimizeKind kind);
-
   static void MarkAllCodeForContext(NativeContext native_context);
   static void DeoptimizeMarkedCodeForContext(NativeContext native_context);
   // Searches the list of known deoptimizing code for a Code object
   // containing the given address (which is supposedly faster than
   // searching all code objects).
   Code FindDeoptimizingCode(Address addr);
+
+  // Tracing.
+  bool tracing_enabled() const { return static_cast<bool>(trace_scope_); }
+  bool verbose_tracing_enabled() const {
+    return FLAG_trace_deopt_verbose && trace_scope_;
+  }
+  CodeTracer::Scope* trace_scope() const { return trace_scope_.get(); }
+  CodeTracer::Scope* verbose_trace_scope() const {
+    return FLAG_trace_deopt_verbose ? trace_scope() : nullptr;
+  }
+  void TraceDeoptBegin(int optimization_id, int node_id);
+  void TraceDeoptEnd(double deopt_duration);
+#ifdef DEBUG
+  static void TraceFoundActivation(Isolate* isolate, JSFunction function);
+#endif
+  static void TraceDeoptAll(Isolate* isolate);
+  static void TraceDeoptMarked(Isolate* isolate);
 
   Isolate* isolate_;
   JSFunction function_;
@@ -593,6 +629,9 @@ class Deoptimizer : public Malloced {
   intptr_t caller_constant_pool_;
   intptr_t input_frame_context_;
 
+  // The argument count of the bottom most frame.
+  int actual_argument_count_;
+
   // Key for lookup of previously materialized objects
   intptr_t stack_fp_;
 
@@ -604,10 +643,10 @@ class Deoptimizer : public Malloced {
   std::vector<ValueToMaterialize> values_to_materialize_;
 
 #ifdef DEBUG
-  DisallowHeapAllocation* disallow_heap_allocation_;
+  DisallowGarbageCollection* disallow_garbage_collection_;
 #endif  // DEBUG
 
-  CodeTracer::Scope* trace_scope_;
+  std::unique_ptr<CodeTracer::Scope> trace_scope_;
 
   static const int table_entry_size_;
 
@@ -735,7 +774,7 @@ class FrameDescription {
     return offsetof(FrameDescription, register_values_.registers_);
   }
 
-  static int double_registers_offset() {
+  static constexpr int double_registers_offset() {
     return offsetof(FrameDescription, register_values_.double_registers_);
   }
 
@@ -773,7 +812,7 @@ class FrameDescription {
   intptr_t continuation_;
 
   // This must be at the end of the object as the object is allocated larger
-  // than it's definition indicate to extend this array.
+  // than its definition indicates to extend this array.
   intptr_t frame_content_[1];
 
   intptr_t* GetFrameSlotPointer(unsigned offset) {
@@ -781,35 +820,6 @@ class FrameDescription {
     return reinterpret_cast<intptr_t*>(reinterpret_cast<Address>(this) +
                                        frame_content_offset() + offset);
   }
-};
-
-class DeoptimizerData {
- public:
-  explicit DeoptimizerData(Heap* heap);
-  ~DeoptimizerData();
-
-#ifdef DEBUG
-  bool IsDeoptEntryCode(Code code) const {
-    for (int i = 0; i < kLastDeoptimizeKind + 1; i++) {
-      if (code == deopt_entry_code_[i]) return true;
-    }
-    return false;
-  }
-#endif  // DEBUG
-
- private:
-  Heap* heap_;
-  static const int kLastDeoptimizeKind =
-      static_cast<int>(DeoptimizeKind::kLastDeoptimizeKind);
-  Code deopt_entry_code_[kLastDeoptimizeKind + 1];
-  Code deopt_entry_code(DeoptimizeKind kind);
-  void set_deopt_entry_code(DeoptimizeKind kind, Code code);
-
-  Deoptimizer* current_;
-
-  friend class Deoptimizer;
-
-  DISALLOW_COPY_AND_ASSIGN(DeoptimizerData);
 };
 
 class TranslationBuffer {
@@ -905,7 +915,7 @@ class Translation {
                                                         int literal_id,
                                                         unsigned height);
   void ArgumentsElements(CreateArgumentsType type);
-  void ArgumentsLength(CreateArgumentsType type);
+  void ArgumentsLength();
   void BeginCapturedObject(int length);
   void AddUpdateFeedback(int vector_literal, int slot);
   void DuplicateObject(int object_index);

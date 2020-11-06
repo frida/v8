@@ -39,8 +39,9 @@ class RedundancyEliminationTest : public GraphTest {
     shared->set_raw_outer_scope_info_or_feedback_metadata(*metadata);
     Handle<ClosureFeedbackCellArray> closure_feedback_cell_array =
         ClosureFeedbackCellArray::New(isolate(), shared);
-    Handle<FeedbackVector> feedback_vector =
-        FeedbackVector::New(isolate(), shared, closure_feedback_cell_array);
+    IsCompiledScope is_compiled_scope(shared->is_compiled_scope(isolate()));
+    Handle<FeedbackVector> feedback_vector = FeedbackVector::New(
+        isolate(), shared, closure_feedback_cell_array, &is_compiled_scope);
     vector_slot_pairs_.push_back(FeedbackSource());
     vector_slot_pairs_.push_back(FeedbackSource(feedback_vector, slot1));
     vector_slot_pairs_.push_back(FeedbackSource(feedback_vector, slot2));
@@ -670,18 +671,16 @@ TEST_F(RedundancyEliminationTest, CheckedUint32Bounds) {
       Node* effect = graph()->start();
       Node* control = graph()->start();
 
-      Node* check1 = effect = graph()->NewNode(
-          simplified()->CheckedUint32Bounds(
-              feedback1, CheckBoundsParameters::kDeoptOnOutOfBounds),
-          index, length, effect, control);
+      Node* check1 = effect =
+          graph()->NewNode(simplified()->CheckedUint32Bounds(feedback1, {}),
+                           index, length, effect, control);
       Reduction r1 = Reduce(check1);
       ASSERT_TRUE(r1.Changed());
       EXPECT_EQ(r1.replacement(), check1);
 
-      Node* check2 = effect = graph()->NewNode(
-          simplified()->CheckedUint32Bounds(
-              feedback2, CheckBoundsParameters::kDeoptOnOutOfBounds),
-          index, length, effect, control);
+      Node* check2 = effect =
+          graph()->NewNode(simplified()->CheckedUint32Bounds(feedback2, {}),
+                           index, length, effect, control);
       Reduction r2 = Reduce(check2);
       ASSERT_TRUE(r2.Changed());
       EXPECT_EQ(r2.replacement(), check1);
@@ -754,18 +753,16 @@ TEST_F(RedundancyEliminationTest, CheckedUint64Bounds) {
       Node* effect = graph()->start();
       Node* control = graph()->start();
 
-      Node* check1 = effect = graph()->NewNode(
-          simplified()->CheckedUint64Bounds(
-              feedback1, CheckBoundsParameters::kDeoptOnOutOfBounds),
-          index, length, effect, control);
+      Node* check1 = effect =
+          graph()->NewNode(simplified()->CheckedUint64Bounds(feedback1, {}),
+                           index, length, effect, control);
       Reduction r1 = Reduce(check1);
       ASSERT_TRUE(r1.Changed());
       EXPECT_EQ(r1.replacement(), check1);
 
-      Node* check2 = effect = graph()->NewNode(
-          simplified()->CheckedUint64Bounds(
-              feedback2, CheckBoundsParameters::kDeoptOnOutOfBounds),
-          index, length, effect, control);
+      Node* check2 = effect =
+          graph()->NewNode(simplified()->CheckedUint64Bounds(feedback2, {}),
+                           index, length, effect, control);
       Reduction r2 = Reduce(check2);
       ASSERT_TRUE(r2.Changed());
       EXPECT_EQ(r2.replacement(), check1);

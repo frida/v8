@@ -12,6 +12,8 @@ config("internal_config") {
     defines = [ "BUILDING_V8_DEBUG_HELPER" ]
   }
 
+  configs = [ "../..:v8_tracing_config" ]
+
   include_dirs = [
     ".",
     "../..",
@@ -25,6 +27,9 @@ config("external_config") {
   if (is_component_build) {
     defines = [ "USING_V8_DEBUG_HELPER" ]
   }
+
+  configs = [ "../..:external_config" ]
+
   include_dirs = [ "." ]
 }
 
@@ -32,7 +37,10 @@ action("run_mkgrokdump") {
   testonly = true
   visibility = [ ":*" ]
 
-  deps = [ "../../test/mkgrokdump:mkgrokdump($v8_generator_toolchain)" ]
+  deps = [
+    "../..:run_mksnapshot_default",
+    "../../test/mkgrokdump:mkgrokdump($v8_generator_toolchain)",
+  ]
 
   script = "../run.py"
 
@@ -67,10 +75,11 @@ v8_component("v8_debug_helper") {
   public = [ "debug-helper.h" ]
 
   sources = [
-    "$target_gen_dir/../../torque-generated/class-debug-readers-tq.cc",
-    "$target_gen_dir/../../torque-generated/class-debug-readers-tq.h",
-    "$target_gen_dir/../../torque-generated/instance-types-tq.h",
+    "$target_gen_dir/../../torque-generated/class-debug-readers.cc",
+    "$target_gen_dir/../../torque-generated/class-debug-readers.h",
+    "$target_gen_dir/../../torque-generated/instance-types.h",
     "$target_gen_dir/heap-constants-gen.cc",
+    "compiler-types.cc",
     "debug-helper-internal.cc",
     "debug-helper-internal.h",
     "debug-helper.h",

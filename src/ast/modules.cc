@@ -3,9 +3,10 @@
 // found in the LICENSE file.
 
 #include "src/ast/modules.h"
+
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/scopes.h"
-#include "src/heap/off-thread-factory-inl.h"
+#include "src/heap/local-factory-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/parsing/pending-compilation-error-handler.h"
@@ -30,9 +31,11 @@ bool SourceTextModuleDescriptor::AstRawStringComparer::operator()(
 
 void SourceTextModuleDescriptor::AddImport(
     const AstRawString* import_name, const AstRawString* local_name,
-    const AstRawString* module_request, const Scanner::Location loc,
+    const AstRawString* module_request,
+    const ImportAssertions* import_assertions, const Scanner::Location loc,
     const Scanner::Location specifier_loc, Zone* zone) {
-  Entry* entry = new (zone) Entry(loc);
+  // TODO(v8:10958) Add import_assertions to the Entry.
+  Entry* entry = zone->New<Entry>(loc);
   entry->local_name = local_name;
   entry->import_name = import_name;
   entry->module_request = AddModuleRequest(module_request, specifier_loc);
@@ -41,23 +44,27 @@ void SourceTextModuleDescriptor::AddImport(
 
 void SourceTextModuleDescriptor::AddStarImport(
     const AstRawString* local_name, const AstRawString* module_request,
-    const Scanner::Location loc, const Scanner::Location specifier_loc,
-    Zone* zone) {
-  Entry* entry = new (zone) Entry(loc);
+    const ImportAssertions* import_assertions, const Scanner::Location loc,
+    const Scanner::Location specifier_loc, Zone* zone) {
+  // TODO(v8:10958) Add import_assertions to the Entry.
+  Entry* entry = zone->New<Entry>(loc);
   entry->local_name = local_name;
   entry->module_request = AddModuleRequest(module_request, specifier_loc);
   AddNamespaceImport(entry, zone);
 }
 
 void SourceTextModuleDescriptor::AddEmptyImport(
-    const AstRawString* module_request, const Scanner::Location specifier_loc) {
+    const AstRawString* module_request,
+    const ImportAssertions* import_assertions,
+    const Scanner::Location specifier_loc) {
+  // TODO(v8:10958) Add import_assertions to the Entry.
   AddModuleRequest(module_request, specifier_loc);
 }
 
 void SourceTextModuleDescriptor::AddExport(const AstRawString* local_name,
                                            const AstRawString* export_name,
                                            Scanner::Location loc, Zone* zone) {
-  Entry* entry = new (zone) Entry(loc);
+  Entry* entry = zone->New<Entry>(loc);
   entry->export_name = export_name;
   entry->local_name = local_name;
   AddRegularExport(entry);
@@ -65,11 +72,13 @@ void SourceTextModuleDescriptor::AddExport(const AstRawString* local_name,
 
 void SourceTextModuleDescriptor::AddExport(
     const AstRawString* import_name, const AstRawString* export_name,
-    const AstRawString* module_request, const Scanner::Location loc,
+    const AstRawString* module_request,
+    const ImportAssertions* import_assertions, const Scanner::Location loc,
     const Scanner::Location specifier_loc, Zone* zone) {
+  // TODO(v8:10958) Add import_assertions to the Entry.
   DCHECK_NOT_NULL(import_name);
   DCHECK_NOT_NULL(export_name);
-  Entry* entry = new (zone) Entry(loc);
+  Entry* entry = zone->New<Entry>(loc);
   entry->export_name = export_name;
   entry->import_name = import_name;
   entry->module_request = AddModuleRequest(module_request, specifier_loc);
@@ -77,9 +86,11 @@ void SourceTextModuleDescriptor::AddExport(
 }
 
 void SourceTextModuleDescriptor::AddStarExport(
-    const AstRawString* module_request, const Scanner::Location loc,
+    const AstRawString* module_request,
+    const ImportAssertions* import_assertions, const Scanner::Location loc,
     const Scanner::Location specifier_loc, Zone* zone) {
-  Entry* entry = new (zone) Entry(loc);
+  // TODO(v8:10958) Add import_assertions to the Entry.
+  Entry* entry = zone->New<Entry>(loc);
   entry->module_request = AddModuleRequest(module_request, specifier_loc);
   AddSpecialExport(entry, zone);
 }
@@ -106,7 +117,7 @@ Handle<SourceTextModuleInfoEntry> SourceTextModuleDescriptor::Entry::Serialize(
 template Handle<SourceTextModuleInfoEntry>
 SourceTextModuleDescriptor::Entry::Serialize(Isolate* isolate) const;
 template Handle<SourceTextModuleInfoEntry>
-SourceTextModuleDescriptor::Entry::Serialize(OffThreadIsolate* isolate) const;
+SourceTextModuleDescriptor::Entry::Serialize(LocalIsolate* isolate) const;
 
 template <typename LocalIsolate>
 Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
@@ -164,7 +175,7 @@ Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
 template Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
     Isolate* isolate, Zone* zone) const;
 template Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
-    OffThreadIsolate* isolate, Zone* zone) const;
+    LocalIsolate* isolate, Zone* zone) const;
 
 void SourceTextModuleDescriptor::MakeIndirectExportsExplicit(Zone* zone) {
   for (auto it = regular_exports_.begin(); it != regular_exports_.end();) {

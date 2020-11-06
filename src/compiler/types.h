@@ -112,7 +112,7 @@ namespace compiler {
   V(Null,                     1u << 7)   \
   V(Undefined,                1u << 8)   \
   V(Boolean,                  1u << 9)   \
-  V(Unsigned30,               1u << 10)   \
+  V(Unsigned30,               1u << 10)  \
   V(MinusZero,                1u << 11)  \
   V(NaN,                      1u << 12)  \
   V(Symbol,                   1u << 13)  \
@@ -129,6 +129,9 @@ namespace compiler {
   V(ExternalPointer,          1u << 25)  \
   V(Array,                    1u << 26)  \
   V(BigInt,                   1u << 27)  \
+  /* TODO(v8:10391): Remove this type once all ExternalPointer usages are */ \
+  /* sandbox-ready. */                   \
+  V(SandboxedExternalPointer, 1u << 28)  \
   \
   V(Signed31,                     kUnsigned30 | kNegative31) \
   V(Signed32,                     kSigned31 | kOtherUnsigned31 | \
@@ -192,7 +195,8 @@ namespace compiler {
   V(StringOrReceiver,             kString | kReceiver) \
   V(Unique,                       kBoolean | kUniqueName | kNull | \
                                   kUndefined | kHole | kReceiver) \
-  V(Internal,                     kHole | kExternalPointer | kOtherInternal) \
+  V(Internal,                     kHole | kExternalPointer | \
+                                  kSandboxedExternalPointer | kOtherInternal) \
   V(NonInternal,                  kPrimitive | kReceiver) \
   V(NonBigInt,                    kNonBigIntPrimitive | kReceiver) \
   V(NonNumber,                    kBigInt | kUnique | kString | kInternal) \
@@ -329,6 +333,7 @@ class RangeType : public TypeBase {
   friend class Type;
   friend class BitsetType;
   friend class UnionType;
+  friend Zone;
 
   static RangeType* New(double min, double max, Zone* zone) {
     return New(Limits(min, max), zone);
@@ -339,7 +344,7 @@ class RangeType : public TypeBase {
     DCHECK(lim.min <= lim.max);
     BitsetType::bitset bits = BitsetType::Lub(lim.min, lim.max);
 
-    return new (zone->New(sizeof(RangeType))) RangeType(bits, lim);
+    return zone->New<RangeType>(bits, lim);
   }
 
   RangeType(BitsetType::bitset bitset, Limits limits)
@@ -529,10 +534,10 @@ class OtherNumberConstantType : public TypeBase {
  private:
   friend class Type;
   friend class BitsetType;
+  friend Zone;
 
   static OtherNumberConstantType* New(double value, Zone* zone) {
-    return new (zone->New(sizeof(OtherNumberConstantType)))
-        OtherNumberConstantType(value);  // NOLINT
+    return zone->New<OtherNumberConstantType>(value);
   }
 
   explicit OtherNumberConstantType(double value)
@@ -553,11 +558,11 @@ class V8_EXPORT_PRIVATE HeapConstantType : public NON_EXPORTED_BASE(TypeBase) {
  private:
   friend class Type;
   friend class BitsetType;
+  friend Zone;
 
   static HeapConstantType* New(const HeapObjectRef& heap_ref,
                                BitsetType::bitset bitset, Zone* zone) {
-    return new (zone->New(sizeof(HeapConstantType)))
-        HeapConstantType(bitset, heap_ref);
+    return zone->New<HeapConstantType>(bitset, heap_ref);
   }
 
   HeapConstantType(BitsetType::bitset bitset, const HeapObjectRef& heap_ref);
@@ -596,7 +601,7 @@ class StructuralType : public TypeBase {
 
   StructuralType(Kind kind, int length, Zone* zone)
       : TypeBase(kind), length_(length) {
-    elements_ = reinterpret_cast<Type*>(zone->New(sizeof(Type) * length));
+    elements_ = zone->NewArray<Type>(length);
   }
 
  private:
@@ -615,12 +620,13 @@ class TupleType : public StructuralType {
   void InitElement(int i, Type type) { this->Set(i, type); }
 
  private:
-  friend class Type;
+  friend Type;
+  friend Zone;
 
   TupleType(int length, Zone* zone) : StructuralType(kTuple, length, zone) {}
 
   static TupleType* New(int length, Zone* zone) {
-    return new (zone->New(sizeof(TupleType))) TupleType(length, zone);
+    return zone->New<TupleType>(length, zone);
   }
 };
 
@@ -635,11 +641,12 @@ class UnionType : public StructuralType {
  private:
   friend Type;
   friend BitsetType;
+  friend Zone;
 
   UnionType(int length, Zone* zone) : StructuralType(kUnion, length, zone) {}
 
   static UnionType* New(int length, Zone* zone) {
-    return new (zone->New(sizeof(UnionType))) UnionType(length, zone);
+    return zone->New<UnionType>(length, zone);
   }
 
   bool Wellformed() const;

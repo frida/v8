@@ -127,6 +127,14 @@ inline bool IsDictionaryElementsKind(ElementsKind kind) {
   return kind == DICTIONARY_ELEMENTS;
 }
 
+inline bool IsFastArgumentsElementsKind(ElementsKind kind) {
+  return kind == FAST_SLOPPY_ARGUMENTS_ELEMENTS;
+}
+
+inline bool IsSlowArgumentsElementsKind(ElementsKind kind) {
+  return kind == SLOW_SLOPPY_ARGUMENTS_ELEMENTS;
+}
+
 inline bool IsSloppyArgumentsElementsKind(ElementsKind kind) {
   return base::IsInRange(kind, FAST_SLOPPY_ARGUMENTS_ELEMENTS,
                          SLOW_SLOPPY_ARGUMENTS_ELEMENTS);
@@ -341,6 +349,29 @@ inline bool IsTransitionableFastElementsKind(ElementsKind from_kind) {
 }
 
 inline bool ElementsKindEqual(ElementsKind a, ElementsKind b) { return a == b; }
+
+enum class CompactElementsKind : uint8_t {
+  PACKED_SMI_ELEMENTS = PACKED_SMI_ELEMENTS,
+  HOLEY_SMI_ELEMENTS = HOLEY_SMI_ELEMENTS,
+
+  PACKED_ELEMENTS = PACKED_ELEMENTS,
+  HOLEY_ELEMENTS = HOLEY_ELEMENTS,
+
+  PACKED_DOUBLE_ELEMENTS = PACKED_DOUBLE_ELEMENTS,
+  HOLEY_DOUBLE_ELEMENTS = HOLEY_DOUBLE_ELEMENTS,
+
+  NON_COMPACT_ELEMENTS_KIND
+};
+
+inline CompactElementsKind ToCompactElementsKind(ElementsKind kind) {
+  if (base::IsInRange(kind, PACKED_SMI_ELEMENTS, HOLEY_DOUBLE_ELEMENTS)) {
+    return static_cast<CompactElementsKind>(kind);
+  }
+
+  return CompactElementsKind::NON_COMPACT_ELEMENTS_KIND;
+}
+
+const char* CompactElementsKindToString(CompactElementsKind kind);
 
 }  // namespace internal
 }  // namespace v8

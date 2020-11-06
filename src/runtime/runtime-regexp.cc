@@ -322,7 +322,7 @@ bool CompiledReplacement::Compile(Isolate* isolate, Handle<JSRegExp> regexp,
 
     FixedArray capture_name_map;
     if (capture_count > 0) {
-      DCHECK_EQ(regexp->TypeTag(), JSRegExp::IRREGEXP);
+      DCHECK(JSRegExp::TypeSupportsCaptures(regexp->TypeTag()));
       Object maybe_capture_name_map = regexp->CaptureNameMap();
       if (maybe_capture_name_map.IsFixedArray()) {
         capture_name_map = FixedArray::cast(maybe_capture_name_map);
@@ -611,13 +611,9 @@ V8_WARN_UNUSED_RESULT static Object StringReplaceGlobalRegExpWithString(
   int capture_count = regexp->CaptureCount();
   int subject_length = subject->length();
 
-  JSRegExp::Type typeTag = regexp->TypeTag();
-  if (typeTag == JSRegExp::IRREGEXP) {
-    // Ensure the RegExp is compiled so we can access the capture-name map.
-    if (RegExp::IrregexpPrepare(isolate, regexp, subject) == -1) {
-      DCHECK(isolate->has_pending_exception());
-      return ReadOnlyRoots(isolate).exception();
-    }
+  // Ensure the RegExp is compiled so we can access the capture-name map.
+  if (!RegExp::EnsureFullyCompiled(isolate, regexp, subject)) {
+    return ReadOnlyRoots(isolate).exception();
   }
 
   // CompiledReplacement uses zone allocation.
@@ -627,7 +623,7 @@ V8_WARN_UNUSED_RESULT static Object StringReplaceGlobalRegExpWithString(
       isolate, regexp, replacement, capture_count, subject_length);
 
   // Shortcut for simple non-regexp global replacements
-  if (typeTag == JSRegExp::ATOM && simple_replace) {
+  if (regexp->TypeTag() == JSRegExp::ATOM && simple_replace) {
     if (subject->IsOneByteRepresentation() &&
         replacement->IsOneByteRepresentation()) {
       return StringReplaceGlobalAtomRegExpWithString<SeqOneByteString>(
@@ -881,6 +877,23 @@ RUNTIME_FUNCTION(Runtime_RegExpExec) {
       isolate, RegExp::Exec(isolate, regexp, subject, index, last_match_info));
 }
 
+RUNTIME_FUNCTION(Runtime_RegExpExperimentalOneshotExec) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(4, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(JSRegExp, regexp, 0);
+  CONVERT_ARG_HANDLE_CHECKED(String, subject, 1);
+  CONVERT_INT32_ARG_CHECKED(index, 2);
+  CONVERT_ARG_HANDLE_CHECKED(RegExpMatchInfo, last_match_info, 3);
+  // Due to the way the JS calls are constructed this must be less than the
+  // length of a string, i.e. it is always a Smi.  We check anyway for security.
+  CHECK_LE(0, index);
+  CHECK_GE(subject->length(), index);
+  isolate->counters()->regexp_entry_runtime()->Increment();
+  RETURN_RESULT_OR_FAILURE(
+      isolate, RegExp::ExperimentalOneshotExec(isolate, regexp, subject, index,
+                                               last_match_info));
+}
+
 namespace {
 
 class MatchInfoBackedMatch : public String::Match {
@@ -891,7 +904,7 @@ class MatchInfoBackedMatch : public String::Match {
       : isolate_(isolate), match_info_(match_info) {
     subject_ = String::Flatten(isolate, subject);
 
-    if (regexp->TypeTag() == JSRegExp::IRREGEXP) {
+    if (JSRegExp::TypeSupportsCaptures(regexp->TypeTag())) {
       Object o = regexp->CaptureNameMap();
       has_named_captures_ = o.IsFixedArray();
       if (has_named_captures_) {
@@ -938,8 +951,8 @@ class MatchInfoBackedMatch : public String::Match {
         *capture_name_map_);
 
     if (capture_index == -1) {
-      *state = INVALID;
-      return name;  // Arbitrary string handle.
+      *state = UNMATCHED;
+      return isolate_->factory()->empty_string();
     }
 
     DCHECK(1 <= capture_index && capture_index <= CaptureCount());
@@ -1014,15 +1027,6 @@ class VectorBackedMatch : public String::Match {
   MaybeHandle<String> GetNamedCapture(Handle<String> name,
                                       CaptureState* state) override {
     DCHECK(has_named_captures_);
-
-    Maybe<bool> maybe_capture_exists =
-        JSReceiver::HasProperty(groups_obj_, name);
-    if (maybe_capture_exists.IsNothing()) return MaybeHandle<String>();
-
-    if (!maybe_capture_exists.FromJust()) {
-      *state = INVALID;
-      return name;  // Arbitrary string handle.
-    }
 
     Handle<Object> capture_obj;
     ASSIGN_RETURN_ON_EXCEPTION(isolate_, capture_obj,
@@ -1109,7 +1113,7 @@ static Object SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
         isolate->heap(), *subject, regexp->data(), &last_match_cache,
         RegExpResultsCache::REGEXP_MULTIPLE_INDICES);
     if (cached_answer.IsFixedArray()) {
-      int capture_registers = (capture_count + 1) * 2;
+      int capture_registers = JSRegExp::RegistersForCaptureCount(capture_count);
       int32_t* last_match = NewArray<int32_t>(capture_registers);
       for (int i = 0; i < capture_registers; i++) {
         last_match[i] = Smi::ToInt(last_match_cache.get(i));
@@ -1234,8 +1238,7 @@ static Object SearchRegExpMultiple(Isolate* isolate, Handle<String> subject,
 
     if (subject_length > kMinLengthToCache) {
       // Store the last successful match into the array for caching.
-      // TODO(yangguo): do not expose last match to JS and simplify caching.
-      int capture_registers = (capture_count + 1) * 2;
+      int capture_registers = JSRegExp::RegistersForCaptureCount(capture_count);
       Handle<FixedArray> last_match_cache =
           isolate->factory()->NewFixedArray(capture_registers);
       int32_t* last_match = global_cache.LastSuccessfulMatch();
@@ -1470,8 +1473,7 @@ RUNTIME_FUNCTION(Runtime_StringReplaceNonGlobalRegExpWithFunction) {
   bool has_named_captures = false;
   Handle<FixedArray> capture_map;
   if (m > 1) {
-    // The existence of capture groups implies IRREGEXP kind.
-    DCHECK_EQ(regexp->TypeTag(), JSRegExp::IRREGEXP);
+    DCHECK(JSRegExp::TypeSupportsCaptures(regexp->TypeTag()));
 
     Object maybe_capture_map = regexp->CaptureNameMap();
     if (maybe_capture_map.IsFixedArray()) {

@@ -31,8 +31,8 @@ own<Trap> Stage4_GC(void* env, const Val args[], Val results[]) {
   printf("Stage4...\n");
   i::Isolate* isolate = reinterpret_cast<i::Isolate*>(env);
   isolate->heap()->PreciseCollectAllGarbage(
-      i::Heap::kNoGCFlags, i::GarbageCollectionReason::kTesting,
-      v8::kGCCallbackFlagForced);
+      i::Heap::kForcedGC, i::GarbageCollectionReason::kTesting,
+      v8::kNoGCCallbackFlags);
   results[0] = Val::i32(args[0].i32() + 1);
   return nullptr;
 }
@@ -188,9 +188,9 @@ TEST_F(WasmCapiTest, DirectCallCapiFunction) {
                          ValType::make(::wasm::ANYREF)));
   own<Func> func = Func::make(store(), cpp_sig.get(), PlusOne);
   Extern* imports[] = {func.get()};
-  ValueType wasm_types[] = {kWasmI32,    kWasmI64,   kWasmF32, kWasmF64,
-                            kWasmAnyRef, kWasmI32,   kWasmI64, kWasmF32,
-                            kWasmF64,    kWasmAnyRef};
+  ValueType wasm_types[] = {kWasmI32,       kWasmI64,      kWasmF32, kWasmF64,
+                            kWasmExternRef, kWasmI32,      kWasmI64, kWasmF32,
+                            kWasmF64,       kWasmExternRef};
   FunctionSig wasm_sig(5, 5, wasm_types);
   int func_index = builder()->AddImport(CStrVector("func"), &wasm_sig);
   builder()->ExportImportedFunction(CStrVector("func"), func_index);

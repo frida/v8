@@ -19,10 +19,10 @@
 namespace v8 {
 namespace internal {
 
-OBJECT_CONSTRUCTORS_IMPL(JSPluralRules, JSObject)
+#include "torque-generated/src/objects/js-plural-rules-tq-inl.inc"
 
-ACCESSORS(JSPluralRules, locale, String, kLocaleOffset)
-SMI_ACCESSORS(JSPluralRules, flags, kFlagsOffset)
+TQ_OBJECT_CONSTRUCTORS_IMPL(JSPluralRules)
+
 ACCESSORS(JSPluralRules, icu_plural_rules, Managed<icu::PluralRules>,
           kIcuPluralRulesOffset)
 ACCESSORS(JSPluralRules, icu_number_formatter,
@@ -39,8 +39,6 @@ inline void JSPluralRules::set_type(Type type) {
 inline JSPluralRules::Type JSPluralRules::type() const {
   return TypeBit::decode(flags());
 }
-
-CAST_ACCESSOR(JSPluralRules)
 
 }  // namespace internal
 }  // namespace v8

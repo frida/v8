@@ -56,11 +56,15 @@ class V8DebuggerScript {
   const String16& scriptId() const { return m_id; }
   bool hasSourceURLComment() const { return m_hasSourceURLComment; }
   const String16& sourceURL() const { return m_url; }
+  const String16& embedderName() const { return m_embedderName; }
 
   virtual const String16& sourceMappingURL() const = 0;
   virtual String16 source(size_t pos, size_t len = UINT_MAX) const = 0;
   virtual v8::Maybe<v8::MemorySpan<const uint8_t>> wasmBytecode() const = 0;
   virtual Language getLanguage() const = 0;
+  virtual v8::Maybe<String16> getExternalDebugSymbolsURL() const = 0;
+  virtual v8::Maybe<v8::debug::WasmScript::DebugSymbolsType>
+  getDebugSymbolsType() const = 0;
   virtual const String16& hash() const = 0;
   virtual int startLine() const = 0;
   virtual int startColumn() const = 0;
@@ -95,7 +99,8 @@ class V8DebuggerScript {
   virtual bool setBreakpointOnRun(int* id) const = 0;
 
  protected:
-  V8DebuggerScript(v8::Isolate*, String16 id, String16 url);
+  V8DebuggerScript(v8::Isolate*, String16 id, String16 url,
+                   String16 embedderName);
 
   virtual v8::Local<v8::debug::Script> script() const = 0;
 
@@ -105,6 +110,7 @@ class V8DebuggerScript {
   int m_executionContextId = 0;
 
   v8::Isolate* m_isolate;
+  String16 m_embedderName;
 
  private:
   DISALLOW_COPY_AND_ASSIGN(V8DebuggerScript);

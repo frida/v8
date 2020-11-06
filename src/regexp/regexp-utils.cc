@@ -173,9 +173,10 @@ bool RegExpUtils::IsUnmodifiedRegExp(Isolate* isolate, Handle<Object> obj) {
   // with the init order in the bootstrapper).
   InternalIndex kExecIndex(JSRegExp::kExecFunctionDescriptorIndex);
   DCHECK_EQ(*(isolate->factory()->exec_string()),
-            proto_map.instance_descriptors().GetKey(kExecIndex));
-  if (proto_map.instance_descriptors().GetDetails(kExecIndex).constness() !=
-      PropertyConstness::kConst) {
+            proto_map.instance_descriptors(kRelaxedLoad).GetKey(kExecIndex));
+  if (proto_map.instance_descriptors(kRelaxedLoad)
+          .GetDetails(kExecIndex)
+          .constness() != PropertyConstness::kConst) {
     return false;
   }
 
@@ -185,10 +186,7 @@ bool RegExpUtils::IsUnmodifiedRegExp(Isolate* isolate, Handle<Object> obj) {
   // property. Similar spots in CSA would use BranchIfFastRegExp_Strict in this
   // case.
 
-  if (!Protectors::IsRegExpSpeciesLookupChainProtectorIntact(
-          recv.GetCreationContext())) {
-    return false;
-  }
+  if (!Protectors::IsRegExpSpeciesLookupChainIntact(isolate)) return false;
 
   // The smi check is required to omit ToLength(lastIndex) calls with possible
   // user-code execution on the fast path.

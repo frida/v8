@@ -346,7 +346,7 @@ WASM_EXEC_TEST(DataDropThenMemoryInit) {
   CHECK_EQ(0xDEADBEEF, r.Call());
 }
 
-void TestTableCopyInbounds(ExecutionTier execution_tier, int table_dst,
+void TestTableCopyInbounds(TestExecutionTier execution_tier, int table_dst,
                            int table_src) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   WasmRunner<uint32_t, uint32_t, uint32_t, uint32_t> r(execution_tier);
@@ -367,22 +367,22 @@ void TestTableCopyInbounds(ExecutionTier execution_tier, int table_dst,
   }
 }
 
-WASM_EXEC_TEST(TableCopyInboundsFrom0To0) {
+WASM_COMPILED_EXEC_TEST(TableCopyInboundsFrom0To0) {
   TestTableCopyInbounds(execution_tier, 0, 0);
 }
 
-WASM_EXEC_TEST(TableCopyInboundsFrom3To0) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyInboundsFrom3To0) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyInbounds(execution_tier, 3, 0);
 }
 
-WASM_EXEC_TEST(TableCopyInboundsFrom5To9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyInboundsFrom5To9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyInbounds(execution_tier, 5, 9);
 }
 
-WASM_EXEC_TEST(TableCopyInboundsFrom6To6) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyInboundsFrom6To6) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyInbounds(execution_tier, 6, 6);
 }
 
@@ -410,7 +410,7 @@ void CheckTableCall(Isolate* isolate, Handle<WasmTableObject> table,
 }
 }  // namespace
 
-void TestTableInitElems(ExecutionTier execution_tier, int table_index) {
+void TestTableInitElems(TestExecutionTier execution_tier, int table_index) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   Isolate* isolate = CcTest::InitIsolateOnce();
   HandleScope scope(isolate);
@@ -476,17 +476,19 @@ void TestTableInitElems(ExecutionTier execution_tier, int table_index) {
   CheckTableCall(isolate, table, &r, call_index, 0, 1, 2, 3, 4);
 }
 
-WASM_EXEC_TEST(TableInitElems0) { TestTableInitElems(execution_tier, 0); }
-WASM_EXEC_TEST(TableInitElems7) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableInitElems0) {
+  TestTableInitElems(execution_tier, 0);
+}
+WASM_COMPILED_EXEC_TEST(TableInitElems7) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableInitElems(execution_tier, 7);
 }
-WASM_EXEC_TEST(TableInitElems9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableInitElems9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableInitElems(execution_tier, 9);
 }
 
-void TestTableInitOob(ExecutionTier execution_tier, int table_index) {
+void TestTableInitOob(TestExecutionTier execution_tier, int table_index) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   Isolate* isolate = CcTest::InitIsolateOnce();
   HandleScope scope(isolate);
@@ -555,17 +557,17 @@ void TestTableInitOob(ExecutionTier execution_tier, int table_index) {
   r.CheckCallViaJS(0xDEADBEEF, 0, 10, 1);
 }
 
-WASM_EXEC_TEST(TableInitOob0) { TestTableInitOob(execution_tier, 0); }
-WASM_EXEC_TEST(TableInitOob7) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableInitOob0) { TestTableInitOob(execution_tier, 0); }
+WASM_COMPILED_EXEC_TEST(TableInitOob7) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableInitOob(execution_tier, 7);
 }
-WASM_EXEC_TEST(TableInitOob9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableInitOob9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableInitOob(execution_tier, 9);
 }
 
-void TestTableCopyElems(ExecutionTier execution_tier, int table_dst,
+void TestTableCopyElems(TestExecutionTier execution_tier, int table_dst,
                         int table_src) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   Isolate* isolate = CcTest::InitIsolateOnce();
@@ -628,26 +630,26 @@ void TestTableCopyElems(ExecutionTier execution_tier, int table_dst,
   }
 }
 
-WASM_EXEC_TEST(TableCopyElemsFrom0To0) {
+WASM_COMPILED_EXEC_TEST(TableCopyElemsFrom0To0) {
   TestTableCopyElems(execution_tier, 0, 0);
 }
 
-WASM_EXEC_TEST(TableCopyElemsFrom3To0) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyElemsFrom3To0) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyElems(execution_tier, 3, 0);
 }
 
-WASM_EXEC_TEST(TableCopyElemsFrom5To9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyElemsFrom5To9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyElems(execution_tier, 5, 9);
 }
 
-WASM_EXEC_TEST(TableCopyElemsFrom6To6) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyElemsFrom6To6) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyElems(execution_tier, 6, 6);
 }
 
-void TestTableCopyCalls(ExecutionTier execution_tier, int table_dst,
+void TestTableCopyCalls(TestExecutionTier execution_tier, int table_dst,
                         int table_src) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   Isolate* isolate = CcTest::InitIsolateOnce();
@@ -703,26 +705,26 @@ void TestTableCopyCalls(ExecutionTier execution_tier, int table_dst,
   }
 }
 
-WASM_EXEC_TEST(TableCopyCallsFrom0To0) {
+WASM_COMPILED_EXEC_TEST(TableCopyCallsTo0From0) {
   TestTableCopyCalls(execution_tier, 0, 0);
 }
 
-WASM_EXEC_TEST(TableCopyCallsFrom3To0) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyCallsTo3From0) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyCalls(execution_tier, 3, 0);
 }
 
-WASM_EXEC_TEST(TableCopyCallsFrom5To9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyCallsTo5From9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyCalls(execution_tier, 5, 9);
 }
 
-WASM_EXEC_TEST(TableCopyCallsFrom6To6) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyCallsTo6From6) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyCalls(execution_tier, 6, 6);
 }
 
-void TestTableCopyOobWrites(ExecutionTier execution_tier, int table_dst,
+void TestTableCopyOobWrites(TestExecutionTier execution_tier, int table_dst,
                             int table_src) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   Isolate* isolate = CcTest::InitIsolateOnce();
@@ -779,26 +781,26 @@ void TestTableCopyOobWrites(ExecutionTier execution_tier, int table_dst,
   CheckTable(isolate, table, f0, f1, f2, f3, f4);
 }
 
-WASM_EXEC_TEST(TableCopyOobWritesFrom0To0) {
+WASM_COMPILED_EXEC_TEST(TableCopyOobWritesFrom0To0) {
   TestTableCopyOobWrites(execution_tier, 0, 0);
 }
 
-WASM_EXEC_TEST(TableCopyOobWritesFrom3To0) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOobWritesFrom3To0) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOobWrites(execution_tier, 3, 0);
 }
 
-WASM_EXEC_TEST(TableCopyOobWritesFrom5To9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOobWritesFrom5To9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOobWrites(execution_tier, 5, 9);
 }
 
-WASM_EXEC_TEST(TableCopyOobWritesFrom6To6) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOobWritesFrom6To6) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOobWrites(execution_tier, 6, 6);
 }
 
-void TestTableCopyOob1(ExecutionTier execution_tier, int table_dst,
+void TestTableCopyOob1(TestExecutionTier execution_tier, int table_dst,
                        int table_src) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   WasmRunner<uint32_t, uint32_t, uint32_t, uint32_t> r(execution_tier);
@@ -838,26 +840,26 @@ void TestTableCopyOob1(ExecutionTier execution_tier, int table_dst,
   }
 }
 
-WASM_EXEC_TEST(TableCopyOob1From0To0) {
+WASM_COMPILED_EXEC_TEST(TableCopyOob1From0To0) {
   TestTableCopyOob1(execution_tier, 0, 0);
 }
 
-WASM_EXEC_TEST(TableCopyOob1From3To0) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOob1From3To0) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOob1(execution_tier, 3, 0);
 }
 
-WASM_EXEC_TEST(TableCopyOob1From5To9) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOob1From5To9) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOob1(execution_tier, 5, 9);
 }
 
-WASM_EXEC_TEST(TableCopyOob1From6To6) {
-  EXPERIMENTAL_FLAG_SCOPE(anyref);
+WASM_COMPILED_EXEC_TEST(TableCopyOob1From6To6) {
+  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   TestTableCopyOob1(execution_tier, 6, 6);
 }
 
-WASM_EXEC_TEST(ElemDropTwice) {
+WASM_COMPILED_EXEC_TEST(ElemDropTwice) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   WasmRunner<uint32_t> r(execution_tier);
   r.builder().AddIndirectFunctionTable(nullptr, 1);
@@ -868,7 +870,7 @@ WASM_EXEC_TEST(ElemDropTwice) {
   r.CheckCallViaJS(0);
 }
 
-WASM_EXEC_TEST(ElemDropThenTableInit) {
+WASM_COMPILED_EXEC_TEST(ElemDropThenTableInit) {
   EXPERIMENTAL_FLAG_SCOPE(bulk_memory);
   WasmRunner<uint32_t, uint32_t> r(execution_tier);
   r.builder().AddIndirectFunctionTable(nullptr, 1);

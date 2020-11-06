@@ -25,6 +25,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Cmp32:
     case kArm64Cmn:
     case kArm64Cmn32:
+    case kArm64Cnt:
     case kArm64Tst:
     case kArm64Tst32:
     case kArm64Or:
@@ -40,7 +41,9 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64Mul:
     case kArm64Mul32:
     case kArm64Smull:
+    case kArm64Smull2:
     case kArm64Umull:
+    case kArm64Umull2:
     case kArm64Madd:
     case kArm64Madd32:
     case kArm64Msub:
@@ -156,6 +159,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64F64x2Le:
     case kArm64F64x2Qfma:
     case kArm64F64x2Qfms:
+    case kArm64F64x2Pmin:
+    case kArm64F64x2Pmax:
     case kArm64F32x4Splat:
     case kArm64F32x4ExtractLane:
     case kArm64F32x4ReplaceLane:
@@ -179,6 +184,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64F32x4Le:
     case kArm64F32x4Qfma:
     case kArm64F32x4Qfms:
+    case kArm64F32x4Pmin:
+    case kArm64F32x4Pmax:
     case kArm64I64x2Splat:
     case kArm64I64x2ExtractLane:
     case kArm64I64x2ReplaceLane:
@@ -189,18 +196,15 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I64x2Sub:
     case kArm64I64x2Mul:
     case kArm64I64x2Eq:
-    case kArm64I64x2Ne:
-    case kArm64I64x2GtS:
-    case kArm64I64x2GeS:
     case kArm64I64x2ShrU:
-    case kArm64I64x2GtU:
-    case kArm64I64x2GeU:
     case kArm64I32x4Splat:
     case kArm64I32x4ExtractLane:
     case kArm64I32x4ReplaceLane:
     case kArm64I32x4SConvertF32x4:
-    case kArm64I32x4SConvertI16x8Low:
-    case kArm64I32x4SConvertI16x8High:
+    case kArm64Sxtl:
+    case kArm64Sxtl2:
+    case kArm64Uxtl:
+    case kArm64Uxtl2:
     case kArm64I32x4Neg:
     case kArm64I32x4Shl:
     case kArm64I32x4ShrS:
@@ -208,6 +212,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I32x4AddHoriz:
     case kArm64I32x4Sub:
     case kArm64I32x4Mul:
+    case kArm64I32x4Mla:
+    case kArm64I32x4Mls:
     case kArm64I32x4MinS:
     case kArm64I32x4MaxS:
     case kArm64I32x4Eq:
@@ -215,8 +221,6 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I32x4GtS:
     case kArm64I32x4GeS:
     case kArm64I32x4UConvertF32x4:
-    case kArm64I32x4UConvertI16x8Low:
-    case kArm64I32x4UConvertI16x8High:
     case kArm64I32x4ShrU:
     case kArm64I32x4MinU:
     case kArm64I32x4MaxU:
@@ -224,39 +228,39 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I32x4GeU:
     case kArm64I32x4Abs:
     case kArm64I32x4BitMask:
+    case kArm64I32x4DotI16x8S:
     case kArm64I16x8Splat:
     case kArm64I16x8ExtractLaneU:
     case kArm64I16x8ExtractLaneS:
     case kArm64I16x8ReplaceLane:
-    case kArm64I16x8SConvertI8x16Low:
-    case kArm64I16x8SConvertI8x16High:
     case kArm64I16x8Neg:
     case kArm64I16x8Shl:
     case kArm64I16x8ShrS:
     case kArm64I16x8SConvertI32x4:
     case kArm64I16x8Add:
-    case kArm64I16x8AddSaturateS:
+    case kArm64I16x8AddSatS:
     case kArm64I16x8AddHoriz:
     case kArm64I16x8Sub:
-    case kArm64I16x8SubSaturateS:
+    case kArm64I16x8SubSatS:
     case kArm64I16x8Mul:
+    case kArm64I16x8Mla:
+    case kArm64I16x8Mls:
     case kArm64I16x8MinS:
     case kArm64I16x8MaxS:
     case kArm64I16x8Eq:
     case kArm64I16x8Ne:
     case kArm64I16x8GtS:
     case kArm64I16x8GeS:
-    case kArm64I16x8UConvertI8x16Low:
-    case kArm64I16x8UConvertI8x16High:
     case kArm64I16x8ShrU:
     case kArm64I16x8UConvertI32x4:
-    case kArm64I16x8AddSaturateU:
-    case kArm64I16x8SubSaturateU:
+    case kArm64I16x8AddSatU:
+    case kArm64I16x8SubSatU:
     case kArm64I16x8MinU:
     case kArm64I16x8MaxU:
     case kArm64I16x8GtU:
     case kArm64I16x8GeU:
     case kArm64I16x8RoundingAverageU:
+    case kArm64I16x8Q15MulRSatS:
     case kArm64I16x8Abs:
     case kArm64I16x8BitMask:
     case kArm64I8x16Splat:
@@ -268,10 +272,12 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I8x16ShrS:
     case kArm64I8x16SConvertI16x8:
     case kArm64I8x16Add:
-    case kArm64I8x16AddSaturateS:
+    case kArm64I8x16AddSatS:
     case kArm64I8x16Sub:
-    case kArm64I8x16SubSaturateS:
+    case kArm64I8x16SubSatS:
     case kArm64I8x16Mul:
+    case kArm64I8x16Mla:
+    case kArm64I8x16Mls:
     case kArm64I8x16MinS:
     case kArm64I8x16MaxS:
     case kArm64I8x16Eq:
@@ -279,8 +285,8 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I8x16GtS:
     case kArm64I8x16GeS:
     case kArm64I8x16UConvertI16x8:
-    case kArm64I8x16AddSaturateU:
-    case kArm64I8x16SubSaturateU:
+    case kArm64I8x16AddSatU:
+    case kArm64I8x16SubSatU:
     case kArm64I8x16ShrU:
     case kArm64I8x16MinU:
     case kArm64I8x16MaxU:
@@ -289,6 +295,7 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64I8x16RoundingAverageU:
     case kArm64I8x16Abs:
     case kArm64I8x16BitMask:
+    case kArm64S128Const:
     case kArm64S128Zero:
     case kArm64S128Dup:
     case kArm64S128And:
@@ -317,22 +324,18 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64S8x16TransposeLeft:
     case kArm64S8x16TransposeRight:
     case kArm64S8x16Concat:
-    case kArm64S8x16Swizzle:
-    case kArm64S8x16Shuffle:
+    case kArm64I8x16Swizzle:
+    case kArm64I8x16Shuffle:
     case kArm64S32x2Reverse:
     case kArm64S16x4Reverse:
     case kArm64S16x2Reverse:
     case kArm64S8x8Reverse:
     case kArm64S8x4Reverse:
     case kArm64S8x2Reverse:
-    case kArm64S1x2AnyTrue:
-    case kArm64S1x2AllTrue:
-    case kArm64S1x4AnyTrue:
-    case kArm64S1x4AllTrue:
-    case kArm64S1x8AnyTrue:
-    case kArm64S1x8AllTrue:
-    case kArm64S1x16AnyTrue:
-    case kArm64S1x16AllTrue:
+    case kArm64V128AnyTrue:
+    case kArm64V32x4AllTrue:
+    case kArm64V16x8AllTrue:
+    case kArm64V8x16AllTrue:
     case kArm64TestAndBranch32:
     case kArm64TestAndBranch:
     case kArm64CompareAndBranch32:
@@ -353,16 +356,15 @@ int InstructionScheduler::GetTargetInstructionFlags(
     case kArm64LdrDecompressTaggedPointer:
     case kArm64LdrDecompressAnyTagged:
     case kArm64Peek:
-    case kArm64S8x16LoadSplat:
-    case kArm64S16x8LoadSplat:
-    case kArm64S32x4LoadSplat:
-    case kArm64S64x2LoadSplat:
-    case kArm64I16x8Load8x8S:
-    case kArm64I16x8Load8x8U:
-    case kArm64I32x4Load16x4S:
-    case kArm64I32x4Load16x4U:
-    case kArm64I64x2Load32x2S:
-    case kArm64I64x2Load32x2U:
+    case kArm64LoadSplat:
+    case kArm64S128Load8x8S:
+    case kArm64S128Load8x8U:
+    case kArm64S128Load16x4S:
+    case kArm64S128Load16x4U:
+    case kArm64S128Load32x2S:
+    case kArm64S128Load32x2U:
+    case kArm64S128Load32Zero:
+    case kArm64S128Load64Zero:
       return kIsLoadOperation;
 
     case kArm64Claim:

@@ -12,7 +12,6 @@
 #include "src/ast/scopes.h"
 #include "src/codegen/compiler.h"
 #include "src/codegen/unoptimized-compilation-info.h"
-#include "src/heap/off-thread-factory-inl.h"
 #include "src/init/bootstrapper.h"
 #include "src/init/setup-isolate.h"
 #include "src/interpreter/bytecode-generator.h"
@@ -42,7 +41,7 @@ class InterpreterCompilationJob final : public UnoptimizedCompilationJob {
   Status FinalizeJobImpl(Handle<SharedFunctionInfo> shared_info,
                          Isolate* isolate) final;
   Status FinalizeJobImpl(Handle<SharedFunctionInfo> shared_info,
-                         OffThreadIsolate* isolate) final;
+                         LocalIsolate* isolate) final;
 
  private:
   BytecodeGenerator* generator() { return &generator_; }
@@ -79,12 +78,21 @@ Interpreter::Interpreter(Isolate* isolate)
 namespace {
 
 int BuiltinIndexFromBytecode(Bytecode bytecode, OperandScale operand_scale) {
-  int index = BytecodeOperands::OperandScaleAsIndex(operand_scale) *
-                  kNumberOfBytecodeHandlers +
-              static_cast<int>(bytecode);
-  int offset = kBytecodeToBuiltinsMapping[index];
-  return offset >= 0 ? Builtins::kFirstBytecodeHandler + offset
-                     : Builtins::kIllegalHandler;
+  int index = static_cast<int>(bytecode);
+  if (operand_scale != OperandScale::kSingle) {
+    // The table contains uint8_t offsets starting at 0 with
+    // kIllegalBytecodeHandlerEncoding for illegal bytecode/scale combinations.
+    uint8_t offset = kWideBytecodeToBuiltinsMapping[index];
+    if (offset == kIllegalBytecodeHandlerEncoding) {
+      return Builtins::kIllegalHandler;
+    } else {
+      index = kNumberOfBytecodeHandlers + offset;
+      if (operand_scale == OperandScale::kQuadruple) {
+        index += kNumberOfWideBytecodeHandlers;
+      }
+    }
+  }
+  return Builtins::kFirstBytecodeHandler + index;
 }
 
 }  // namespace
@@ -99,7 +107,7 @@ Code Interpreter::GetBytecodeHandler(Bytecode bytecode,
 void Interpreter::SetBytecodeHandler(Bytecode bytecode,
                                      OperandScale operand_scale, Code handler) {
   DCHECK(handler.is_off_heap_trampoline());
-  DCHECK(handler.kind() == Code::BYTECODE_HANDLER);
+  DCHECK(handler.kind() == CodeKind::BYTECODE_HANDLER);
   size_t index = GetDispatchTableIndex(bytecode, operand_scale);
   dispatch_table_[index] = handler.InstructionStart();
 }
@@ -152,7 +160,7 @@ InterpreterCompilationJob::InterpreterCompilationJob(
                                 &compilation_info_),
       zone_(allocator, ZONE_NAME),
       compilation_info_(&zone_, parse_info, literal),
-      generator_(&compilation_info_, parse_info->ast_string_constants(),
+      generator_(&zone_, &compilation_info_, parse_info->ast_string_constants(),
                  eager_inner_literals) {}
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::ExecuteJobImpl() {
@@ -191,17 +199,18 @@ void InterpreterCompilationJob::CheckAndPrintBytecodeMismatch(
     std::cerr << "Bytecode mismatch";
 #ifdef OBJECT_PRINT
     std::cerr << " found for function: ";
-    Handle<String> name = parse_info()->function_name()->string();
-    if (name->length() == 0) {
-      std::cerr << "anonymous";
+    MaybeHandle<String> maybe_name = parse_info()->literal()->GetName(isolate);
+    Handle<String> name;
+    if (maybe_name.ToHandle(&name) && name->length() != 0) {
+      name->PrintUC16(std::cerr);
     } else {
-      name->StringPrint(std::cerr);
+      std::cerr << "anonymous";
     }
     Object script_name = script->GetNameOrSourceURL();
     if (script_name.IsString()) {
       std::cerr << " ";
-      String::cast(script_name).StringPrint(std::cerr);
-      std::cerr << ":" << parse_info()->start_position();
+      String::cast(script_name).PrintUC16(std::cerr);
+      std::cerr << ":" << parse_info()->literal()->start_position();
     }
 #endif
     std::cerr << "\nOriginal bytecode:\n";
@@ -224,7 +233,7 @@ InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl(
 }
 
 InterpreterCompilationJob::Status InterpreterCompilationJob::FinalizeJobImpl(
-    Handle<SharedFunctionInfo> shared_info, OffThreadIsolate* isolate) {
+    Handle<SharedFunctionInfo> shared_info, LocalIsolate* isolate) {
   RuntimeCallTimerScope runtimeTimerScope(
       parse_info()->runtime_call_stats(),
       RuntimeCallCounterId::kCompileBackgroundIgnitionFinalization);
@@ -250,7 +259,7 @@ InterpreterCompilationJob::Status InterpreterCompilationJob::DoFinalizeJobImpl(
       SourcePositionTableBuilder::RecordingMode::RECORD_SOURCE_POSITIONS) {
     Handle<ByteArray> source_position_table =
         generator()->FinalizeSourcePositionTable(isolate);
-    bytecodes->set_source_position_table(*source_position_table);
+    bytecodes->set_source_position_table(*source_position_table, kReleaseStore);
   }
 
   if (ShouldPrintBytecode(shared_info)) {
@@ -341,7 +350,7 @@ bool Interpreter::IsDispatchTableInitialized() const {
 }
 
 const char* Interpreter::LookupNameOfBytecodeHandler(const Code code) {
-  if (code.kind() == Code::BYTECODE_HANDLER) {
+  if (code.kind() == CodeKind::BYTECODE_HANDLER) {
     return Builtins::name(code.builtin_index());
   }
   return nullptr;

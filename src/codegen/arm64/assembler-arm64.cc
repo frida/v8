@@ -41,19 +41,66 @@
 namespace v8 {
 namespace internal {
 
+namespace {
+
+#ifdef USE_SIMULATOR
+static unsigned SimulatorFeaturesFromCommandLine() {
+  if (strcmp(FLAG_sim_arm64_optional_features, "none") == 0) {
+    return 0;
+  }
+  if (strcmp(FLAG_sim_arm64_optional_features, "all") == 0) {
+    return (1u << NUMBER_OF_CPU_FEATURES) - 1;
+  }
+  fprintf(
+      stderr,
+      "Error: unrecognised value for --sim-arm64-optional-features ('%s').\n",
+      FLAG_sim_arm64_optional_features);
+  fprintf(stderr,
+          "Supported values are:  none\n"
+          "                       all\n");
+  FATAL("sim-arm64-optional-features");
+}
+#endif  // USE_SIMULATOR
+
+static constexpr unsigned CpuFeaturesFromCompiler() {
+  unsigned features = 0;
+#if defined(__ARM_FEATURE_JCVT)
+  features |= 1u << JSCVT;
+#endif
+  return features;
+}
+
+}  // namespace
+
 // -----------------------------------------------------------------------------
 // CpuFeatures implementation.
 
 void CpuFeatures::ProbeImpl(bool cross_compile) {
-  // AArch64 has no configuration options, no further probing is required.
-  supported_ = 0;
-
   // Only use statically determined features for cross compile (snapshot).
-  if (cross_compile) return;
+  if (cross_compile) {
+    supported_ |= CpuFeaturesFromCompiler();
+    return;
+  }
 
   // We used to probe for coherent cache support, but on older CPUs it
   // causes crashes (crbug.com/524337), and newer CPUs don't even have
   // the feature any more.
+
+#ifdef USE_SIMULATOR
+  supported_ |= SimulatorFeaturesFromCommandLine();
+#else
+  // Probe for additional features at runtime.
+  base::CPU cpu;
+  unsigned runtime = 0;
+  if (cpu.has_jscvt()) {
+    runtime |= 1u << JSCVT;
+  }
+
+  // Use the best of the features found by CPU detection and those inferred from
+  // the build system.
+  supported_ |= CpuFeaturesFromCompiler();
+  supported_ |= runtime;
+#endif  // USE_SIMULATOR
 }
 
 void CpuFeatures::PrintTarget() {}
@@ -140,7 +187,9 @@ bool RelocInfo::IsCodedSpecially() {
 
 bool RelocInfo::IsInConstantPool() {
   Instruction* instr = reinterpret_cast<Instruction*>(pc_);
-  return instr->IsLdrLiteralX();
+  DCHECK_IMPLIES(instr->IsLdrLiteralW(), COMPRESS_POINTERS_BOOL);
+  return instr->IsLdrLiteralX() ||
+         (COMPRESS_POINTERS_BOOL && instr->IsLdrLiteralW());
 }
 
 uint32_t RelocInfo::wasm_call_tag() const {
@@ -323,6 +372,15 @@ void Assembler::AllocateAndInstallRequestedHeapObjects(Isolate* isolate) {
 void Assembler::GetCode(Isolate* isolate, CodeDesc* desc,
                         SafepointTableBuilder* safepoint_table_builder,
                         int handler_table_offset) {
+  // As a crutch to avoid having to add manual Align calls wherever we use a
+  // raw workflow to create Code objects (mostly in tests), add another Align
+  // call here. It does no harm - the end of the Code object is aligned to the
+  // (larger) kCodeAlignment anyways.
+  // TODO(jgruber): Consider moving responsibility for proper alignment to
+  // metadata table builders (safepoint, handler, constant pool, code
+  // comments).
+  DataAlign(Code::kMetadataAlignment);
+
   // Emit constant pool if necessary.
   ForceConstantPoolEmissionWithoutJump();
   DCHECK(constpool_.IsEmpty());
@@ -354,7 +412,9 @@ void Assembler::GetCode(Isolate* isolate, CodeDesc* desc,
 }
 
 void Assembler::Align(int m) {
-  DCHECK(m >= 4 && base::bits::IsPowerOfTwo(m));
+  // If not, the loop below won't terminate.
+  DCHECK(IsAligned(pc_offset(), kInstrSize));
+  DCHECK(m >= kInstrSize && base::bits::IsPowerOfTwo(m));
   while ((pc_offset() & (m - 1)) != 0) {
     nop();
   }
@@ -679,9 +739,6 @@ void Assembler::EndBlockVeneerPool() {
 
 void Assembler::br(const Register& xn) {
   DCHECK(xn.Is64Bits());
-#ifdef V8_TARGET_PTRAUTH
-  Emit(XPACI | Rd(xn));
-#endif
   Emit(BR | Rn(xn));
 }
 
@@ -690,9 +747,6 @@ void Assembler::blr(const Register& xn) {
   // The pattern 'blr xzr' is used as a guard to detect when execution falls
   // through the constant pool. It should not be emitted.
   DCHECK_NE(xn, xzr);
-#ifdef V8_TARGET_PTRAUTH
-  Emit(XPACI | Rd(xn));
-#endif
   Emit(BLR | Rn(xn));
 }
 
@@ -1119,10 +1173,10 @@ void Assembler::cls(const Register& rd, const Register& rn) {
   DataProcessing1Source(rd, rn, CLS);
 }
 
-void Assembler::pacia1716() { Emit(PACIA1716); }
-void Assembler::autia1716() { Emit(AUTIA1716); }
-void Assembler::paciasp() { Emit(PACIASP); }
-void Assembler::autiasp() { Emit(AUTIASP); }
+void Assembler::pacib1716() { Emit(PACIB1716); }
+void Assembler::autib1716() { Emit(AUTIB1716); }
+void Assembler::pacibsp() { Emit(PACIBSP); }
+void Assembler::autibsp() { Emit(AUTIBSP); }
 
 void Assembler::bti(BranchTargetIdentifier id) {
   SystemHint op;
@@ -1140,9 +1194,9 @@ void Assembler::bti(BranchTargetIdentifier id) {
       op = BTI_jc;
       break;
     case BranchTargetIdentifier::kNone:
-    case BranchTargetIdentifier::kPaciasp:
+    case BranchTargetIdentifier::kPacibsp:
       // We always want to generate a BTI instruction here, so disallow
-      // skipping its generation or generating a PACIASP instead.
+      // skipping its generation or generating a PACIBSP instead.
       UNREACHABLE();
   }
   hint(op);
@@ -2718,6 +2772,11 @@ void Assembler::fcvtxn2(const VRegister& vd, const VRegister& vn) {
   Emit(NEON_Q | format | NEON_FCVTXN | Rn(vn) | Rd(vd));
 }
 
+void Assembler::fjcvtzs(const Register& rd, const VRegister& vn) {
+  DCHECK(rd.IsW() && vn.Is1D());
+  Emit(FJCVTZS | Rn(vn) | Rd(rd));
+}
+
 #define NEON_FP2REGMISC_FCVT_LIST(V) \
   V(fcvtnu, NEON_FCVTNU, FCVTNU)     \
   V(fcvtns, NEON_FCVTNS, FCVTNS)     \
@@ -3151,9 +3210,11 @@ void Assembler::movi(const VRegister& vd, const uint64_t imm, Shift shift,
     Emit(q | NEONModImmOp(1) | NEONModifiedImmediate_MOVI |
          ImmNEONabcdefgh(imm8) | NEONCmode(0xE) | Rd(vd));
   } else if (shift == LSL) {
+    DCHECK(is_uint8(imm));
     NEONModifiedImmShiftLsl(vd, static_cast<int>(imm), shift_amount,
                             NEONModifiedImmediate_MOVI);
   } else {
+    DCHECK(is_uint8(imm));
     NEONModifiedImmShiftMsl(vd, static_cast<int>(imm), shift_amount,
                             NEONModifiedImmediate_MOVI);
   }

@@ -12,16 +12,24 @@ include_rules = [
   "+src/heap/embedder-tracing.h",
   "+src/heap/factory.h",
   "+src/heap/factory-inl.h",
+  # TODO(v8:10496): Don't expose so much (through transitive includes) outside
+  # of heap/.
   "+src/heap/heap.h",
   "+src/heap/heap-inl.h",
   "+src/heap/heap-write-barrier-inl.h",
   "+src/heap/heap-write-barrier.h",
+  "+src/heap/local-factory-inl.h",
+  "+src/heap/local-factory.h",
   "+src/heap/local-heap.h",
-  "+src/heap/off-thread-factory-inl.h",
-  "+src/heap/off-thread-factory.h",
+  "+src/heap/local-heap-inl.h",
+  # TODO(v8:10496): Don't expose memory chunk outside of heap/.
+  "+src/heap/memory-chunk.h",
+  "+src/heap/memory-chunk-inl.h",
   "+src/heap/read-only-heap-inl.h",
   "+src/heap/read-only-heap.h",
   "+src/heap/safepoint.h",
+  "+src/heap/base/stack.h",
+  "+src/heap/conservative-stack-visitor.h",
   "-src/inspector",
   "-src/interpreter",
   "+src/interpreter/bytecode-array-accessor.h",
@@ -46,7 +54,8 @@ include_rules = [
   "-src/libplatform",
   "-include/libplatform",
   "+builtins-generated",
-  "+torque-generated"
+  "+torque-generated",
+  "+starboard",
 ]
 
 specific_include_rules = {
@@ -54,5 +63,8 @@ specific_include_rules = {
     "+include/libplatform/libplatform.h",
     "+include/libplatform/v8-tracing.h",
     "+perfetto/tracing.h"
+  ],
+  "builtins-trace\.cc": [
+    "+protos/perfetto",
   ],
 }

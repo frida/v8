@@ -5,6 +5,7 @@
 #include "src/compiler/memory-lowering.h"
 
 #include "src/codegen/interface-descriptors.h"
+#include "src/common/external-pointer.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/linkage.h"
 #include "src/compiler/node-matchers.h"
@@ -51,7 +52,7 @@ MemoryLowering::MemoryLowering(JSGraph* jsgraph, Zone* zone,
                                const char* function_debug_name)
     : isolate_(jsgraph->isolate()),
       zone_(zone),
-      graph_zone_(jsgraph->graph()->zone()),
+      graph_(jsgraph->graph()),
       common_(jsgraph->common()),
       machine_(jsgraph->machine()),
       graph_assembler_(graph_assembler),
@@ -59,6 +60,8 @@ MemoryLowering::MemoryLowering(JSGraph* jsgraph, Zone* zone,
       poisoning_level_(poisoning_level),
       write_barrier_assert_failed_(callback),
       function_debug_name_(function_debug_name) {}
+
+Zone* MemoryLowering::graph_zone() const { return graph()->zone(); }
 
 Reduction MemoryLowering::Reduce(Node* node) {
   switch (node->opcode()) {
@@ -95,6 +98,10 @@ Reduction MemoryLowering::ReduceAllocateRaw(
   DCHECK_EQ(IrOpcode::kAllocateRaw, node->opcode());
   DCHECK_IMPLIES(allocation_folding_ == AllocationFolding::kDoAllocationFolding,
                  state_ptr != nullptr);
+  // Code objects may have a maximum size smaller than kMaxHeapObjectSize due to
+  // guard pages. If we need to support allocating code here we would need to
+  // call MemoryChunkLayout::MaxRegularCodeObjectSize() at runtime.
+  DCHECK_NE(allocation_type, AllocationType::kCode);
   Node* value;
   Node* size = node->InputAt(0);
   Node* effect = node->InputAt(1);
@@ -132,7 +139,7 @@ Reduction MemoryLowering::ReduceAllocateRaw(
   IntPtrMatcher m(size);
   if (m.IsInRange(0, kMaxRegularHeapObjectSize) && FLAG_inline_new &&
       allocation_folding_ == AllocationFolding::kDoAllocationFolding) {
-    intptr_t const object_size = m.Value();
+    intptr_t const object_size = m.ResolvedValue();
     AllocationState const* state = *state_ptr;
     if (state->size() <= kMaxRegularHeapObjectSize - object_size &&
         state->group()->allocation() == allocation_type) {
@@ -225,7 +232,7 @@ Reduction MemoryLowering::ReduceAllocateRaw(
 
       // Start a new allocation group.
       AllocationGroup* group =
-          new (zone()) AllocationGroup(value, allocation_type, size, zone());
+          zone()->New<AllocationGroup>(value, allocation_type, size, zone());
       *state_ptr =
           AllocationState::Open(group, object_size, top, effect, zone());
     }
@@ -274,7 +281,7 @@ Reduction MemoryLowering::ReduceAllocateRaw(
     if (state_ptr) {
       // Create an unfoldable allocation group.
       AllocationGroup* group =
-          new (zone()) AllocationGroup(value, allocation_type, zone());
+          zone()->New<AllocationGroup>(value, allocation_type, zone());
       *state_ptr = AllocationState::Closed(group, effect, zone());
     }
   }
@@ -303,16 +310,71 @@ Reduction MemoryLowering::ReduceLoadElement(Node* node) {
   return Changed(node);
 }
 
+Node* MemoryLowering::DecodeExternalPointer(
+    Node* node, ExternalPointerTag external_pointer_tag) {
+#ifdef V8_HEAP_SANDBOX
+  DCHECK(V8_HEAP_SANDBOX_BOOL);
+  DCHECK(node->opcode() == IrOpcode::kLoad ||
+         node->opcode() == IrOpcode::kPoisonedLoad);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+  __ InitializeEffectControl(effect, control);
+
+  // Clone the load node and put it here.
+  // TODO(turbofan): consider adding GraphAssembler::Clone() suitable for
+  // cloning nodes from arbitrary locaions in effect/control chains.
+  Node* index = __ AddNode(graph()->CloneNode(node));
+
+  // Uncomment this to generate a breakpoint for debugging purposes.
+  // __ DebugBreak();
+
+  // Decode loaded external pointer.
+  STATIC_ASSERT(kExternalPointerSize == kSystemPointerSize);
+  Node* external_pointer_table_address = __ ExternalConstant(
+      ExternalReference::external_pointer_table_address(isolate()));
+  Node* table = __ Load(MachineType::Pointer(), external_pointer_table_address,
+                        Internals::kExternalPointerTableBufferOffset);
+  // TODO(v8:10391, saelo): bounds check if table is not caged
+  Node* offset = __ Int32Mul(index, __ Int32Constant(8));
+  Node* decoded_ptr =
+      __ Load(MachineType::Pointer(), table, __ ChangeUint32ToUint64(offset));
+  if (external_pointer_tag != 0) {
+    Node* tag = __ IntPtrConstant(external_pointer_tag);
+    decoded_ptr = __ WordXor(decoded_ptr, tag);
+  }
+  return decoded_ptr;
+#else
+  return node;
+#endif  // V8_HEAP_SANDBOX
+}
+
 Reduction MemoryLowering::ReduceLoadField(Node* node) {
   DCHECK_EQ(IrOpcode::kLoadField, node->opcode());
   FieldAccess const& access = FieldAccessOf(node->op());
   Node* offset = __ IntPtrConstant(access.offset - access.tag());
   node->InsertInput(graph_zone(), 1, offset);
   MachineType type = access.machine_type;
+  if (V8_HEAP_SANDBOX_BOOL &&
+      access.type.Is(Type::SandboxedExternalPointer())) {
+    // External pointer table indices are 32bit numbers
+    type = MachineType::Uint32();
+  }
   if (NeedsPoisoning(access.load_sensitivity)) {
     NodeProperties::ChangeOp(node, machine()->PoisonedLoad(type));
   } else {
     NodeProperties::ChangeOp(node, machine()->Load(type));
+  }
+  if (V8_HEAP_SANDBOX_BOOL &&
+      access.type.Is(Type::SandboxedExternalPointer())) {
+#ifdef V8_HEAP_SANDBOX
+    ExternalPointerTag tag = access.external_pointer_tag;
+#else
+    ExternalPointerTag tag = kExternalPointerNullTag;
+#endif
+    node = DecodeExternalPointer(node, tag);
+    return Replace(node);
+  } else {
+    DCHECK(!access.type.Is(Type::SandboxedExternalPointer()));
   }
   return Changed(node);
 }
@@ -351,6 +413,10 @@ Reduction MemoryLowering::ReduceStoreField(Node* node,
                                            AllocationState const* state) {
   DCHECK_EQ(IrOpcode::kStoreField, node->opcode());
   FieldAccess const& access = FieldAccessOf(node->op());
+  // External pointer must never be stored by optimized code.
+  DCHECK_IMPLIES(V8_HEAP_SANDBOX_BOOL,
+                 !access.type.Is(Type::ExternalPointer()) &&
+                     !access.type.Is(Type::SandboxedExternalPointer()));
   Node* object = node->InputAt(0);
   Node* value = node->InputAt(1);
   WriteBarrierKind write_barrier_kind = ComputeWriteBarrierKind(

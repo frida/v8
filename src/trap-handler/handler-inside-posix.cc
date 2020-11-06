@@ -43,8 +43,6 @@ namespace v8 {
 namespace internal {
 namespace trap_handler {
 
-#if V8_TRAP_HANDLER_SUPPORTED
-
 bool IsKernelGeneratedSignal(siginfo_t* info) {
   // On macOS, only `info->si_code > 0` is relevant, because macOS leaves
   // si_code at its default of 0 for signals that don’t originate in hardware.
@@ -62,15 +60,15 @@ class SigUnmaskStack {
     pthread_sigmask(SIG_UNBLOCK, &sigs, &old_mask_);
   }
 
-  ~SigUnmaskStack() { pthread_sigmask(SIG_SETMASK, &old_mask_, nullptr); }
-
- private:
-  sigset_t old_mask_;
-
   // We'd normally use DISALLOW_COPY_AND_ASSIGN, but we're avoiding a dependency
   // on base/macros.h
   SigUnmaskStack(const SigUnmaskStack&) = delete;
   void operator=(const SigUnmaskStack&) = delete;
+
+  ~SigUnmaskStack() { pthread_sigmask(SIG_SETMASK, &old_mask_, nullptr); }
+
+ private:
+  sigset_t old_mask_;
 };
 
 bool TryHandleSignal(int signum, siginfo_t* info, void* context) {
@@ -153,8 +151,6 @@ void HandleSignal(int signum, siginfo_t* info, void* context) {
   }
   // TryHandleSignal modifies context to change where we return to.
 }
-
-#endif // V8_TRAP_HANDLER_SUPPORTED
 
 }  // namespace trap_handler
 }  // namespace internal

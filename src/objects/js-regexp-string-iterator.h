@@ -6,12 +6,15 @@
 #define V8_OBJECTS_JS_REGEXP_STRING_ITERATOR_H_
 
 #include "src/objects/js-objects.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
 
 namespace v8 {
 namespace internal {
+
+#include "torque-generated/src/objects/js-regexp-string-iterator-tq.inc"
 
 class JSRegExpStringIterator
     : public TorqueGeneratedJSRegExpStringIterator<JSRegExpStringIterator,
@@ -28,9 +31,7 @@ class JSRegExpStringIterator
 
   DECL_PRINTER(JSRegExpStringIterator)
 
-  static const int kDoneBit = 0;
-  static const int kGlobalBit = 1;
-  static const int kUnicodeBit = 2;
+  DEFINE_TORQUE_GENERATED_JS_REG_EXP_STRING_ITERATOR_FLAGS()
 
   TQ_OBJECT_CONSTRUCTORS(JSRegExpStringIterator)
 };

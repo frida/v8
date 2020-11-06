@@ -24,31 +24,39 @@ class Macro;
 class NamespaceConstant;
 class RuntimeFunction;
 
-#define TORQUE_INSTRUCTION_LIST(V)    \
-  V(PeekInstruction)                  \
-  V(PokeInstruction)                  \
-  V(DeleteRangeInstruction)           \
-  V(PushUninitializedInstruction)     \
-  V(PushBuiltinPointerInstruction)    \
-  V(LoadReferenceInstruction)         \
-  V(StoreReferenceInstruction)        \
-  V(LoadBitFieldInstruction)          \
-  V(StoreBitFieldInstruction)         \
-  V(CallCsaMacroInstruction)          \
-  V(CallIntrinsicInstruction)         \
-  V(NamespaceConstantInstruction)     \
-  V(CallCsaMacroAndBranchInstruction) \
-  V(CallBuiltinInstruction)           \
-  V(CallRuntimeInstruction)           \
-  V(CallBuiltinPointerInstruction)    \
-  V(BranchInstruction)                \
-  V(ConstexprBranchInstruction)       \
-  V(GotoInstruction)                  \
-  V(GotoExternalInstruction)          \
-  V(ReturnInstruction)                \
-  V(PrintConstantStringInstruction)   \
-  V(AbortInstruction)                 \
+// Instructions where all backends generate code the same way.
+#define TORQUE_BACKEND_AGNOSTIC_INSTRUCTION_LIST(V) \
+  V(PeekInstruction)                                \
+  V(PokeInstruction)                                \
+  V(DeleteRangeInstruction)
+
+// Instructions where different backends may generate different code.
+#define TORQUE_BACKEND_DEPENDENT_INSTRUCTION_LIST(V) \
+  V(PushUninitializedInstruction)                    \
+  V(PushBuiltinPointerInstruction)                   \
+  V(LoadReferenceInstruction)                        \
+  V(StoreReferenceInstruction)                       \
+  V(LoadBitFieldInstruction)                         \
+  V(StoreBitFieldInstruction)                        \
+  V(CallCsaMacroInstruction)                         \
+  V(CallIntrinsicInstruction)                        \
+  V(NamespaceConstantInstruction)                    \
+  V(CallCsaMacroAndBranchInstruction)                \
+  V(CallBuiltinInstruction)                          \
+  V(CallRuntimeInstruction)                          \
+  V(CallBuiltinPointerInstruction)                   \
+  V(BranchInstruction)                               \
+  V(ConstexprBranchInstruction)                      \
+  V(GotoInstruction)                                 \
+  V(GotoExternalInstruction)                         \
+  V(ReturnInstruction)                               \
+  V(PrintConstantStringInstruction)                  \
+  V(AbortInstruction)                                \
   V(UnsafeCastInstruction)
+
+#define TORQUE_INSTRUCTION_LIST(V)            \
+  TORQUE_BACKEND_AGNOSTIC_INSTRUCTION_LIST(V) \
+  TORQUE_BACKEND_DEPENDENT_INSTRUCTION_LIST(V)
 
 #define TORQUE_INSTRUCTION_BOILERPLATE()                                  \
   static const InstructionKind kKind;                                     \
@@ -166,11 +174,11 @@ inline std::ostream& operator<<(std::ostream& stream,
                     << loc.GetParameterIndex() << ")";
     case DefinitionLocation::Kind::kPhi:
       return stream << "DefinitionLocation::Phi(" << std::hex
-                    << (uint64_t)loc.GetPhiBlock() << std::dec << ", "
+                    << loc.GetPhiBlock() << std::dec << ", "
                     << loc.GetPhiIndex() << ")";
     case DefinitionLocation::Kind::kInstruction:
       return stream << "DefinitionLocation::Instruction(" << std::hex
-                    << (uint64_t)loc.GetInstruction() << std::dec << ", "
+                    << loc.GetInstruction() << std::dec << ", "
                     << loc.GetInstructionIndex() << ")";
   }
 }
@@ -349,14 +357,13 @@ struct StoreReferenceInstruction : InstructionBase {
 // Pops a bitfield struct; pushes a bitfield value extracted from it.
 struct LoadBitFieldInstruction : InstructionBase {
   TORQUE_INSTRUCTION_BOILERPLATE()
-  LoadBitFieldInstruction(const BitFieldStructType* bit_field_struct_type,
-                          BitField bit_field)
+  LoadBitFieldInstruction(const Type* bit_field_struct_type, BitField bit_field)
       : bit_field_struct_type(bit_field_struct_type),
         bit_field(std::move(bit_field)) {}
 
   DefinitionLocation GetValueDefinition() const;
 
-  const BitFieldStructType* bit_field_struct_type;
+  const Type* bit_field_struct_type;
   BitField bit_field;
 };
 
@@ -364,15 +371,18 @@ struct LoadBitFieldInstruction : InstructionBase {
 // containing the updated value.
 struct StoreBitFieldInstruction : InstructionBase {
   TORQUE_INSTRUCTION_BOILERPLATE()
-  StoreBitFieldInstruction(const BitFieldStructType* bit_field_struct_type,
-                           BitField bit_field)
+  StoreBitFieldInstruction(const Type* bit_field_struct_type,
+                           BitField bit_field, bool starts_as_zero)
       : bit_field_struct_type(bit_field_struct_type),
-        bit_field(std::move(bit_field)) {}
+        bit_field(std::move(bit_field)),
+        starts_as_zero(starts_as_zero) {}
 
   DefinitionLocation GetValueDefinition() const;
 
-  const BitFieldStructType* bit_field_struct_type;
+  const Type* bit_field_struct_type;
   BitField bit_field;
+  // Allows skipping the mask step if we know the starting value is zero.
+  bool starts_as_zero;
 };
 
 struct CallIntrinsicInstruction : InstructionBase {

@@ -4,12 +4,12 @@
 
 #include <stdlib.h>
 
-#include "src/init/v8.h"
-
 #include "src/heap/heap-inl.h"
 #include "src/heap/heap.h"
 #include "src/heap/invalidated-slots-inl.h"
 #include "src/heap/invalidated-slots.h"
+#include "src/heap/memory-chunk.h"
+#include "src/init/v8.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/heap/heap-tester.h"
 #include "test/cctest/heap/heap-utils.h"
@@ -48,6 +48,7 @@ Page* HeapTester::AllocateByteArraysOnPage(
 }
 
 HEAP_TEST(InvalidatedSlotsNoInvalidatedRanges) {
+  FLAG_stress_concurrent_allocation = false;  // For AllocateByteArraysOnPage.
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
   std::vector<ByteArray> byte_arrays;
@@ -63,6 +64,7 @@ HEAP_TEST(InvalidatedSlotsNoInvalidatedRanges) {
 }
 
 HEAP_TEST(InvalidatedSlotsSomeInvalidatedRanges) {
+  FLAG_stress_concurrent_allocation = false;  // For AllocateByteArraysOnPage.
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
   std::vector<ByteArray> byte_arrays;
@@ -87,6 +89,7 @@ HEAP_TEST(InvalidatedSlotsSomeInvalidatedRanges) {
 }
 
 HEAP_TEST(InvalidatedSlotsAllInvalidatedRanges) {
+  FLAG_stress_concurrent_allocation = false;  // For AllocateByteArraysOnPage.
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
   std::vector<ByteArray> byte_arrays;
@@ -156,6 +159,7 @@ HEAP_TEST(InvalidatedSlotsEvacuationCandidate) {
 }
 
 HEAP_TEST(InvalidatedSlotsResetObjectRegression) {
+  FLAG_stress_concurrent_allocation = false;  // For AllocateByteArraysOnPage.
   CcTest::InitializeVM();
   Heap* heap = CcTest::heap();
   std::vector<ByteArray> byte_arrays;

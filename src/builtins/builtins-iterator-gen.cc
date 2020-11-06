@@ -133,59 +133,34 @@ TNode<Object> IteratorBuiltinsAssembler::IteratorValue(
   return var_value.value();
 }
 
-void IteratorBuiltinsAssembler::IteratorCloseOnException(
-    TNode<Context> context, const IteratorRecord& iterator, Label* if_exception,
-    TVariable<Object>* exception) {
-  // Perform ES #sec-iteratorclose when an exception occurs. This simpler
-  // algorithm does not include redundant steps which are never reachable from
-  // the spec IteratorClose algorithm.
-  DCHECK((if_exception != nullptr && exception != nullptr));
-  CSA_ASSERT(this, IsNotTheHole(exception->value()));
-  CSA_ASSERT(this, IsJSReceiver(iterator.object));
-
-  // Let return be ? GetMethod(iterator, "return").
-  TNode<Object> method;
-  {
-    compiler::ScopedExceptionHandler handler(this, if_exception, exception);
-    method = GetProperty(context, iterator.object, factory()->return_string());
-  }
-
-  // If return is undefined, return Completion(completion).
-  GotoIf(Word32Or(IsUndefined(method), IsNull(method)), if_exception);
-
-  {
-    // Let innerResult be Call(return, iterator, « »).
-    // If an exception occurs, the original exception remains bound.
-    compiler::ScopedExceptionHandler handler(this, if_exception, nullptr);
-    Call(context, method, iterator.object);
-  }
-
-  // (If completion.[[Type]] is throw) return Completion(completion).
-  Goto(if_exception);
-}
-
-void IteratorBuiltinsAssembler::IteratorCloseOnException(
-    TNode<Context> context, const IteratorRecord& iterator,
-    TNode<Object> exception) {
-  Label rethrow(this, Label::kDeferred);
-  TVARIABLE(Object, exception_variable, exception);
-  IteratorCloseOnException(context, iterator, &rethrow, &exception_variable);
-
-  BIND(&rethrow);
-  CallRuntime(Runtime::kReThrow, context, exception_variable.value());
-  Unreachable();
-}
-
 TNode<JSArray> IteratorBuiltinsAssembler::IterableToList(
     TNode<Context> context, TNode<Object> iterable, TNode<Object> iterator_fn) {
+  GrowableFixedArray values(state());
+  FillFixedArrayFromIterable(context, iterable, iterator_fn, &values);
+  return values.ToJSArray(context);
+}
+
+TNode<FixedArray> IteratorBuiltinsAssembler::IterableToFixedArray(
+    TNode<Context> context, TNode<Object> iterable, TNode<Object> iterator_fn) {
+  GrowableFixedArray values(state());
+  FillFixedArrayFromIterable(context, iterable, iterator_fn, &values);
+  TNode<FixedArray> new_array = values.ToFixedArray();
+  return new_array;
+}
+
+void IteratorBuiltinsAssembler::FillFixedArrayFromIterable(
+    TNode<Context> context, TNode<Object> iterable, TNode<Object> iterator_fn,
+    GrowableFixedArray* values) {
   // 1. Let iteratorRecord be ? GetIterator(items, method).
   IteratorRecord iterator_record = GetIterator(context, iterable, iterator_fn);
 
   // 2. Let values be a new empty List.
-  GrowableFixedArray values(state());
 
-  Label loop_start(
-      this, {values.var_array(), values.var_length(), values.var_capacity()}),
+  // The GrowableFixedArray has already been created. It's ok if we do this step
+  // out of order, since creating an empty List is not observable.
+
+  Label loop_start(this, {values->var_array(), values->var_length(),
+                          values->var_capacity()}),
       done(this);
   Goto(&loop_start);
   // 3. Let next be true.
@@ -198,47 +173,41 @@ TNode<JSArray> IteratorBuiltinsAssembler::IterableToList(
     //   i. Let nextValue be ? IteratorValue(next).
     TNode<Object> next_value = IteratorValue(context, next);
     //   ii. Append nextValue to the end of the List values.
-    values.Push(next_value);
+    values->Push(next_value);
     Goto(&loop_start);
   }
 
   BIND(&done);
-  return values.ToJSArray(context);
 }
 
 TF_BUILTIN(IterableToList, IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> iterable = CAST(Parameter(Descriptor::kIterable));
-  TNode<Object> iterator_fn = CAST(Parameter(Descriptor::kIteratorFn));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
+  auto iterator_fn = Parameter<Object>(Descriptor::kIteratorFn);
 
   Return(IterableToList(context, iterable, iterator_fn));
 }
 
+TF_BUILTIN(IterableToFixedArray, IteratorBuiltinsAssembler) {
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
+  auto iterator_fn = Parameter<Object>(Descriptor::kIteratorFn);
+
+  Return(IterableToFixedArray(context, iterable, iterator_fn));
+}
+
 TF_BUILTIN(IterableToFixedArrayForWasm, IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> iterable = CAST(Parameter(Descriptor::kIterable));
-  TNode<Smi> expected_length = CAST(Parameter(Descriptor::kExpectedLength));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
+  auto expected_length = Parameter<Smi>(Descriptor::kExpectedLength);
 
   TNode<Object> iterator_fn = GetIteratorMethod(context, iterable);
-
-  IteratorRecord iterator_record = GetIterator(context, iterable, iterator_fn);
-
   GrowableFixedArray values(state());
 
-  Label loop_start(
-      this, {values.var_array(), values.var_length(), values.var_capacity()}),
-      compare_length(this), done(this);
-  Goto(&loop_start);
-  BIND(&loop_start);
-  {
-    TNode<JSReceiver> next =
-        IteratorStep(context, iterator_record, &compare_length);
-    TNode<Object> next_value = IteratorValue(context, next);
-    values.Push(next_value);
-    Goto(&loop_start);
-  }
+  Label done(this);
 
-  BIND(&compare_length);
+  FillFixedArrayFromIterable(context, iterable, iterator_fn, &values);
+
   GotoIf(WordEqual(SmiUntag(expected_length), values.var_length()->value()),
          &done);
   Return(CallRuntime(
@@ -299,7 +268,9 @@ TNode<JSArray> IteratorBuiltinsAssembler::StringListFromIterable(
 
       // 2. Return ? IteratorClose(iteratorRecord, error).
       BIND(&if_exception);
-      IteratorCloseOnException(context, iterator_record, var_exception.value());
+      IteratorCloseOnException(context, iterator_record);
+      CallRuntime(Runtime::kReThrow, context, var_exception.value());
+      Unreachable();
     }
   }
 
@@ -309,8 +280,8 @@ TNode<JSArray> IteratorBuiltinsAssembler::StringListFromIterable(
 }
 
 TF_BUILTIN(StringListFromIterable, IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> iterable = CAST(Parameter(Descriptor::kIterable));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
 
   Return(StringListFromIterable(context, iterable));
 }
@@ -325,9 +296,9 @@ TF_BUILTIN(StringListFromIterable, IteratorBuiltinsAssembler) {
 // prototype has no elements). To maintain the correct behavior for holey
 // arrays, use the builtins IterableToList or IterableToListWithSymbolLookup.
 TF_BUILTIN(IterableToListMayPreserveHoles, IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> iterable = CAST(Parameter(Descriptor::kIterable));
-  TNode<Object> iterator_fn = CAST(Parameter(Descriptor::kIteratorFn));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
+  auto iterator_fn = Parameter<Object>(Descriptor::kIteratorFn);
 
   Label slow_path(this);
 
@@ -418,8 +389,8 @@ TNode<JSArray> IteratorBuiltinsAssembler::FastIterableToList(
 //   iterator is not partially consumed. To be spec-compliant, after spreading
 //   the iterator is set to be exhausted.
 TF_BUILTIN(IterableToListWithSymbolLookup, IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> iterable = CAST(Parameter(Descriptor::kIterable));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
 
   Label slow_path(this);
 
@@ -438,18 +409,30 @@ TF_BUILTIN(IterableToListWithSymbolLookup, IteratorBuiltinsAssembler) {
 
 TF_BUILTIN(GetIteratorWithFeedbackLazyDeoptContinuation,
            IteratorBuiltinsAssembler) {
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
   // TODO(v8:10047): Use TaggedIndex here once TurboFan supports it.
-  TNode<Smi> call_slot_smi = CAST(Parameter(Descriptor::kCallSlot));
+  auto call_slot_smi = Parameter<Smi>(Descriptor::kCallSlot);
   TNode<TaggedIndex> call_slot = SmiToTaggedIndex(call_slot_smi);
-  TNode<FeedbackVector> feedback = CAST(Parameter(Descriptor::kFeedback));
-  TNode<Object> iterator_method = CAST(Parameter(Descriptor::kResult));
+  auto feedback = Parameter<FeedbackVector>(Descriptor::kFeedback);
+  auto iterator_method = Parameter<Object>(Descriptor::kResult);
 
   TNode<Object> result =
       CallBuiltin(Builtins::kCallIteratorWithFeedback, context, receiver,
                   iterator_method, call_slot, feedback);
   Return(result);
+}
+
+// This builtin creates a FixedArray based on an Iterable and doesn't have a
+// fast path for anything.
+TF_BUILTIN(IterableToFixedArrayWithSymbolLookupSlow,
+           IteratorBuiltinsAssembler) {
+  auto context = Parameter<Context>(Descriptor::kContext);
+  auto iterable = Parameter<Object>(Descriptor::kIterable);
+
+  TNode<Object> iterator_fn = GetIteratorMethod(context, iterable);
+  TailCallBuiltin(Builtins::kIterableToFixedArray, context, iterable,
+                  iterator_fn);
 }
 
 }  // namespace internal

@@ -26,6 +26,10 @@
 #include "src/base/logging.h"
 #include "src/base/platform/platform.h"
 
+#if V8_OS_STARBOARD
+#include "starboard/time.h"
+#endif
+
 namespace {
 
 #if V8_OS_MACOSX
@@ -125,12 +129,6 @@ V8_INLINE bool IsHighResolutionTimer(clockid_t clk_id) {
 }
 
 #elif V8_OS_WIN
-V8_INLINE bool IsQPCReliable() {
-  v8::base::CPU cpu;
-  // On Athlon X2 CPUs (e.g. model 15) QueryPerformanceCounter is unreliable.
-  return strcmp(cpu.vendor(), "AuthenticAMD") == 0 && cpu.family() == 15;
-}
-
 // Returns the current value of the performance counter.
 V8_INLINE uint64_t QPCNowRaw() {
   LARGE_INTEGER perf_counter_now = {};
@@ -333,7 +331,7 @@ class Clock final {
 
 namespace {
 DEFINE_LAZY_LEAKY_OBJECT_GETTER(Clock, GetClock)
-}
+}  // namespace
 
 Time Time::Now() { return GetClock()->Now(); }
 
@@ -455,7 +453,13 @@ struct timeval Time::ToTimeval() const {
   return tv;
 }
 
-#endif  // V8_OS_WIN
+#elif V8_OS_STARBOARD
+
+Time Time::Now() { return Time(SbTimeToPosix(SbTimeGetNow())); }
+
+Time Time::NowFromSystemTime() { return Now(); }
+
+#endif  // V8_OS_STARBOARD
 
 // static
 TimeTicks TimeTicks::HighResolutionNow() {
@@ -645,11 +649,6 @@ TimeDelta QPCValueToTimeDelta(LONGLONG qpc_value) {
 
 TimeTicks QPCNow() { return TimeTicks() + QPCValueToTimeDelta(QPCNowRaw()); }
 
-bool IsBuggyAthlon(const CPU& cpu) {
-  // On Athlon X2 CPUs (e.g. model 15) QueryPerformanceCounter is unreliable.
-  return strcmp(cpu.vendor(), "AuthenticAMD") == 0 && cpu.family() == 15;
-}
-
 void InitializeTimeTicksNowFunctionPointer() {
   LARGE_INTEGER ticks_per_sec = {};
   if (!QueryPerformanceFrequency(&ticks_per_sec)) ticks_per_sec.QuadPart = 0;
@@ -667,8 +666,7 @@ void InitializeTimeTicksNowFunctionPointer() {
   // ~72% of users fall within this category.
   TimeTicksNowFunction now_function;
   CPU cpu;
-  if (ticks_per_sec.QuadPart <= 0 || !cpu.has_non_stop_time_stamp_counter() ||
-      IsBuggyAthlon(cpu)) {
+  if (ticks_per_sec.QuadPart <= 0 || !cpu.has_non_stop_time_stamp_counter()) {
     now_function = &RolloverProtectedNow;
   } else {
     now_function = &QPCNow;
@@ -729,6 +727,8 @@ TimeTicks TimeTicks::Now() {
   ticks = (gethrtime() / Time::kNanosecondsPerMicrosecond);
 #elif V8_OS_POSIX
   ticks = ClockNow(CLOCK_MONOTONIC);
+#elif V8_OS_STARBOARD
+  ticks = SbTimeGetMonotonicNow();
 #else
 #error platform does not implement TimeTicks::HighResolutionNow.
 #endif  // V8_OS_MACOSX
@@ -752,7 +752,15 @@ bool TimeTicks::IsHighResolution() {
 
 
 bool ThreadTicks::IsSupported() {
-#if (defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
+#if V8_OS_STARBOARD
+#if SB_API_VERSION >= 12
+  return SbTimeIsTimeThreadNowSupported();
+#elif SB_HAS(TIME_THREAD_NOW)
+  return true;
+#else
+  return false;
+#endif
+#elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
     defined(V8_OS_MACOSX) || defined(V8_OS_ANDROID) || defined(V8_OS_SOLARIS)
   return true;
 #elif defined(V8_OS_WIN)
@@ -764,7 +772,17 @@ bool ThreadTicks::IsSupported() {
 
 
 ThreadTicks ThreadTicks::Now() {
-#if V8_OS_MACOSX
+#if V8_OS_STARBOARD
+#if SB_API_VERSION >= 12
+  if (SbTimeIsTimeThreadNowSupported())
+    return ThreadTicks(SbTimeGetMonotonicThreadNow());
+  UNREACHABLE();
+#elif SB_HAS(TIME_THREAD_NOW)
+  return ThreadTicks(SbTimeGetMonotonicThreadNow());
+#else
+  UNREACHABLE();
+#endif
+#elif V8_OS_MACOSX
   return ThreadTicks(ComputeThreadTicks());
 #elif(defined(_POSIX_THREAD_CPUTIME) && (_POSIX_THREAD_CPUTIME >= 0)) || \
   defined(V8_OS_ANDROID)
@@ -780,31 +798,12 @@ ThreadTicks ThreadTicks::Now() {
 
 
 #if V8_OS_WIN
-typedef BOOL (WINAPI *QueryThreadCycleTimeImpl)(HANDLE thread_handle, PULONG64 cycle_time);
-
-class QueryThreadCycleApi final {
- public:
-  QueryThreadCycleApi() : impl(reinterpret_cast<QueryThreadCycleTimeImpl>(
-    GetProcAddress(GetModuleHandle(TEXT("kernel32.dll")), "QueryThreadCycleTime")))
-  {}
-
-  bool IsAvailable() const { return impl != NULL; }
-
-  QueryThreadCycleTimeImpl impl;
-};
-
-
-static LazyStaticInstance<QueryThreadCycleApi, DefaultConstructTrait<QueryThreadCycleApi>,
-                          ThreadSafeInitOnceTrait>::type query_thread_cycle_api =
-    LAZY_STATIC_INSTANCE_INITIALIZER;
-
-
 ThreadTicks ThreadTicks::GetForThread(const HANDLE& thread_handle) {
   DCHECK(IsSupported());
 
   // Get the number of TSC ticks used by the current thread.
   ULONG64 thread_cycle_time = 0;
-  query_thread_cycle_api.Pointer()->impl(thread_handle, &thread_cycle_time);
+  ::QueryThreadCycleTime(thread_handle, &thread_cycle_time);
 
   // Get the frequency of the TSC.
   double tsc_ticks_per_second = TSCTicksPerSecond();
@@ -819,9 +818,7 @@ ThreadTicks ThreadTicks::GetForThread(const HANDLE& thread_handle) {
 
 // static
 bool ThreadTicks::IsSupportedWin() {
-  static bool is_supported = query_thread_cycle_api.Pointer()->IsAvailable() &&
-                             base::CPU().has_non_stop_time_stamp_counter() &&
-                             !IsQPCReliable();
+  static bool is_supported = base::CPU().has_non_stop_time_stamp_counter();
   return is_supported;
 }
 

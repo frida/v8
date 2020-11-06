@@ -7,6 +7,7 @@
 
 #include "src/objects/module.h"
 #include "src/objects/promise.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -15,6 +16,8 @@ namespace v8 {
 namespace internal {
 
 class UnorderedModuleSet;
+
+#include "torque-generated/src/objects/source-text-module-tq.inc"
 
 // The runtime representation of an ECMAScript Source Text Module Record.
 // https://tc39.github.io/ecma262/#sec-source-text-module-records
@@ -59,6 +62,11 @@ class SourceTextModule
   static Handle<JSModuleNamespace> GetModuleNamespace(
       Isolate* isolate, Handle<SourceTextModule> module, int module_request);
 
+  // Get the import.meta object of [module].  If it doesn't exist yet, it is
+  // created and passed to the embedder callback for initialization.
+  V8_EXPORT_PRIVATE static MaybeHandle<JSObject> GetImportMeta(
+      Isolate* isolate, Handle<SourceTextModule> module);
+
   using BodyDescriptor =
       SubclassBodyDescriptor<Module::BodyDescriptor,
                              FixedBodyDescriptor<kCodeOffset, kSize, kSize>>;
@@ -86,8 +94,7 @@ class SourceTextModule
   inline void DecrementPendingAsyncDependencies();
 
   // Bits for flags.
-  static const int kAsyncBit = 0;
-  static const int kAsyncEvaluatingBit = 1;
+  DEFINE_TORQUE_GENERATED_SOURCE_TEXT_MODULE_FLAGS()
 
   // async_evaluating, top_level_capability, pending_async_dependencies, and
   // async_parent_modules are used exclusively during evaluation of async

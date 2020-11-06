@@ -18,16 +18,15 @@
 namespace v8 {
 namespace internal {
 
-OBJECT_CONSTRUCTORS_IMPL(JSDateTimeFormat, JSObject)
+#include "torque-generated/src/objects/js-date-time-format-tq-inl.inc"
 
-ACCESSORS(JSDateTimeFormat, locale, String, kLocaleOffset)
+TQ_OBJECT_CONSTRUCTORS_IMPL(JSDateTimeFormat)
+
 ACCESSORS(JSDateTimeFormat, icu_locale, Managed<icu::Locale>, kIcuLocaleOffset)
 ACCESSORS(JSDateTimeFormat, icu_simple_date_format,
           Managed<icu::SimpleDateFormat>, kIcuSimpleDateFormatOffset)
 ACCESSORS(JSDateTimeFormat, icu_date_interval_format,
           Managed<icu::DateIntervalFormat>, kIcuDateIntervalFormatOffset)
-ACCESSORS(JSDateTimeFormat, bound_format, Object, kBoundFormatOffset)
-SMI_ACCESSORS(JSDateTimeFormat, flags, kFlagsOffset)
 
 inline void JSDateTimeFormat::set_hour_cycle(HourCycle hour_cycle) {
   int hints = flags();
@@ -60,8 +59,6 @@ inline void JSDateTimeFormat::set_time_style(
 inline JSDateTimeFormat::DateTimeStyle JSDateTimeFormat::time_style() const {
   return TimeStyleBits::decode(flags());
 }
-
-CAST_ACCESSOR(JSDateTimeFormat)
 
 }  // namespace internal
 }  // namespace v8

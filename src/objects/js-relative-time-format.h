@@ -24,12 +24,16 @@
 
 namespace U_ICU_NAMESPACE {
 class RelativeDateTimeFormatter;
-}
+}  // namespace U_ICU_NAMESPACE
 
 namespace v8 {
 namespace internal {
 
-class JSRelativeTimeFormat : public JSObject {
+#include "torque-generated/src/objects/js-relative-time-format-tq.inc"
+
+class JSRelativeTimeFormat
+    : public TorqueGeneratedJSRelativeTimeFormat<JSRelativeTimeFormat,
+                                                 JSObject> {
  public:
   // Creates relative time format object with properties derived from input
   // locales and options.
@@ -54,12 +58,7 @@ class JSRelativeTimeFormat : public JSObject {
 
   V8_EXPORT_PRIVATE static const std::set<std::string>& GetAvailableLocales();
 
-  DECL_CAST(JSRelativeTimeFormat)
-
   // RelativeTimeFormat accessors.
-  DECL_ACCESSORS(locale, String)
-  DECL_ACCESSORS(numberingSystem, String)
-
   DECL_ACCESSORS(icu_formatter, Managed<icu::RelativeDateTimeFormatter>)
 
   // Numeric: identifying whether numerical descriptions are always used, or
@@ -81,18 +80,9 @@ class JSRelativeTimeFormat : public JSObject {
   STATIC_ASSERT(Numeric::AUTO <= NumericBit::kMax);
   STATIC_ASSERT(Numeric::ALWAYS <= NumericBit::kMax);
 
-  // [flags] Bit field containing various flags about the function.
-  DECL_INT_ACCESSORS(flags)
-
   DECL_PRINTER(JSRelativeTimeFormat)
-  DECL_VERIFIER(JSRelativeTimeFormat)
 
-  // Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JS_RELATIVE_TIME_FORMAT_FIELDS)
-
- private:
-  OBJECT_CONSTRUCTORS(JSRelativeTimeFormat, JSObject);
+  TQ_OBJECT_CONSTRUCTORS(JSRelativeTimeFormat)
 };
 
 }  // namespace internal

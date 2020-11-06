@@ -19,21 +19,21 @@ namespace {
 struct MockTask : public Task {
   // See issue v8:8185
   ~MockTask() /* override */ { Die(); }
-  MOCK_METHOD0(Run, void());
-  MOCK_METHOD0(Die, void());
+  MOCK_METHOD(void, Run, (), (override));
+  MOCK_METHOD(void, Die, ());
 };
 
 struct MockIdleTask : public IdleTask {
   // See issue v8:8185
   ~MockIdleTask() /* override */ { Die(); }
-  MOCK_METHOD1(Run, void(double deadline_in_seconds));
-  MOCK_METHOD0(Die, void());
+  MOCK_METHOD(void, Run, (double deadline_in_seconds), (override));
+  MOCK_METHOD(void, Die, ());
 };
 
 class DefaultPlatformWithMockTime : public DefaultPlatform {
  public:
-  DefaultPlatformWithMockTime()
-      : DefaultPlatform(IdleTaskSupport::kEnabled, nullptr) {
+  explicit DefaultPlatformWithMockTime(int thread_pool_size = 0)
+      : DefaultPlatform(thread_pool_size, IdleTaskSupport::kEnabled, nullptr) {
     mock_time_ = 0.0;
     SetTimeFunctionForTesting([]() { return mock_time_; });
   }
@@ -225,7 +225,7 @@ class TestBackgroundTask : public Task {
       : sem_(sem), executed_(executed) {}
 
   ~TestBackgroundTask() override { Die(); }
-  MOCK_METHOD0(Die, void());
+  MOCK_METHOD(void, Die, ());
 
   void Run() override {
     *executed_ = true;
@@ -240,8 +240,7 @@ class TestBackgroundTask : public Task {
 }  // namespace
 
 TEST(CustomDefaultPlatformTest, RunBackgroundTask) {
-  DefaultPlatform platform;
-  platform.SetThreadPoolSize(1);
+  DefaultPlatform platform(1);
 
   base::Semaphore sem(0);
   bool task_executed = false;
@@ -256,12 +255,11 @@ TEST(CustomDefaultPlatformTest, RunBackgroundTask) {
 TEST(CustomDefaultPlatformTest, PostForegroundTaskAfterPlatformTermination) {
   std::shared_ptr<TaskRunner> foreground_taskrunner;
   {
-    DefaultPlatformWithMockTime platform;
+    DefaultPlatformWithMockTime platform(1);
 
     int dummy;
     Isolate* isolate = reinterpret_cast<Isolate*>(&dummy);
 
-    platform.SetThreadPoolSize(1);
     foreground_taskrunner = platform.GetForegroundTaskRunner(isolate);
   }
   // It should still be possible to post foreground tasks, even when the

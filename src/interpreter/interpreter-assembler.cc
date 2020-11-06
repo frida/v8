@@ -30,19 +30,19 @@ InterpreterAssembler::InterpreterAssembler(CodeAssemblerState* state,
       bytecode_(bytecode),
       operand_scale_(operand_scale),
       TVARIABLE_CONSTRUCTOR(interpreted_frame_pointer_),
-      TVARIABLE_CONSTRUCTOR(
-          bytecode_array_,
-          CAST(Parameter(InterpreterDispatchDescriptor::kBytecodeArray))),
+      TVARIABLE_CONSTRUCTOR(bytecode_array_,
+                            Parameter<BytecodeArray>(
+                                InterpreterDispatchDescriptor::kBytecodeArray)),
       TVARIABLE_CONSTRUCTOR(
           bytecode_offset_,
-          UncheckedCast<IntPtrT>(
-              Parameter(InterpreterDispatchDescriptor::kBytecodeOffset))),
-      TVARIABLE_CONSTRUCTOR(
-          dispatch_table_, UncheckedCast<ExternalReference>(Parameter(
-                               InterpreterDispatchDescriptor::kDispatchTable))),
+          UncheckedParameter<IntPtrT>(
+              InterpreterDispatchDescriptor::kBytecodeOffset)),
+      TVARIABLE_CONSTRUCTOR(dispatch_table_,
+                            UncheckedParameter<ExternalReference>(
+                                InterpreterDispatchDescriptor::kDispatchTable)),
       TVARIABLE_CONSTRUCTOR(
           accumulator_,
-          CAST(Parameter(InterpreterDispatchDescriptor::kAccumulator))),
+          Parameter<Object>(InterpreterDispatchDescriptor::kAccumulator)),
       accumulator_use_(AccumulatorUse::kNone),
       made_call_(false),
       reloaded_frame_ptr_(false),
@@ -83,7 +83,8 @@ TNode<RawPtrT> InterpreterAssembler::GetInterpretedFramePointer() {
 TNode<IntPtrT> InterpreterAssembler::BytecodeOffset() {
   if (Bytecodes::MakesCallAlongCriticalPath(bytecode_) && made_call_ &&
       (bytecode_offset_.value() ==
-       Parameter(InterpreterDispatchDescriptor::kBytecodeOffset))) {
+       UncheckedParameter<IntPtrT>(
+           InterpreterDispatchDescriptor::kBytecodeOffset))) {
     bytecode_offset_ = ReloadBytecodeOffset();
   }
   return bytecode_offset_.value();
@@ -140,7 +141,8 @@ TNode<BytecodeArray> InterpreterAssembler::BytecodeArrayTaggedPointer() {
 TNode<ExternalReference> InterpreterAssembler::DispatchTablePointer() {
   if (Bytecodes::MakesCallAlongCriticalPath(bytecode_) && made_call_ &&
       (dispatch_table_.value() ==
-       Parameter(InterpreterDispatchDescriptor::kDispatchTable))) {
+       UncheckedParameter<ExternalReference>(
+           InterpreterDispatchDescriptor::kDispatchTable))) {
     dispatch_table_ = ExternalConstant(
         ExternalReference::interpreter_dispatch_table_address(isolate()));
   }
@@ -683,8 +685,9 @@ TNode<Uint32T> InterpreterAssembler::BytecodeOperandIntrinsicId(
 TNode<Object> InterpreterAssembler::LoadConstantPoolEntry(TNode<WordT> index) {
   TNode<FixedArray> constant_pool = CAST(LoadObjectField(
       BytecodeArrayTaggedPointer(), BytecodeArray::kConstantPoolOffset));
-  return UnsafeLoadFixedArrayElement(
-      constant_pool, UncheckedCast<IntPtrT>(index), LoadSensitivity::kCritical);
+  return UnsafeLoadFixedArrayElement(constant_pool,
+                                     UncheckedCast<IntPtrT>(index), 0,
+                                     LoadSensitivity::kCritical);
 }
 
 TNode<IntPtrT> InterpreterAssembler::LoadAndUntagConstantPoolEntry(
@@ -771,15 +774,9 @@ void InterpreterAssembler::CallJSAndDispatch(TNode<Object> function,
 
   if (receiver_mode == ConvertReceiverMode::kNullOrUndefined) {
     // The first argument parameter (the receiver) is implied to be undefined.
-#ifdef V8_REVERSE_JSARGS
     TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
                                      context, function, arg_count, args...,
                                      UndefinedConstant());
-#else
-    TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
-                                     context, function, arg_count,
-                                     UndefinedConstant(), args...);
-#endif
   } else {
     TailCallStubThenBytecodeDispatch(callable.descriptor(), code_target,
                                      context, function, arg_count, args...);
@@ -832,149 +829,24 @@ TNode<Object> InterpreterAssembler::Construct(
   DCHECK(Bytecodes::MakesCallAlongCriticalPath(bytecode_));
   TVARIABLE(Object, var_result);
   TVARIABLE(AllocationSite, var_site);
-  Label extra_checks(this, Label::kDeferred), return_result(this, &var_result),
-      construct(this), construct_array(this, &var_site);
-  GotoIf(IsUndefined(maybe_feedback_vector), &construct);
+  Label return_result(this), construct_generic(this),
+      construct_array(this, &var_site);
 
-  TNode<FeedbackVector> feedback_vector = CAST(maybe_feedback_vector);
+  CollectConstructFeedback(context, target, new_target, maybe_feedback_vector,
+                           slot_id, &construct_generic, &construct_array,
+                           &var_site);
 
-  // Increment the call count.
-  IncrementCallCount(feedback_vector, slot_id);
-
-  // Check if we have monomorphic {new_target} feedback already.
-  TNode<MaybeObject> feedback =
-      LoadFeedbackVectorSlot(feedback_vector, slot_id);
-  Branch(IsWeakReferenceToObject(feedback, new_target), &construct,
-         &extra_checks);
-
-  BIND(&extra_checks);
+  BIND(&construct_generic);
   {
-    Label check_allocation_site(this), check_initialized(this),
-        initialize(this), mark_megamorphic(this);
-
-    // Check if it is a megamorphic {new_target}..
-    Comment("check if megamorphic");
-    TNode<BoolT> is_megamorphic = TaggedEqual(
-        feedback, HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())));
-    GotoIf(is_megamorphic, &construct);
-
-    Comment("check if weak reference");
-    GotoIfNot(IsWeakOrCleared(feedback), &check_allocation_site);
-
-    // If the weak reference is cleared, we have a new chance to become
-    // monomorphic.
-    Comment("check if weak reference is cleared");
-    Branch(IsCleared(feedback), &initialize, &mark_megamorphic);
-
-    BIND(&check_allocation_site);
-    {
-      // Check if it is an AllocationSite.
-      Comment("check if allocation site");
-      TNode<HeapObject> strong_feedback = CAST(feedback);
-      GotoIfNot(IsAllocationSite(strong_feedback), &check_initialized);
-
-      // Make sure that {target} and {new_target} are the Array constructor.
-      TNode<Object> array_function = LoadContextElement(
-          LoadNativeContext(context), Context::ARRAY_FUNCTION_INDEX);
-      GotoIfNot(TaggedEqual(target, array_function), &mark_megamorphic);
-      GotoIfNot(TaggedEqual(new_target, array_function), &mark_megamorphic);
-      var_site = CAST(strong_feedback);
-      Goto(&construct_array);
-    }
-
-    BIND(&check_initialized);
-    {
-      // Check if it is uninitialized.
-      Comment("check if uninitialized");
-      TNode<BoolT> is_uninitialized =
-          TaggedEqual(feedback, UninitializedSymbolConstant());
-      Branch(is_uninitialized, &initialize, &mark_megamorphic);
-    }
-
-    BIND(&initialize);
-    {
-      Comment("check if function in same native context");
-      GotoIf(TaggedIsSmi(new_target), &mark_megamorphic);
-      // Check if the {new_target} is a JSFunction or JSBoundFunction
-      // in the current native context.
-      TVARIABLE(HeapObject, var_current, CAST(new_target));
-      Label loop(this, &var_current), done_loop(this);
-      Goto(&loop);
-      BIND(&loop);
-      {
-        Label if_boundfunction(this), if_function(this);
-        TNode<HeapObject> current = var_current.value();
-        TNode<Uint16T> current_instance_type = LoadInstanceType(current);
-        GotoIf(InstanceTypeEqual(current_instance_type, JS_BOUND_FUNCTION_TYPE),
-               &if_boundfunction);
-        Branch(InstanceTypeEqual(current_instance_type, JS_FUNCTION_TYPE),
-               &if_function, &mark_megamorphic);
-
-        BIND(&if_function);
-        {
-          // Check that the JSFunction {current} is in the current native
-          // context.
-          TNode<Context> current_context =
-              CAST(LoadObjectField(current, JSFunction::kContextOffset));
-          TNode<NativeContext> current_native_context =
-              LoadNativeContext(current_context);
-          Branch(
-              TaggedEqual(LoadNativeContext(context), current_native_context),
-              &done_loop, &mark_megamorphic);
-        }
-
-        BIND(&if_boundfunction);
-        {
-          // Continue with the [[BoundTargetFunction]] of {current}.
-          var_current = LoadObjectField<HeapObject>(
-              current, JSBoundFunction::kBoundTargetFunctionOffset);
-          Goto(&loop);
-        }
-      }
-      BIND(&done_loop);
-
-      // Create an AllocationSite if {target} and {new_target} refer
-      // to the current native context's Array constructor.
-      Label create_allocation_site(this), store_weak_reference(this);
-      GotoIfNot(TaggedEqual(target, new_target), &store_weak_reference);
-      TNode<Object> array_function = LoadContextElement(
-          LoadNativeContext(context), Context::ARRAY_FUNCTION_INDEX);
-      Branch(TaggedEqual(target, array_function), &create_allocation_site,
-             &store_weak_reference);
-
-      BIND(&create_allocation_site);
-      {
-        var_site =
-            CreateAllocationSiteInFeedbackVector(feedback_vector, slot_id);
-        ReportFeedbackUpdate(feedback_vector, slot_id,
-                             "Construct:CreateAllocationSite");
-        Goto(&construct_array);
-      }
-
-      BIND(&store_weak_reference);
-      {
-        StoreWeakReferenceInFeedbackVector(feedback_vector, slot_id,
-                                           CAST(new_target));
-        ReportFeedbackUpdate(feedback_vector, slot_id,
-                             "Construct:StoreWeakReference");
-        Goto(&construct);
-      }
-    }
-
-    BIND(&mark_megamorphic);
-    {
-      // MegamorphicSentinel is an immortal immovable object so
-      // write-barrier is not needed.
-      Comment("transition to megamorphic");
-      DCHECK(RootsTable::IsImmortalImmovable(RootIndex::kmegamorphic_symbol));
-      StoreFeedbackVectorSlot(
-          feedback_vector, slot_id,
-          HeapConstant(FeedbackVector::MegamorphicSentinel(isolate())),
-          SKIP_WRITE_BARRIER);
-      ReportFeedbackUpdate(feedback_vector, slot_id,
-                           "Construct:TransitionMegamorphic");
-      Goto(&construct);
-    }
+    // TODO(bmeurer): Remove the generic type_info parameter from the Construct.
+    Comment("call using Construct builtin");
+    Callable callable = CodeFactory::InterpreterPushArgsThenConstruct(
+        isolate(), InterpreterPushArgsMode::kOther);
+    TNode<Code> code_target = HeapConstant(callable.code());
+    var_result = CallStub(callable.descriptor(), code_target, context,
+                          args.reg_count(), args.base_reg_location(), target,
+                          new_target, UndefinedConstant());
+    Goto(&return_result);
   }
 
   BIND(&construct_array);
@@ -988,19 +860,6 @@ TNode<Object> InterpreterAssembler::Construct(
     var_result = CallStub(callable.descriptor(), code_target, context,
                           args.reg_count(), args.base_reg_location(), target,
                           new_target, var_site.value());
-    Goto(&return_result);
-  }
-
-  BIND(&construct);
-  {
-    // TODO(bmeurer): Remove the generic type_info parameter from the Construct.
-    Comment("call using Construct builtin");
-    Callable callable = CodeFactory::InterpreterPushArgsThenConstruct(
-        isolate(), InterpreterPushArgsMode::kOther);
-    TNode<Code> code_target = HeapConstant(callable.code());
-    var_result = CallStub(callable.descriptor(), code_target, context,
-                          args.reg_count(), args.base_reg_location(), target,
-                          new_target, UndefinedConstant());
     Goto(&return_result);
   }
 
@@ -1185,7 +1044,8 @@ void InterpreterAssembler::UpdateInterruptBudget(TNode<Int32T> weight,
     Branch(condition, &ok, &interrupt_check);
 
     BIND(&interrupt_check);
-    CallRuntime(Runtime::kBytecodeBudgetInterrupt, GetContext(), function);
+    CallRuntime(Runtime::kBytecodeBudgetInterruptFromBytecode, GetContext(),
+                function);
     Goto(&done);
 
     BIND(&ok);
@@ -1535,14 +1395,8 @@ TNode<FixedArray> InterpreterAssembler::ExportParametersAndRegisterFile(
     // Iterate over parameters and write them into the array.
     Label loop(this, &var_index), done_loop(this);
 
-#ifdef V8_REVERSE_JSARGS
     TNode<IntPtrT> reg_base =
         IntPtrConstant(Register::FromParameterIndex(0, 1).ToOperand() + 1);
-#else
-    TNode<IntPtrT> reg_base = IntPtrAdd(
-        IntPtrConstant(Register::FromParameterIndex(0, 1).ToOperand() - 1),
-        formal_parameter_count_intptr);
-#endif
 
     Goto(&loop);
     BIND(&loop);
@@ -1551,11 +1405,7 @@ TNode<FixedArray> InterpreterAssembler::ExportParametersAndRegisterFile(
       GotoIfNot(UintPtrLessThan(index, formal_parameter_count_intptr),
                 &done_loop);
 
-#ifdef V8_REVERSE_JSARGS
       TNode<IntPtrT> reg_index = IntPtrAdd(reg_base, index);
-#else
-      TNode<IntPtrT> reg_index = IntPtrSub(reg_base, index);
-#endif
       TNode<Object> value = LoadRegister(reg_index);
 
       StoreFixedArrayElement(array, index, value);

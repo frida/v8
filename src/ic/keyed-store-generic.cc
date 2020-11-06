@@ -80,9 +80,9 @@ class KeyedStoreGenericAssembler : public AccessorAssembler {
                              Nothing<LanguageMode>());
   }
 
-  void BranchIfPrototypesHaveNonFastElements(TNode<Map> receiver_map,
-                                             Label* non_fast_elements,
-                                             Label* only_fast_elements);
+  void BranchIfPrototypesMayHaveReadOnlyElements(
+      TNode<Map> receiver_map, Label* maybe_read_only_elements,
+      Label* only_fast_writable_elements);
 
   void TryRewriteElements(TNode<JSObject> receiver, TNode<Map> receiver_map,
                           TNode<FixedArrayBase> elements,
@@ -176,9 +176,9 @@ void KeyedStoreGenericGenerator::SetPropertyInLiteral(
   assembler.SetProperty(context, receiver, key, value, LanguageMode::kStrict);
 }
 
-void KeyedStoreGenericAssembler::BranchIfPrototypesHaveNonFastElements(
-    TNode<Map> receiver_map, Label* non_fast_elements,
-    Label* only_fast_elements) {
+void KeyedStoreGenericAssembler::BranchIfPrototypesMayHaveReadOnlyElements(
+    TNode<Map> receiver_map, Label* maybe_read_only_elements,
+    Label* only_fast_writable_elements) {
   TVARIABLE(Map, var_map);
   var_map = receiver_map;
   Label loop_body(this, &var_map);
@@ -188,16 +188,17 @@ void KeyedStoreGenericAssembler::BranchIfPrototypesHaveNonFastElements(
   {
     TNode<Map> map = var_map.value();
     TNode<HeapObject> prototype = LoadMapPrototype(map);
-    GotoIf(IsNull(prototype), only_fast_elements);
+    GotoIf(IsNull(prototype), only_fast_writable_elements);
     TNode<Map> prototype_map = LoadMap(prototype);
     var_map = prototype_map;
     TNode<Uint16T> instance_type = LoadMapInstanceType(prototype_map);
     GotoIf(IsCustomElementsReceiverInstanceType(instance_type),
-           non_fast_elements);
+           maybe_read_only_elements);
     TNode<Int32T> elements_kind = LoadMapElementsKind(prototype_map);
-    GotoIf(IsFastElementsKind(elements_kind), &loop_body);
+    GotoIf(IsFastOrNonExtensibleOrSealedElementsKind(elements_kind),
+           &loop_body);
     GotoIf(Word32Equal(elements_kind, Int32Constant(NO_ELEMENTS)), &loop_body);
-    Goto(non_fast_elements);
+    Goto(maybe_read_only_elements);
   }
 }
 
@@ -239,7 +240,7 @@ void KeyedStoreGenericAssembler::TryRewriteElements(
     if (IsDoubleElementsKind(from_kind) != IsDoubleElementsKind(to_kind)) {
       TNode<IntPtrT> capacity = SmiUntag(LoadFixedArrayBaseLength(elements));
       GrowElementsCapacity(receiver, elements, from_kind, to_kind, capacity,
-                           capacity, INTPTR_PARAMETERS, bailout);
+                           capacity, bailout);
     }
     StoreMap(receiver, var_target_map.value());
   }
@@ -350,8 +351,8 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
               CAST(Load(MachineType::AnyTagged(), elements, offset));
           GotoIf(IsNotTheHole(element), &hole_check_passed);
         }
-        BranchIfPrototypesHaveNonFastElements(receiver_map, slow,
-                                              &hole_check_passed);
+        BranchIfPrototypesMayHaveReadOnlyElements(receiver_map, slow,
+                                                  &hole_check_passed);
         BIND(&hole_check_passed);
       }
     }
@@ -443,7 +444,6 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
         ElementOffsetFromIndex(index, PACKED_DOUBLE_ELEMENTS, kHeaderSize);
     if (!IsStoreInLiteral()) {
       // Check if we're about to overwrite the hole. We can safely do that
-      // Check if we're about to overwrite the hole. We can safely do that
       // only if there can be no setters on the prototype chain.
       {
         Label hole_check_passed(this);
@@ -456,8 +456,8 @@ void KeyedStoreGenericAssembler::StoreElementWithCapacity(
           Goto(&hole_check_passed);
           BIND(&found_hole);
         }
-        BranchIfPrototypesHaveNonFastElements(receiver_map, slow,
-                                              &hole_check_passed);
+        BranchIfPrototypesMayHaveReadOnlyElements(receiver_map, slow,
+                                                  &hole_check_passed);
         BIND(&hole_check_passed);
       }
     }
@@ -1031,10 +1031,10 @@ void KeyedStoreGenericAssembler::KeyedStoreGeneric(
 void KeyedStoreGenericAssembler::KeyedStoreGeneric() {
   using Descriptor = StoreDescriptor;
 
-  TNode<Object> receiver = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   KeyedStoreGeneric(context, receiver, name, value, Nothing<LanguageMode>());
 }
@@ -1050,11 +1050,11 @@ void KeyedStoreGenericAssembler::SetProperty(TNode<Context> context,
 void KeyedStoreGenericAssembler::StoreIC_NoFeedback() {
   using Descriptor = StoreDescriptor;
 
-  TNode<Object> receiver_maybe_smi = CAST(Parameter(Descriptor::kReceiver));
-  TNode<Object> name = CAST(Parameter(Descriptor::kName));
-  TNode<Object> value = CAST(Parameter(Descriptor::kValue));
-  TNode<TaggedIndex> slot = CAST(Parameter(Descriptor::kSlot));
-  TNode<Context> context = CAST(Parameter(Descriptor::kContext));
+  auto receiver_maybe_smi = Parameter<Object>(Descriptor::kReceiver);
+  auto name = Parameter<Object>(Descriptor::kName);
+  auto value = Parameter<Object>(Descriptor::kValue);
+  auto slot = Parameter<TaggedIndex>(Descriptor::kSlot);
+  auto context = Parameter<Context>(Descriptor::kContext);
 
   Label miss(this, Label::kDeferred), store_property(this);
 

@@ -64,6 +64,9 @@ static inline constexpr RegClass reg_class_for(ValueType::Kind kind) {
       return kNeedI64RegPair ? kGpRegPair : kGpReg;
     case ValueType::kS128:
       return kNeedS128RegPair ? kFpRegPair : kFpReg;
+    case ValueType::kRef:
+    case ValueType::kOptRef:
+      return kGpReg;
     default:
       return kNoReg;  // unsupported type
   }
@@ -181,6 +184,26 @@ class LiftoffRegister {
       default:
         UNREACHABLE();
     }
+  }
+
+  // Shifts the register code depending on the type before converting to a
+  // LiftoffRegister.
+  static LiftoffRegister from_external_code(RegClass rc, ValueType type,
+                                            int code) {
+    if (!kSimpleFPAliasing && type == kWasmF32) {
+      // Liftoff assumes a one-to-one mapping between float registers and
+      // double registers, and so does not distinguish between f32 and f64
+      // registers. The f32 register code must therefore be halved in order
+      // to pass the f64 code to Liftoff.
+      DCHECK_EQ(0, code % 2);
+      return LiftoffRegister::from_code(rc, code >> 1);
+    }
+    if (kNeedS128RegPair && type == kWasmS128) {
+      // Similarly for double registers and SIMD registers, the SIMD code
+      // needs to be doubled to pass the f64 code to Liftoff.
+      return LiftoffRegister::ForFpPair(DoubleRegister::from_code(code << 1));
+    }
+    return LiftoffRegister::from_code(rc, code);
   }
 
   static LiftoffRegister ForPair(Register low, Register high) {

@@ -5,6 +5,7 @@
 #ifndef V8_HEAP_INCREMENTAL_MARKING_H_
 #define V8_HEAP_INCREMENTAL_MARKING_H_
 
+#include "src/base/platform/mutex.h"
 #include "src/heap/heap.h"
 #include "src/heap/incremental-marking-job.h"
 #include "src/heap/mark-compact.h"
@@ -28,7 +29,7 @@ enum class StepResult {
 
 class V8_EXPORT_PRIVATE IncrementalMarking final {
  public:
-  enum State { STOPPED, SWEEPING, MARKING, COMPLETE };
+  enum State : uint8_t { STOPPED, SWEEPING, MARKING, COMPLETE };
 
   enum CompletionAction { GC_VIA_STACK_GUARD, NO_GC_VIA_STACK_GUARD };
 
@@ -80,7 +81,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   static constexpr size_t kGlobalActivationThreshold = 0;
 #endif
 
-#ifdef V8_CONCURRENT_MARKING
+#ifdef V8_ATOMIC_MARKING_STATE
   static const AccessMode kAtomicity = AccessMode::ATOMIC;
 #else
   static const AccessMode kAtomicity = AccessMode::NON_ATOMIC;
@@ -145,7 +146,6 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   void FinalizeIncrementally();
 
   void UpdateMarkingWorklistAfterScavenge();
-  void UpdateWeakReferencesAfterScavenge();
   void UpdateMarkedBytesAfterScavenge(size_t dead_bytes_in_new_space);
 
   void Hurry();
@@ -168,6 +168,8 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
                                  StepOrigin step_origin);
 
   void FinalizeSweeping();
+  bool ContinueConcurrentSweeping();
+  void SupportConcurrentSweeping();
 
   StepResult Step(double max_step_size_in_ms, CompletionAction action,
                   StepOrigin step_origin);
@@ -177,25 +179,6 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
 
   V8_INLINE void RestartIfNotMarking();
 
-  // {raw_obj} and {slot_address} are raw Address values instead of a
-  // HeapObject and a MaybeObjectSlot because this is called from
-  // generated code via ExternalReference.
-  static int RecordWriteFromCode(Address raw_obj, Address slot_address,
-                                 Isolate* isolate);
-
-  // Record a slot for compaction.  Returns false for objects that are
-  // guaranteed to be rescanned or not guaranteed to survive.
-  //
-  // No slots in white objects should be recorded, as some slots are typed and
-  // cannot be interpreted correctly if the underlying object does not survive
-  // the incremental cycle (stays white).
-  V8_INLINE bool BaseRecordWrite(HeapObject obj, HeapObject value);
-  template <typename TSlot>
-  V8_INLINE void RecordWrite(HeapObject obj, TSlot slot,
-                             typename TSlot::TObject value);
-  void RecordWriteSlow(HeapObject obj, HeapObjectSlot slot, HeapObject value);
-  void RecordWriteIntoCode(Code host, RelocInfo* rinfo, HeapObject value);
-
   // Returns true if the function succeeds in transitioning the object
   // from white to grey.
   V8_INLINE bool WhiteToGreyAndPush(HeapObject obj);
@@ -204,6 +187,8 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   // unsafe layout change. This is a part of synchronization protocol with
   // the concurrent marker.
   void MarkBlackAndVisitObjectDueToLayoutChange(HeapObject obj);
+
+  void MarkBlackBackground(HeapObject obj, int object_size);
 
   bool IsCompacting() { return IsMarking() && is_compacting_; }
 
@@ -223,8 +208,8 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
     }
   }
 
-  MarkingWorklists* marking_worklists() const {
-    return collector_->marking_worklists();
+  MarkingWorklists::Local* local_marking_worklists() const {
+    return collector_->local_marking_worklists();
   }
 
   void Deactivate();
@@ -234,6 +219,11 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   void EnsureBlackAllocated(Address allocated, size_t size);
 
   bool IsBelowActivationThresholds() const;
+
+  void IncrementLiveBytesBackground(MemoryChunk* chunk, intptr_t by) {
+    base::MutexGuard guard(&background_live_bytes_mutex_);
+    background_live_bytes_[chunk] += by;
+  }
 
  private:
   class Observer : public AllocationObserver {
@@ -260,13 +250,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   // increase chances of reusing of map transition tree in future.
   void RetainMaps();
 
-  void ActivateIncrementalWriteBarrier(PagedSpace* space);
-  void ActivateIncrementalWriteBarrier(NewSpace* space);
-  void ActivateIncrementalWriteBarrier();
-
-  void DeactivateIncrementalWriteBarrierForSpace(PagedSpace* space);
-  void DeactivateIncrementalWriteBarrierForSpace(NewSpace* space);
-  void DeactivateIncrementalWriteBarrier();
+  void PublishWriteBarrierWorklists();
 
   // Updates scheduled_bytes_to_mark_ to ensure marking progress based on
   // time.
@@ -317,7 +301,10 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   size_t bytes_marked_concurrently_ = 0;
 
   // Must use SetState() above to update state_
-  State state_;
+  // Atomic since main thread can complete marking (= changing state), while a
+  // background thread's slow allocation path will check whether incremental
+  // marking is currently running.
+  std::atomic<State> state_;
 
   bool is_compacting_ = false;
   bool was_activated_ = false;
@@ -325,7 +312,7 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   bool finalize_marking_completed_ = false;
   IncrementalMarkingJob incremental_marking_job_;
 
-  GCRequestType request_type_ = NONE;
+  std::atomic<GCRequestType> request_type_{NONE};
 
   Observer new_generation_observer_;
   Observer old_generation_observer_;
@@ -333,6 +320,9 @@ class V8_EXPORT_PRIVATE IncrementalMarking final {
   MarkingState marking_state_;
   AtomicMarkingState atomic_marking_state_;
   NonAtomicMarkingState non_atomic_marking_state_;
+
+  base::Mutex background_live_bytes_mutex_;
+  std::unordered_map<MemoryChunk*, intptr_t> background_live_bytes_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(IncrementalMarking);
 };

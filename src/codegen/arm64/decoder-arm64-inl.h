@@ -445,10 +445,7 @@ void Decoder<V>::DecodeDataProcessing(Instruction* instr) {
                 V::VisitDataProcessing2Source(instr);
               }
             } else {
-              if ((instr->InstructionBits() & PointerAuthenticationFMask) ==
-                  PointerAuthenticationFixed) {
-                V::VisitPointerAuthentication(instr);
-              } else if ((instr->Bit(13) == 1) || (instr->Bits(20, 16) != 0) ||
+              if ((instr->Bit(13) == 1) || (instr->Bits(20, 16) != 0) ||
                   (instr->Bits(15, 14) != 0) ||
                   (instr->Mask(0xA01FFC00) == 0x00000C00) ||
                   (instr->Mask(0x201FF800) == 0x00001800)) {
@@ -541,7 +538,6 @@ void Decoder<V>::DecodeFP(Instruction* instr) {
                   (instr->Mask(0x20C60000) == 0x00840000) ||
                   (instr->Mask(0xA0C60000) == 0x80060000) ||
                   (instr->Mask(0xA0C60000) == 0x00860000) ||
-                  (instr->Mask(0xA0C60000) == 0x00460000) ||
                   (instr->Mask(0xA0CE0000) == 0x80860000) ||
                   (instr->Mask(0xA0CE0000) == 0x804E0000) ||
                   (instr->Mask(0xA0CE0000) == 0x000E0000) ||

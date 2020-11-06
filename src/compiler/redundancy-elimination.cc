@@ -65,13 +65,13 @@ Reduction RedundancyElimination::Reduce(Node* node) {
 RedundancyElimination::EffectPathChecks*
 RedundancyElimination::EffectPathChecks::Copy(Zone* zone,
                                               EffectPathChecks const* checks) {
-  return new (zone->New(sizeof(EffectPathChecks))) EffectPathChecks(*checks);
+  return zone->New<EffectPathChecks>(*checks);
 }
 
 // static
 RedundancyElimination::EffectPathChecks const*
 RedundancyElimination::EffectPathChecks::Empty(Zone* zone) {
-  return new (zone->New(sizeof(EffectPathChecks))) EffectPathChecks(nullptr, 0);
+  return zone->New<EffectPathChecks>(nullptr, 0);
 }
 
 bool RedundancyElimination::EffectPathChecks::Equals(
@@ -119,9 +119,8 @@ void RedundancyElimination::EffectPathChecks::Merge(
 RedundancyElimination::EffectPathChecks const*
 RedundancyElimination::EffectPathChecks::AddCheck(Zone* zone,
                                                   Node* node) const {
-  Check* head = new (zone->New(sizeof(Check))) Check(node, head_);
-  return new (zone->New(sizeof(EffectPathChecks)))
-      EffectPathChecks(head, size_ + 1);
+  Check* head = zone->New<Check>(node, head_);
+  return zone->New<EffectPathChecks>(head, size_ + 1);
 }
 
 namespace {
@@ -238,7 +237,9 @@ Node* RedundancyElimination::EffectPathChecks::LookupBoundsCheckFor(
     Node* node) const {
   for (Check const* check = head_; check != nullptr; check = check->next) {
     if (check->node->opcode() == IrOpcode::kCheckBounds &&
-        check->node->InputAt(0) == node && TypeSubsumes(node, check->node)) {
+        check->node->InputAt(0) == node && TypeSubsumes(node, check->node) &&
+        !(CheckBoundsParametersOf(check->node->op()).flags() &
+          CheckBoundsFlag::kConvertStringAndMinusZero)) {
       return check->node;
     }
   }
@@ -333,8 +334,8 @@ Reduction RedundancyElimination::ReduceSpeculativeNumberComparison(Node* node) {
           // the regular Number comparisons in JavaScript also identify
           // 0 and -0 (unlike special comparisons as Object.is).
           NodeProperties::ReplaceValueInput(node, check, 0);
-          Reduction const reduction = ReduceSpeculativeNumberComparison(node);
-          return reduction.Changed() ? reduction : Changed(node);
+          return Changed(node).FollowedBy(
+              ReduceSpeculativeNumberComparison(node));
         }
       }
     }
@@ -351,8 +352,8 @@ Reduction RedundancyElimination::ReduceSpeculativeNumberComparison(Node* node) {
           // the regular Number comparisons in JavaScript also identify
           // 0 and -0 (unlike special comparisons as Object.is).
           NodeProperties::ReplaceValueInput(node, check, 1);
-          Reduction const reduction = ReduceSpeculativeNumberComparison(node);
-          return reduction.Changed() ? reduction : Changed(node);
+          return Changed(node).FollowedBy(
+              ReduceSpeculativeNumberComparison(node));
         }
       }
     }

@@ -228,7 +228,11 @@ class DoubleRegister : public RegisterBase<DoubleRegister, kDoubleAfterLast> {
   // d14: 0.0
   // d15: scratch register.
   static constexpr int kSizeInBytes = 8;
-  inline static int NumRegisters();
+
+  // This function differs from kNumRegisters by returning the number of double
+  // registers supported by the current CPU, while kNumRegisters always returns
+  // 32.
+  inline static int SupportedRegisterCount();
 
  private:
   friend class RegisterBase;
@@ -305,6 +309,8 @@ constexpr Register kRuntimeCallArgCountRegister = r3;
 constexpr Register kRuntimeCallArgvRegister = r5;
 constexpr Register kWasmInstanceRegister = r10;
 constexpr Register kWasmCompileLazyFuncIndexRegister = r15;
+
+constexpr DoubleRegister kFPReturnRegister0 = d1;
 
 }  // namespace internal
 }  // namespace v8

@@ -18,14 +18,11 @@
 namespace v8 {
 namespace internal {
 
+#include "torque-generated/src/objects/js-display-names-tq-inl.inc"
+
 ACCESSORS(JSDisplayNames, internal, Managed<DisplayNamesInternal>,
           kInternalOffset)
-OBJECT_CONSTRUCTORS_IMPL(JSDisplayNames, JSObject)
-
-// Base display names accessors.
-SMI_ACCESSORS(JSDisplayNames, flags, kFlagsOffset)
-
-CAST_ACCESSOR(JSDisplayNames)
+TQ_OBJECT_CONSTRUCTORS_IMPL(JSDisplayNames)
 
 inline void JSDisplayNames::set_style(Style style) {
   DCHECK_GE(StyleBits::kMax, style);

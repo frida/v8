@@ -57,7 +57,7 @@ PreParserIdentifier GetIdentifierHelper(Scanner* scanner,
   return PreParserIdentifier::Default();
 }
 
-}  // unnamed namespace
+}  // namespace
 
 PreParserIdentifier PreParser::GetIdentifier() const {
   const AstRawString* result = scanner()->CurrentSymbol(ast_value_factory());
@@ -78,7 +78,7 @@ PreParser::PreParseResult PreParser::PreParseProgram() {
   // ModuleDeclarationInstantiation for Source Text Module Records creates a
   // new Module Environment Record whose outer lexical environment record is
   // the global scope.
-  if (parsing_module_) scope = NewModuleScope(scope);
+  if (flags().is_module()) scope = NewModuleScope(scope);
 
   FunctionState top_scope(&function_state_, &scope_, scope);
   original_scope_ = scope_;
@@ -105,11 +105,9 @@ void PreParserFormalParameters::ValidateStrictMode(PreParser* preparser) const {
 PreParser::PreParseResult PreParser::PreParseFunction(
     const AstRawString* function_name, FunctionKind kind,
     FunctionSyntaxKind function_syntax_kind, DeclarationScope* function_scope,
-    int* use_counts, ProducedPreparseData** produced_preparse_data,
-    int script_id) {
+    int* use_counts, ProducedPreparseData** produced_preparse_data) {
   DCHECK_EQ(FUNCTION_SCOPE, function_scope->scope_type());
   use_counts_ = use_counts;
-  set_script_id(script_id);
 #ifdef DEBUG
   function_scope->set_is_being_lazily_parsed(true);
 #endif
@@ -327,10 +325,6 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     // Parsing the body may change the language mode in our scope.
     language_mode = function_scope->language_mode();
 
-    if (is_sloppy(language_mode)) {
-      function_scope->HoistSloppyBlockFunctions(nullptr);
-    }
-
     // Validate name and parameter names. We can do this only after parsing the
     // function, since the function can declare itself strict.
     CheckFunctionName(language_mode, function_name, function_name_validity,
@@ -353,14 +347,16 @@ PreParser::Expression PreParser::ParseFunctionLiteral(
     // reconstructed from the script id and the byte range in the log processor.
     const char* name = "";
     size_t name_byte_length = 0;
+    bool is_one_byte = true;
     const AstRawString* string = function_name.string_;
     if (string != nullptr) {
       name = reinterpret_cast<const char*>(string->raw_data());
       name_byte_length = string->byte_length();
+      is_one_byte = string->is_one_byte();
     }
     logger_->FunctionEvent(
-        event_name, script_id(), ms, function_scope->start_position(),
-        function_scope->end_position(), name, name_byte_length);
+        event_name, flags().script_id(), ms, function_scope->start_position(),
+        function_scope->end_position(), name, name_byte_length, is_one_byte);
   }
 
   return Expression::Default();

@@ -10,7 +10,7 @@ namespace internal {
 namespace wasm {
 namespace test_run_wasm_atomics_64 {
 
-void RunU64BinOp(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunU64BinOp(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                  Uint64BinOp expected_op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint64_t, uint64_t> r(execution_tier);
@@ -39,7 +39,7 @@ void RunU64BinOp(ExecutionTier execution_tier, WasmOpcode wasm_op,
 OPERATION_LIST(TEST_OPERATION)
 #undef TEST_OPERATION
 
-void RunU32BinOp(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunU32BinOp(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                  Uint32BinOp expected_op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint64_t, uint64_t> r(execution_tier);
@@ -68,7 +68,7 @@ void RunU32BinOp(ExecutionTier execution_tier, WasmOpcode wasm_op,
 OPERATION_LIST(TEST_OPERATION)
 #undef TEST_OPERATION
 
-void RunU16BinOp(ExecutionTier tier, WasmOpcode wasm_op,
+void RunU16BinOp(TestExecutionTier tier, WasmOpcode wasm_op,
                  Uint16BinOp expected_op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint64_t, uint64_t> r(tier);
@@ -97,7 +97,7 @@ void RunU16BinOp(ExecutionTier tier, WasmOpcode wasm_op,
 OPERATION_LIST(TEST_OPERATION)
 #undef TEST_OPERATION
 
-void RunU8BinOp(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunU8BinOp(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                 Uint8BinOp expected_op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint64_t, uint64_t> r(execution_tier);
@@ -356,7 +356,7 @@ WASM_EXEC_TEST(I64AtomicStoreLoad8U) {
 
 // Drop tests verify atomic operations are run correctly when the
 // entire 64-bit output is optimized out
-void RunDropTest(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunDropTest(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                  Uint64BinOp op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint64_t, uint64_t> r(execution_tier);
@@ -476,7 +476,7 @@ WASM_EXEC_TEST(I64AtomicLoadConvertDrop) {
 
 // Convert tests verify atomic operations are run correctly when the
 // upper half of the 64-bit output is optimized out
-void RunConvertTest(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunConvertTest(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                     Uint64BinOp op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint32_t, uint64_t> r(execution_tier);
@@ -522,7 +522,7 @@ WASM_EXEC_TEST(I64AtomicConvertCompareExchange) {
 
 // The WASM_I64_EQ operation is used here to test that the index node
 // is lowered correctly.
-void RunNonConstIndexTest(ExecutionTier execution_tier, WasmOpcode wasm_op,
+void RunNonConstIndexTest(TestExecutionTier execution_tier, WasmOpcode wasm_op,
                           Uint64BinOp op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   WasmRunner<uint32_t, uint64_t> r(execution_tier);
@@ -569,7 +569,7 @@ WASM_EXEC_TEST(I64AtomicNonConstIndexCompareExchangeNarrow) {
                WASM_I64_EQ(WASM_I64V(1), WASM_I64V(0)), WASM_GET_LOCAL(0),
                WASM_GET_LOCAL(1), MachineRepresentation::kWord16)));
 
-  uint64_t initial = 4444333322221111, local = 0x9999888877776666;
+  uint64_t initial = 0x4444333322221111, local = 0x9999888877776666;
   r.builder().WriteMemory(&memory[0], initial);
   CHECK_EQ(static_cast<uint16_t>(initial), r.Call(initial, local));
   CHECK_EQ(static_cast<uint16_t>(CompareExchange(initial, initial, local)),
@@ -659,7 +659,7 @@ WASM_EXEC_TEST(AtomicStoreNoConsideredEffectful) {
   CHECK_EQ(1, r.Call());
 }
 
-void RunNoEffectTest(ExecutionTier execution_tier, WasmOpcode wasm_op) {
+void RunNoEffectTest(TestExecutionTier execution_tier, WasmOpcode wasm_op) {
   EXPERIMENTAL_FLAG_SCOPE(threads);
   FLAG_wasm_trap_handler = false;  // To use {Load} instead of {ProtectedLoad}.
   WasmRunner<uint32_t> r(execution_tier);
@@ -778,6 +778,35 @@ WASM_EXEC_TEST(I64AtomicCompareExchangeUseOnlyHighWord) {
                WASM_ATOMICS_TERNARY_OP(
                    kExprI64AtomicCompareExchange, WASM_I32V(8), WASM_I64V(1),
                    WASM_I64V(memory[1]), MachineRepresentation::kWord64),
+               WASM_I64V(32))));
+  CHECK_EQ(0x12345678, r.Call());
+}
+
+WASM_EXEC_TEST(I64AtomicExchangeUseOnlyLowWord) {
+  EXPERIMENTAL_FLAG_SCOPE(threads);
+  WasmRunner<uint32_t> r(execution_tier);
+  uint64_t* memory =
+      r.builder().AddMemoryElems<uint64_t>(kWasmPageSize / sizeof(uint64_t));
+  memory[1] = 0x1234567890abcdeful;
+  r.builder().SetHasSharedMemory();
+  // Test that we can use just the low word of an I64AtomicLoad.
+  BUILD(r, WASM_I32_CONVERT_I64(WASM_ATOMICS_BINOP(
+               kExprI64AtomicExchange, WASM_I32V(8), WASM_I64V(1),
+               MachineRepresentation::kWord64)));
+  CHECK_EQ(0x90abcdef, r.Call());
+}
+
+WASM_EXEC_TEST(I64AtomicExchangeUseOnlyHighWord) {
+  EXPERIMENTAL_FLAG_SCOPE(threads);
+  WasmRunner<uint32_t> r(execution_tier);
+  uint64_t* memory =
+      r.builder().AddMemoryElems<uint64_t>(kWasmPageSize / sizeof(uint64_t));
+  memory[1] = 0x1234567890abcdeful;
+  r.builder().SetHasSharedMemory();
+  // Test that we can use just the high word of an I64AtomicLoad.
+  BUILD(r, WASM_I32_CONVERT_I64(WASM_I64_ROR(
+               WASM_ATOMICS_BINOP(kExprI64AtomicExchange, WASM_I32V(8),
+                                  WASM_I64V(1), MachineRepresentation::kWord64),
                WASM_I64V(32))));
   CHECK_EQ(0x12345678, r.Call());
 }

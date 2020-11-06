@@ -48,7 +48,7 @@ class WasmInstructionBufferImpl {
       DCHECK_LT(size(), new_size);
 
       holder_->old_buffer_ = std::move(holder_->buffer_);
-      holder_->buffer_ = OwnedVector<uint8_t>::New(new_size);
+      holder_->buffer_ = OwnedVector<uint8_t>::NewForOverwrite(new_size);
       return std::make_unique<View>(holder_->buffer_.as_vector(), holder_);
     }
 
@@ -58,7 +58,7 @@ class WasmInstructionBufferImpl {
   };
 
   explicit WasmInstructionBufferImpl(size_t size)
-      : buffer_(OwnedVector<uint8_t>::New(size)) {}
+      : buffer_(OwnedVector<uint8_t>::NewForOverwrite(size)) {}
 
   std::unique_ptr<AssemblerBuffer> CreateView() {
     DCHECK_NOT_NULL(buffer_);
@@ -115,7 +115,6 @@ ExecutionTier WasmCompilationUnit::GetBaselineExecutionTier(
   // Liftoff does not support the special asm.js opcodes, thus always compile
   // asm.js modules with TurboFan.
   if (is_asmjs_module(module)) return ExecutionTier::kTurbofan;
-  if (FLAG_wasm_interpret_all) return ExecutionTier::kInterpreter;
   return FLAG_liftoff ? ExecutionTier::kLiftoff : ExecutionTier::kTurbofan;
 }
 
@@ -131,7 +130,7 @@ WasmCompilationResult WasmCompilationUnit::ExecuteCompilation(
                                         counters, detected);
   }
 
-  if (result.succeeded()) {
+  if (result.succeeded() && counters) {
     counters->wasm_generated_code_size()->Increment(
         result.code_desc.instr_size);
     counters->wasm_reloc_size()->Increment(result.code_desc.reloc_size);
@@ -151,7 +150,8 @@ WasmCompilationResult WasmCompilationUnit::ExecuteImportWrapperCompilation(
   auto kind = compiler::kDefaultImportCallKind;
   bool source_positions = is_asmjs_module(env->module);
   WasmCompilationResult result = compiler::CompileWasmImportCallWrapper(
-      engine, env, kind, sig, source_positions);
+      engine, env, kind, sig, source_positions,
+      static_cast<int>(sig->parameter_count()));
   return result;
 }
 
@@ -164,12 +164,16 @@ WasmCompilationResult WasmCompilationUnit::ExecuteFunctionCompilation(
   wasm::FunctionBody func_body{func->sig, func->code.offset(), code.begin(),
                                code.end()};
 
-  auto size_histogram = SELECT_WASM_COUNTER(counters, env->module->origin, wasm,
-                                            function_size_bytes);
-  size_histogram->AddSample(static_cast<int>(func_body.end - func_body.start));
-  auto timed_histogram = SELECT_WASM_COUNTER(counters, env->module->origin,
-                                             wasm_compile, function_time);
-  TimedHistogramScope wasm_compile_function_time_scope(timed_histogram);
+  base::Optional<TimedHistogramScope> wasm_compile_function_time_scope;
+  if (counters) {
+    auto size_histogram = SELECT_WASM_COUNTER(counters, env->module->origin,
+                                              wasm, function_size_bytes);
+    size_histogram->AddSample(
+        static_cast<int>(func_body.end - func_body.start));
+    auto timed_histogram = SELECT_WASM_COUNTER(counters, env->module->origin,
+                                               wasm_compile, function_time);
+    wasm_compile_function_time_scope.emplace(timed_histogram);
+  }
 
   if (FLAG_trace_wasm_compiler) {
     PrintF("Compiling wasm function %d with %s\n", func_index_,
@@ -188,9 +192,9 @@ WasmCompilationResult WasmCompilationUnit::ExecuteFunctionCompilation(
       if (V8_LIKELY(FLAG_wasm_tier_mask_for_testing == 0) ||
           func_index_ >= 32 ||
           ((FLAG_wasm_tier_mask_for_testing & (1 << func_index_)) == 0)) {
-        result =
-            ExecuteLiftoffCompilation(wasm_engine->allocator(), env, func_body,
-                                      func_index_, counters, detected);
+        result = ExecuteLiftoffCompilation(wasm_engine->allocator(), env,
+                                           func_body, func_index_,
+                                           for_debugging_, counters, detected);
         if (result.succeeded()) break;
       }
 
@@ -202,11 +206,7 @@ WasmCompilationResult WasmCompilationUnit::ExecuteFunctionCompilation(
     case ExecutionTier::kTurbofan:
       result = compiler::ExecuteTurbofanWasmCompilation(
           wasm_engine, env, func_body, func_index_, counters, detected);
-      break;
-
-    case ExecutionTier::kInterpreter:
-      result = compiler::ExecuteInterpreterEntryCompilation(
-          wasm_engine, env, func_body, func_index_, counters, detected);
+      result.for_debugging = for_debugging_;
       break;
   }
 
@@ -250,7 +250,7 @@ void WasmCompilationUnit::CompileWasmFunction(Isolate* isolate,
 
   DCHECK_LE(native_module->num_imported_functions(), function->func_index);
   DCHECK_LT(function->func_index, native_module->num_functions());
-  WasmCompilationUnit unit(function->func_index, tier);
+  WasmCompilationUnit unit(function->func_index, tier, kNoDebugging);
   CompilationEnv env = native_module->CreateCompilationEnv();
   WasmCompilationResult result = unit.ExecuteCompilation(
       isolate->wasm_engine(), &env,
@@ -265,27 +265,67 @@ void WasmCompilationUnit::CompileWasmFunction(Isolate* isolate,
   }
 }
 
+namespace {
+bool UseGenericWrapper(const FunctionSig* sig) {
+#if V8_TARGET_ARCH_X64
+  if (sig->returns().size() > 1) {
+    return false;
+  }
+  if (sig->returns().size() == 1 &&
+      sig->GetReturn(0).kind() != ValueType::kI32 &&
+      sig->GetReturn(0).kind() != ValueType::kI64 &&
+      sig->GetReturn(0).kind() != ValueType::kF32 &&
+      sig->GetReturn(0).kind() != ValueType::kF64) {
+    return false;
+  }
+  for (ValueType type : sig->parameters()) {
+    if (type.kind() != ValueType::kI32 && type.kind() != ValueType::kI64 &&
+        type.kind() != ValueType::kF32 && type.kind() != ValueType::kF64) {
+      return false;
+    }
+  }
+  return FLAG_wasm_generic_wrapper;
+#else
+  return false;
+#endif
+}
+}  // namespace
+
 JSToWasmWrapperCompilationUnit::JSToWasmWrapperCompilationUnit(
     Isolate* isolate, WasmEngine* wasm_engine, const FunctionSig* sig,
-    bool is_import, const WasmFeatures& enabled_features)
+    const WasmModule* module, bool is_import,
+    const WasmFeatures& enabled_features, AllowGeneric allow_generic)
     : is_import_(is_import),
       sig_(sig),
-      job_(compiler::NewJSToWasmCompilationJob(isolate, wasm_engine, sig,
-                                               is_import, enabled_features)) {}
+      use_generic_wrapper_(allow_generic && UseGenericWrapper(sig) &&
+                           !is_import),
+      job_(use_generic_wrapper_ ? nullptr
+                                : compiler::NewJSToWasmCompilationJob(
+                                      isolate, wasm_engine, sig, module,
+                                      is_import, enabled_features)) {}
 
 JSToWasmWrapperCompilationUnit::~JSToWasmWrapperCompilationUnit() = default;
 
 void JSToWasmWrapperCompilationUnit::Execute() {
-  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm"), "CompileJSToWasmWrapper");
-  CompilationJob::Status status = job_->ExecuteJob(nullptr);
-  CHECK_EQ(status, CompilationJob::SUCCEEDED);
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.wasm.detailed"),
+               "wasm.CompileJSToWasmWrapper");
+  if (!use_generic_wrapper_) {
+    CompilationJob::Status status = job_->ExecuteJob(nullptr);
+    CHECK_EQ(status, CompilationJob::SUCCEEDED);
+  }
 }
 
 Handle<Code> JSToWasmWrapperCompilationUnit::Finalize(Isolate* isolate) {
-  CompilationJob::Status status = job_->FinalizeJob(isolate);
-  CHECK_EQ(status, CompilationJob::SUCCEEDED);
-  Handle<Code> code = job_->compilation_info()->code();
-  if (must_record_function_compilation(isolate)) {
+  Handle<Code> code;
+  if (use_generic_wrapper_) {
+    code =
+        isolate->builtins()->builtin_handle(Builtins::kGenericJSToWasmWrapper);
+  } else {
+    CompilationJob::Status status = job_->FinalizeJob(isolate);
+    CHECK_EQ(status, CompilationJob::SUCCEEDED);
+    code = job_->compilation_info()->code();
+  }
+  if (!use_generic_wrapper_ && must_record_function_compilation(isolate)) {
     RecordWasmHeapStubCompilation(
         isolate, code, "%s", job_->compilation_info()->GetDebugName().get());
   }
@@ -294,11 +334,26 @@ Handle<Code> JSToWasmWrapperCompilationUnit::Finalize(Isolate* isolate) {
 
 // static
 Handle<Code> JSToWasmWrapperCompilationUnit::CompileJSToWasmWrapper(
-    Isolate* isolate, const FunctionSig* sig, bool is_import) {
+    Isolate* isolate, const FunctionSig* sig, const WasmModule* module,
+    bool is_import) {
   // Run the compilation unit synchronously.
   WasmFeatures enabled_features = WasmFeatures::FromIsolate(isolate);
   JSToWasmWrapperCompilationUnit unit(isolate, isolate->wasm_engine(), sig,
-                                      is_import, enabled_features);
+                                      module, is_import, enabled_features,
+                                      kAllowGeneric);
+  unit.Execute();
+  return unit.Finalize(isolate);
+}
+
+// static
+Handle<Code> JSToWasmWrapperCompilationUnit::CompileSpecificJSToWasmWrapper(
+    Isolate* isolate, const FunctionSig* sig, const WasmModule* module) {
+  // Run the compilation unit synchronously.
+  const bool is_import = false;
+  WasmFeatures enabled_features = WasmFeatures::FromIsolate(isolate);
+  JSToWasmWrapperCompilationUnit unit(isolate, isolate->wasm_engine(), sig,
+                                      module, is_import, enabled_features,
+                                      kDontAllowGeneric);
   unit.Execute();
   return unit.Finalize(isolate);
 }

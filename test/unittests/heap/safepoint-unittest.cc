@@ -13,9 +13,16 @@
 namespace v8 {
 namespace internal {
 
+void EnsureFlagLocalHeapsEnabled() {
+  // Avoid data race in concurrent thread by only setting the flag to true if
+  // not already enabled.
+  if (!FLAG_local_heaps) FLAG_local_heaps = true;
+}
+
 using SafepointTest = TestWithIsolate;
 
 TEST_F(SafepointTest, ReachSafepointWithoutLocalHeaps) {
+  EnsureFlagLocalHeapsEnabled();
   Heap* heap = i_isolate()->heap();
   bool run = false;
   {
@@ -33,10 +40,9 @@ class ParkedThread final : public v8::base::Thread {
         mutex_(mutex) {}
 
   void Run() override {
-    LocalHeap local_heap(heap_);
+    LocalHeap local_heap(heap_, ThreadKind::kBackground);
 
     if (mutex_) {
-      ParkedScope scope(&local_heap);
       base::MutexGuard guard(mutex_);
     }
   }
@@ -46,6 +52,7 @@ class ParkedThread final : public v8::base::Thread {
 };
 
 TEST_F(SafepointTest, StopParkedThreads) {
+  EnsureFlagLocalHeapsEnabled();
   Heap* heap = i_isolate()->heap();
 
   int safepoints = 0;
@@ -91,7 +98,8 @@ class RunningThread final : public v8::base::Thread {
         counter_(counter) {}
 
   void Run() override {
-    LocalHeap local_heap(heap_);
+    LocalHeap local_heap(heap_, ThreadKind::kBackground);
+    UnparkedScope unparked_scope(&local_heap);
 
     for (int i = 0; i < kRuns; i++) {
       counter_->fetch_add(1);
@@ -104,6 +112,7 @@ class RunningThread final : public v8::base::Thread {
 };
 
 TEST_F(SafepointTest, StopRunningThreads) {
+  EnsureFlagLocalHeapsEnabled();
   Heap* heap = i_isolate()->heap();
 
   const int kThreads = 10;
@@ -133,6 +142,26 @@ TEST_F(SafepointTest, StopRunningThreads) {
   }
 
   CHECK_EQ(safepoint_count, kRuns * kSafepoints);
+}
+
+TEST_F(SafepointTest, SkipLocalHeapOfThisThread) {
+  EnsureFlagLocalHeapsEnabled();
+  Heap* heap = i_isolate()->heap();
+  LocalHeap local_heap(heap, ThreadKind::kMain);
+  UnparkedScope unparked_scope(&local_heap);
+  {
+    SafepointScope scope(heap);
+    local_heap.Safepoint();
+  }
+  {
+    ParkedScope parked_scope(&local_heap);
+    SafepointScope scope(heap);
+    local_heap.Safepoint();
+  }
+  {
+    SafepointScope scope(heap);
+    local_heap.Safepoint();
+  }
 }
 
 }  // namespace internal

@@ -9,25 +9,28 @@ from testrunner.objects import testcase
 
 proposal_flags = [{
                     'name': 'reference-types',
-                    'flags': ['--experimental-wasm-anyref']
+                    'flags': ['--experimental-wasm-reftypes',
+                              '--wasm-staging']
                   },
                   {
                     'name': 'bulk-memory-operations',
-                    'flags': ['--experimental-wasm-bulk-memory']
+                    'flags': ['--experimental-wasm-bulk-memory',
+                              '--wasm-staging']
                   },
                   {
                     'name': 'js-types',
                     'flags': ['--experimental-wasm-type-reflection',
-                              '--no-experimental-wasm-bulk-memory']
+                              '--wasm-staging']
                   },
                   {
-                    'name': 'JS-BigInt-integration',
-                    'flags': ['--experimental-wasm-bigint']
+                    'name': 'tail-call',
+                    'flags': ['--experimental-wasm-return-call',
+                              '--wasm-staging']
                   },
                   {
-                    'name': 'multi-value',
-                    'flags': ['--experimental-wasm-mv',
-                              '--no-experimental-wasm-bulk-memory']
+                    'name': 'simd',
+                    'flags': ['--experimental-wasm-simd',
+                              '--wasm-staging']
                   },
                   ]
 

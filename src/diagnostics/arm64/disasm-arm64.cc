@@ -1377,6 +1377,10 @@ void DisassemblingDecoder::VisitFPIntegerConvert(Instruction* instr) {
       mnemonic = "ucvtf";
       form = form_fr;
       break;
+    case FJCVTZS:
+      mnemonic = "fjcvtzs";
+      form = form_rf;
+      break;
   }
   Format(instr, mnemonic, form);
 }
@@ -1419,10 +1423,10 @@ void DisassemblingDecoder::VisitFPFixedPointConvert(Instruction* instr) {
 
 // clang-format off
 #define PAUTH_SYSTEM_MNEMONICS(V) \
-  V(PACIA1716, "pacia1716")       \
-  V(AUTIA1716, "autia1716")       \
-  V(PACIASP,   "paciasp")         \
-  V(AUTIASP,   "autiasp")
+  V(PACIB1716, "pacib1716")       \
+  V(AUTIB1716, "autib1716")       \
+  V(PACIBSP,   "pacibsp")         \
+  V(AUTIBSP,   "autibsp")
 // clang-format on
 
 void DisassemblingDecoder::VisitSystem(Instruction* instr) {
@@ -1520,31 +1524,6 @@ void DisassemblingDecoder::VisitSystem(Instruction* instr) {
         form = nullptr;
         break;
       }
-    }
-  }
-
-  Format(instr, mnemonic, form);
-}
-
-void DisassemblingDecoder::VisitPointerAuthentication(Instruction* instr) {
-  const char *mnemonic = "unimplemented";
-  const char *form = "(PointerAuthentication)";
-
-  switch (instr->Mask(PointerAuthenticationMask)) {
-    case XPACI: {
-      if (instr->InstructionBits() == XPACLRI) {
-        mnemonic = "xpaclri";
-        form = nullptr;
-      } else {
-        mnemonic = "xpaci";
-        form = "'Xd";
-      }
-      break;
-    }
-    case XPACD: {
-      mnemonic = "xpacd";
-      form = "'Xd";
-      break;
     }
   }
 
@@ -2277,10 +2256,10 @@ void DisassemblingDecoder::VisitNEONExtract(Instruction* instr) {
 void DisassemblingDecoder::VisitNEONLoadStoreMultiStruct(Instruction* instr) {
   const char* mnemonic = nullptr;
   const char* form = nullptr;
-  const char* form_1v = "{'Vt.%1$s}, ['Xns]";
-  const char* form_2v = "{'Vt.%1$s, 'Vt2.%1$s}, ['Xns]";
-  const char* form_3v = "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s}, ['Xns]";
-  const char* form_4v = "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s, 'Vt4.%1$s}, ['Xns]";
+  const char* form_1v = "{'Vt.%s}, ['Xns]";
+  const char* form_2v = "{'Vt.%s, 'Vt2.%s}, ['Xns]";
+  const char* form_3v = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s}, ['Xns]";
+  const char* form_4v = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s, 'Vt4.%s}, ['Xns]";
   NEONFormatDecoder nfd(instr, NEONFormatDecoder::LoadStoreFormatMap());
 
   switch (instr->Mask(NEONLoadStoreMultiStructMask)) {
@@ -2374,11 +2353,10 @@ void DisassemblingDecoder::VisitNEONLoadStoreMultiStructPostIndex(
     Instruction* instr) {
   const char* mnemonic = nullptr;
   const char* form = nullptr;
-  const char* form_1v = "{'Vt.%1$s}, ['Xns], 'Xmr1";
-  const char* form_2v = "{'Vt.%1$s, 'Vt2.%1$s}, ['Xns], 'Xmr2";
-  const char* form_3v = "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s}, ['Xns], 'Xmr3";
-  const char* form_4v =
-      "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s, 'Vt4.%1$s}, ['Xns], 'Xmr4";
+  const char* form_1v = "{'Vt.%s}, ['Xns], 'Xmr1";
+  const char* form_2v = "{'Vt.%s, 'Vt2.%s}, ['Xns], 'Xmr2";
+  const char* form_3v = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s}, ['Xns], 'Xmr3";
+  const char* form_4v = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s, 'Vt4.%s}, ['Xns], 'Xmr4";
   NEONFormatDecoder nfd(instr, NEONFormatDecoder::LoadStoreFormatMap());
 
   switch (instr->Mask(NEONLoadStoreMultiStructPostIndexMask)) {
@@ -2586,7 +2564,7 @@ void DisassemblingDecoder::VisitNEONLoadStoreSingleStruct(Instruction* instr) {
       break;
     case NEON_LD4R:
       mnemonic = "ld4r";
-      form = "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s, 'Vt4.%1$s}, ['Xns]";
+      form = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s, 'Vt4.%s}, ['Xns]";
       break;
     default:
       break;
@@ -2747,7 +2725,7 @@ void DisassemblingDecoder::VisitNEONLoadStoreSingleStructPostIndex(
       break;
     case NEON_LD4R_post:
       mnemonic = "ld4r";
-      form = "{'Vt.%1$s, 'Vt2.%1$s, 'Vt3.%1$s, 'Vt4.%1$s}, ['Xns], 'Xmz4";
+      form = "{'Vt.%s, 'Vt2.%s, 'Vt3.%s, 'Vt4.%s}, ['Xns], 'Xmz4";
       break;
     default:
       break;

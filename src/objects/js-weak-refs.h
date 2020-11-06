@@ -6,7 +6,7 @@
 #define V8_OBJECTS_JS_WEAK_REFS_H_
 
 #include "src/objects/js-objects.h"
-#include "torque-generated/bit-fields-tq.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -16,6 +16,8 @@ namespace internal {
 
 class NativeContext;
 class WeakCell;
+
+#include "torque-generated/src/objects/js-weak-refs-tq.inc"
 
 // FinalizationRegistry object from the JS Weak Refs spec proposal:
 // https://github.com/tc39/proposal-weakrefs
@@ -40,10 +42,9 @@ class JSFinalizationRegistry : public JSObject {
 
   class BodyDescriptor;
 
-  inline static void Register(
+  inline static void RegisterWeakCellWithUnregisterToken(
       Handle<JSFinalizationRegistry> finalization_registry,
-      Handle<JSReceiver> target, Handle<Object> holdings, Handle<Object> key,
-      Isolate* isolate);
+      Handle<WeakCell> weak_cell, Isolate* isolate);
   inline static bool Unregister(
       Handle<JSFinalizationRegistry> finalization_registry,
       Handle<JSReceiver> unregister_token, Isolate* isolate);
@@ -61,18 +62,15 @@ class JSFinalizationRegistry : public JSObject {
   // Returns true if the cleared_cells list is non-empty.
   inline bool NeedsCleanup() const;
 
-  // Remove the first cleared WeakCell from the cleared_cells
-  // list (assumes there is one) and return its holdings.
-  inline static Object PopClearedCellHoldings(
-      Handle<JSFinalizationRegistry> finalization_registry, Isolate* isolate);
-
-  // Constructs an iterator for the WeakCells in the cleared_cells list and
-  // calls the user's cleanup function.
+  // Remove the already-popped weak_cell from its unregister token linked list,
+  // as well as removing the entry from the key map if it is the only WeakCell
+  // with its unregister token. This method cannot GC and does not shrink the
+  // key map. Asserts that weak_cell has a non-undefined unregister token.
   //
-  // Returns Nothing<bool> if exception occurs, otherwise returns Just(true).
-  static V8_WARN_UNUSED_RESULT Maybe<bool> Cleanup(
-      Isolate* isolate, Handle<JSFinalizationRegistry> finalization_registry,
-      Handle<Object> callback);
+  // It takes raw Addresses because it is called from CSA and Torque.
+  V8_EXPORT_PRIVATE static void RemoveCellFromUnregisterTokenMap(
+      Isolate* isolate, Address raw_finalization_registry,
+      Address raw_weak_cell);
 
   // Layout description.
   DEFINE_FIELD_OFFSET_CONSTANTS(
@@ -91,6 +89,9 @@ class WeakCell : public TorqueGeneratedWeakCell<WeakCell, HeapObject> {
   EXPORT_DECL_VERIFIER(WeakCell)
 
   class BodyDescriptor;
+
+  // Provide relaxed load access to target field.
+  inline HeapObject relaxed_target() const;
 
   // Nullify is called during GC and it modifies the pointers in WeakCell and
   // JSFinalizationRegistry. Thus we need to tell the GC about the modified
@@ -113,16 +114,6 @@ class JSWeakRef : public TorqueGeneratedJSWeakRef<JSWeakRef, JSObject> {
   class BodyDescriptor;
 
   TQ_OBJECT_CONSTRUCTORS(JSWeakRef)
-};
-
-class JSFinalizationRegistryCleanupIterator
-    : public TorqueGeneratedJSFinalizationRegistryCleanupIterator<
-          JSFinalizationRegistryCleanupIterator, JSObject> {
- public:
-  DECL_PRINTER(JSFinalizationRegistryCleanupIterator)
-  DECL_VERIFIER(JSFinalizationRegistryCleanupIterator)
-
-  TQ_OBJECT_CONSTRUCTORS(JSFinalizationRegistryCleanupIterator)
 };
 
 }  // namespace internal

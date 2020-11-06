@@ -42,7 +42,7 @@ struct OptionData {
 Maybe<bool> InsertOptionsIntoLocale(Isolate* isolate,
                                     Handle<JSReceiver> options,
                                     icu::LocaleBuilder* builder) {
-  CHECK(isolate);
+  DCHECK(isolate);
 
   const std::vector<const char*> hour_cycle_values = {"h11", "h12", "h23",
                                                       "h24"};
@@ -234,8 +234,8 @@ Maybe<bool> ApplyOptionsToTag(Isolate* isolate, Handle<String> tag,
 
   v8::String::Utf8Value bcp47_tag(v8_isolate, v8::Utils::ToLocal(tag));
   builder->setLanguageTag({*bcp47_tag, bcp47_tag.length()});
-  CHECK_LT(0, bcp47_tag.length());
-  CHECK_NOT_NULL(*bcp47_tag);
+  DCHECK_LT(0, bcp47_tag.length());
+  DCHECK_NOT_NULL(*bcp47_tag);
   // 2. If IsStructurallyValidLanguageTag(tag) is false, throw a RangeError
   // exception.
   if (!JSLocale::StartsWithUnicodeLanguageId(*bcp47_tag)) {
@@ -365,38 +365,47 @@ MaybeHandle<JSLocale> JSLocale::New(Isolate* isolate, Handle<Map> map,
 }
 
 namespace {
-Handle<String> MorphLocale(Isolate* isolate, String locale,
-                           void (*morph_func)(icu::Locale*, UErrorCode*)) {
-  UErrorCode status = U_ZERO_ERROR;
-  icu::Locale icu_locale =
-      icu::Locale::forLanguageTag(locale.ToCString().get(), status);
-  // TODO(ftang): Remove the following lines after ICU-8420 fixed.
-  // Due to ICU-8420 "und" is turn into "" by forLanguageTag,
-  // we have to work around to use icu::Locale("und") directly
-  if (icu_locale.getName()[0] == '\0') icu_locale = icu::Locale("und");
-  CHECK(U_SUCCESS(status));
-  CHECK(!icu_locale.isBogus());
-  (*morph_func)(&icu_locale, &status);
-  CHECK(U_SUCCESS(status));
-  CHECK(!icu_locale.isBogus());
-  std::string locale_str = Intl::ToLanguageTag(icu_locale).FromJust();
-  return isolate->factory()->NewStringFromAsciiChecked(locale_str.c_str());
+
+MaybeHandle<JSLocale> Construct(Isolate* isolate,
+                                const icu::Locale& icu_locale) {
+  Handle<Managed<icu::Locale>> managed_locale =
+      Managed<icu::Locale>::FromRawPtr(isolate, 0, icu_locale.clone());
+
+  Handle<JSFunction> constructor(
+      isolate->native_context()->intl_locale_function(), isolate);
+
+  Handle<Map> map;
+  ASSIGN_RETURN_ON_EXCEPTION(
+      isolate, map,
+      JSFunction::GetDerivedMap(isolate, constructor, constructor), JSLocale);
+
+  Handle<JSLocale> locale = Handle<JSLocale>::cast(
+      isolate->factory()->NewFastOrSlowJSObjectFromMap(map));
+  DisallowHeapAllocation no_gc;
+  locale->set_icu_locale(*managed_locale);
+  return locale;
 }
 
 }  // namespace
 
-Handle<String> JSLocale::Maximize(Isolate* isolate, String locale) {
-  return MorphLocale(isolate, locale,
-                     [](icu::Locale* icu_locale, UErrorCode* status) {
-                       icu_locale->addLikelySubtags(*status);
-                     });
+MaybeHandle<JSLocale> JSLocale::Maximize(Isolate* isolate,
+                                         Handle<JSLocale> locale) {
+  icu::Locale icu_locale(*(locale->icu_locale().raw()));
+  UErrorCode status = U_ZERO_ERROR;
+  icu_locale.addLikelySubtags(status);
+  DCHECK(U_SUCCESS(status));
+  DCHECK(!icu_locale.isBogus());
+  return Construct(isolate, icu_locale);
 }
 
-Handle<String> JSLocale::Minimize(Isolate* isolate, String locale) {
-  return MorphLocale(isolate, locale,
-                     [](icu::Locale* icu_locale, UErrorCode* status) {
-                       icu_locale->minimizeSubtags(*status);
-                     });
+MaybeHandle<JSLocale> JSLocale::Minimize(Isolate* isolate,
+                                         Handle<JSLocale> locale) {
+  icu::Locale icu_locale(*(locale->icu_locale().raw()));
+  UErrorCode status = U_ZERO_ERROR;
+  icu_locale.minimizeSubtags(status);
+  DCHECK(U_SUCCESS(status));
+  DCHECK(!icu_locale.isBogus());
+  return Construct(isolate, icu_locale);
 }
 
 Handle<Object> JSLocale::Language(Isolate* isolate, Handle<JSLocale> locale) {

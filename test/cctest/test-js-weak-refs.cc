@@ -6,6 +6,7 @@
 #include "src/execution/microtask-queue.h"
 #include "src/handles/handles-inl.h"
 #include "src/heap/factory-inl.h"
+#include "src/heap/heap-inl.h"
 #include "src/objects/js-objects.h"
 #include "src/objects/js-weak-refs-inl.h"
 #include "test/cctest/cctest.h"
@@ -67,10 +68,17 @@ Handle<JSObject> CreateKey(const char* key_prop_value, Isolate* isolate) {
 
 Handle<WeakCell> FinalizationRegistryRegister(
     Handle<JSFinalizationRegistry> finalization_registry,
-    Handle<JSObject> target, Handle<Object> holdings, Handle<Object> key,
-    Isolate* isolate) {
-  JSFinalizationRegistry::Register(finalization_registry, target, holdings, key,
-                                   isolate);
+    Handle<JSObject> target, Handle<Object> held_value,
+    Handle<Object> unregister_token, Isolate* isolate) {
+  Factory* factory = isolate->factory();
+  Handle<JSFunction> regfunc = Handle<JSFunction>::cast(
+      Object::GetProperty(isolate, finalization_registry,
+                          factory->NewStringFromStaticChars("register"))
+          .ToHandleChecked());
+  Handle<Object> args[] = {target, held_value, unregister_token};
+  Execution::Call(isolate, regfunc, finalization_registry, arraysize(args),
+                  args)
+      .ToHandleChecked();
   CHECK(finalization_registry->active_cells().IsWeakCell());
   Handle<WeakCell> weak_cell =
       handle(WeakCell::cast(finalization_registry->active_cells()), isolate);
@@ -95,6 +103,33 @@ void NullifyWeakCell(Handle<WeakCell> weak_cell, Isolate* isolate) {
 #ifdef VERIFY_HEAP
   weak_cell->WeakCellVerify(isolate);
 #endif  // VERIFY_HEAP
+}
+
+Object PopClearedCellHoldings(
+    Handle<JSFinalizationRegistry> finalization_registry, Isolate* isolate) {
+  // PopClearedCell is implemented in Torque. Reproduce that implementation here
+  // for testing.
+  Handle<WeakCell> weak_cell =
+      handle(WeakCell::cast(finalization_registry->cleared_cells()), isolate);
+  DCHECK(weak_cell->prev().IsUndefined(isolate));
+  finalization_registry->set_cleared_cells(weak_cell->next());
+  weak_cell->set_next(ReadOnlyRoots(isolate).undefined_value());
+
+  if (finalization_registry->cleared_cells().IsWeakCell()) {
+    WeakCell cleared_cells_head =
+        WeakCell::cast(finalization_registry->cleared_cells());
+    DCHECK_EQ(cleared_cells_head.prev(), *weak_cell);
+    cleared_cells_head.set_prev(ReadOnlyRoots(isolate).undefined_value());
+  } else {
+    DCHECK(finalization_registry->cleared_cells().IsUndefined(isolate));
+  }
+
+  if (!weak_cell->unregister_token().IsUndefined(isolate)) {
+    JSFinalizationRegistry::RemoveCellFromUnregisterTokenMap(
+        isolate, finalization_registry->ptr(), weak_cell->ptr());
+  }
+
+  return weak_cell->holdings();
 }
 
 // Usage: VerifyWeakCellChain(isolate, list_head, n, cell1, cell2, ..., celln);
@@ -361,15 +396,13 @@ TEST(TestJSFinalizationRegistryPopClearedCellHoldings1) {
   NullifyWeakCell(weak_cell3, isolate);
 
   CHECK(finalization_registry->NeedsCleanup());
-  Object cleared1 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared1 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared1, *holdings3);
   CHECK(weak_cell3->prev().IsUndefined(isolate));
   CHECK(weak_cell3->next().IsUndefined(isolate));
 
   CHECK(finalization_registry->NeedsCleanup());
-  Object cleared2 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared2 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared2, *holdings2);
   CHECK(weak_cell2->prev().IsUndefined(isolate));
   CHECK(weak_cell2->next().IsUndefined(isolate));
@@ -379,8 +412,7 @@ TEST(TestJSFinalizationRegistryPopClearedCellHoldings1) {
   NullifyWeakCell(weak_cell1, isolate);
 
   CHECK(finalization_registry->NeedsCleanup());
-  Object cleared3 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared3 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared3, *holdings1);
   CHECK(weak_cell1->prev().IsUndefined(isolate));
   CHECK(weak_cell1->next().IsUndefined(isolate));
@@ -424,8 +456,7 @@ TEST(TestJSFinalizationRegistryPopClearedCellHoldings2) {
                            *weak_cell1);
   }
 
-  Object cleared1 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared1 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared1, *holdings2);
 
   {
@@ -434,8 +465,7 @@ TEST(TestJSFinalizationRegistryPopClearedCellHoldings2) {
     VerifyWeakCellKeyChain(isolate, key_map, *token1, 1, *weak_cell1);
   }
 
-  Object cleared2 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared2 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared2, *holdings1);
 
   {
@@ -621,8 +651,7 @@ TEST(TestWeakCellUnregisterPopped) {
   NullifyWeakCell(weak_cell1, isolate);
 
   CHECK(finalization_registry->NeedsCleanup());
-  Object cleared1 = JSFinalizationRegistry::PopClearedCellHoldings(
-      finalization_registry, isolate);
+  Object cleared1 = PopClearedCellHoldings(finalization_registry, isolate);
   CHECK_EQ(cleared1, *holdings1);
 
   VerifyWeakCellChain(isolate, finalization_registry->active_cells(), 0);
@@ -851,6 +880,146 @@ TEST(TestRemoveUnregisterToken) {
                            *weak_cell1a);
     VerifyWeakCellKeyChain(isolate, key_map, *token2, 0);
   }
+}
+
+TEST(JSWeakRefScavengedInWorklist) {
+  FLAG_harmony_weak_refs = true;
+  if (!FLAG_incremental_marking || FLAG_single_generation) {
+    return;
+  }
+
+  ManualGCScope manual_gc_scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Heap* heap = isolate->heap();
+
+  {
+    HandleScope outer_scope(isolate);
+    Handle<JSWeakRef> weak_ref;
+
+    // Make a WeakRef that points to a target, both of which become unreachable.
+    {
+      HandleScope inner_scope(isolate);
+      Handle<JSObject> js_object =
+          isolate->factory()->NewJSObject(isolate->object_function());
+      Handle<JSWeakRef> inner_weak_ref = ConstructJSWeakRef(js_object, isolate);
+      CHECK(Heap::InYoungGeneration(*js_object));
+      CHECK(Heap::InYoungGeneration(*inner_weak_ref));
+
+      weak_ref = inner_scope.CloseAndEscape(inner_weak_ref);
+    }
+
+    // Do marking. This puts the WeakRef above into the js_weak_refs worklist
+    // since its target isn't marked.
+    CHECK(
+        heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+    heap::SimulateIncrementalMarking(heap, true);
+    CHECK(!heap->mark_compact_collector()
+               ->weak_objects()
+               ->js_weak_refs.IsEmpty());
+  }
+
+  // Now collect both weak_ref and its target. The worklist should be empty.
+  CcTest::CollectGarbage(NEW_SPACE);
+  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+
+  // The mark-compactor shouldn't see zapped WeakRefs in the worklist.
+  CcTest::CollectAllGarbage();
+}
+
+TEST(JSWeakRefTenuredInWorklist) {
+  FLAG_harmony_weak_refs = true;
+  if (!FLAG_incremental_marking || FLAG_single_generation) {
+    return;
+  }
+
+  ManualGCScope manual_gc_scope;
+  CcTest::InitializeVM();
+  Isolate* isolate = CcTest::i_isolate();
+  Heap* heap = isolate->heap();
+
+  HandleScope outer_scope(isolate);
+  Handle<JSWeakRef> weak_ref;
+
+  // Make a WeakRef that points to a target. The target becomes unreachable.
+  {
+    HandleScope inner_scope(isolate);
+    Handle<JSObject> js_object =
+        isolate->factory()->NewJSObject(isolate->object_function());
+    Handle<JSWeakRef> inner_weak_ref = ConstructJSWeakRef(js_object, isolate);
+    CHECK(Heap::InYoungGeneration(*js_object));
+    CHECK(Heap::InYoungGeneration(*inner_weak_ref));
+
+    weak_ref = inner_scope.CloseAndEscape(inner_weak_ref);
+  }
+  JSWeakRef old_weak_ref_location = *weak_ref;
+
+  // Do marking. This puts the WeakRef above into the js_weak_refs worklist
+  // since its target isn't marked.
+  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+  heap::SimulateIncrementalMarking(heap, true);
+  CHECK(
+      !heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+
+  // Now collect weak_ref's target. We still have a Handle to weak_ref, so it is
+  // moved and remains on the worklist.
+  CcTest::CollectGarbage(NEW_SPACE);
+  JSWeakRef new_weak_ref_location = *weak_ref;
+  CHECK_NE(old_weak_ref_location, new_weak_ref_location);
+  CHECK(
+      !heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+
+  // The mark-compactor should see the moved WeakRef in the worklist.
+  CcTest::CollectAllGarbage();
+  CHECK(heap->mark_compact_collector()->weak_objects()->js_weak_refs.IsEmpty());
+  CHECK(weak_ref->target().IsUndefined(isolate));
+}
+
+TEST(UnregisterTokenHeapVerifier) {
+  FLAG_harmony_weak_refs = true;
+  if (!FLAG_incremental_marking) return;
+  ManualGCScope manual_gc_scope;
+#ifdef VERIFY_HEAP
+  FLAG_verify_heap = true;
+#endif
+
+  CcTest::InitializeVM();
+  v8::Isolate* isolate = CcTest::isolate();
+  Heap* heap = CcTest::heap();
+  v8::HandleScope outer_scope(isolate);
+
+  {
+    // Make a new FinalizationRegistry and register an object with an unregister
+    // token that's unreachable after the IIFE returns.
+    v8::HandleScope scope(isolate);
+    CompileRun(
+        "var token = {}; "
+        "var registry = new FinalizationRegistry(function ()  {}); "
+        "(function () { "
+        "  let o = {}; "
+        "  registry.register(o, {}, token); "
+        "})();");
+  }
+
+  // GC so the WeakCell corresponding to o is moved from the active_cells to
+  // cleared_cells.
+  CcTest::CollectAllGarbage();
+  CcTest::CollectAllGarbage();
+
+  {
+    // Override the unregister token to make the original object collectible.
+    v8::HandleScope scope(isolate);
+    CompileRun("token = 0;");
+  }
+
+  heap::SimulateIncrementalMarking(heap, true);
+
+  // Pump message loop to run the finalizer task, then the incremental marking
+  // task. The finalizer task will pop the WeakCell from the cleared list. This
+  // should make the unregister_token slot undefined. That slot is iterated as a
+  // custom weak pointer, so if it is not made undefined, the verifier as part
+  // of the incremental marking task will crash.
+  EmptyMessageQueues(isolate);
 }
 
 }  // namespace internal

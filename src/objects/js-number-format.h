@@ -26,13 +26,16 @@ namespace U_ICU_NAMESPACE {
 class UnicodeString;
 namespace number {
 class LocalizedNumberFormatter;
-}  //  namespace number
-}  //  namespace U_ICU_NAMESPACE
+}  // namespace number
+}  // namespace U_ICU_NAMESPACE
 
 namespace v8 {
 namespace internal {
 
-class JSNumberFormat : public JSObject {
+#include "torque-generated/src/objects/js-number-format-tq.inc"
+
+class JSNumberFormat
+    : public TorqueGeneratedJSNumberFormat<JSNumberFormat, JSObject> {
  public:
   // ecma402/#sec-initializenumberformat
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSNumberFormat> New(
@@ -69,21 +72,12 @@ class JSNumberFormat : public JSObject {
       const icu::number::LocalizedNumberFormatter& icu_number_formatter,
       const Intl::NumberFormatDigitOptions& digit_options);
 
-  DECL_CAST(JSNumberFormat)
   DECL_PRINTER(JSNumberFormat)
-  DECL_VERIFIER(JSNumberFormat)
 
-  // Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JS_NUMBER_FORMAT_FIELDS)
-
-  DECL_ACCESSORS(locale, String)
   DECL_ACCESSORS(icu_number_formatter,
                  Managed<icu::number::LocalizedNumberFormatter>)
-  DECL_ACCESSORS(bound_format, Object)
-  DECL_INT_ACCESSORS(flags)
 
-  OBJECT_CONSTRUCTORS(JSNumberFormat, JSObject);
+  TQ_OBJECT_CONSTRUCTORS(JSNumberFormat)
 };
 
 struct NumberFormatSpan {

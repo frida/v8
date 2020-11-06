@@ -16,7 +16,7 @@
 #include "src/execution/isolate.h"
 #include "src/objects/intl-objects.h"
 #include "src/objects/managed.h"
-#include "torque-generated/field-offsets-tq.h"
+#include "torque-generated/field-offsets.h"
 #include "unicode/uversion.h"
 
 // Has to be the last include (doesn't have include guards):
@@ -31,7 +31,10 @@ class SimpleDateFormat;
 namespace v8 {
 namespace internal {
 
-class JSDateTimeFormat : public JSObject {
+#include "torque-generated/src/objects/js-date-time-format-tq.inc"
+
+class JSDateTimeFormat
+    : public TorqueGeneratedJSDateTimeFormat<JSDateTimeFormat, JSObject> {
  public:
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSDateTimeFormat> New(
       Isolate* isolate, Handle<Map> map, Handle<Object> locales,
@@ -84,14 +87,9 @@ class JSDateTimeFormat : public JSObject {
   V8_EXPORT_PRIVATE static const std::set<std::string>& GetAvailableLocales();
 
   Handle<String> HourCycleAsString() const;
-  DECL_CAST(JSDateTimeFormat)
 
   // ecma-402/#sec-properties-of-intl-datetimeformat-instances
   enum class DateTimeStyle { kUndefined, kFull, kLong, kMedium, kShort };
-
-// Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JS_DATE_TIME_FORMAT_FIELDS)
 
   // enum for "hourCycle" option.
   enum class HourCycle { kUndefined, kH11, kH12, kH23, kH24 };
@@ -126,17 +124,13 @@ class JSDateTimeFormat : public JSObject {
   STATIC_ASSERT(DateTimeStyle::kMedium <= TimeStyleBits::kMax);
   STATIC_ASSERT(DateTimeStyle::kShort <= TimeStyleBits::kMax);
 
-  DECL_ACCESSORS(locale, String)
   DECL_ACCESSORS(icu_locale, Managed<icu::Locale>)
   DECL_ACCESSORS(icu_simple_date_format, Managed<icu::SimpleDateFormat>)
   DECL_ACCESSORS(icu_date_interval_format, Managed<icu::DateIntervalFormat>)
-  DECL_ACCESSORS(bound_format, Object)
-  DECL_INT_ACCESSORS(flags)
 
   DECL_PRINTER(JSDateTimeFormat)
-  DECL_VERIFIER(JSDateTimeFormat)
 
-  OBJECT_CONSTRUCTORS(JSDateTimeFormat, JSObject);
+  TQ_OBJECT_CONSTRUCTORS(JSDateTimeFormat)
 };
 
 }  // namespace internal

@@ -5,11 +5,10 @@
 #ifndef V8_HEAP_OBJECTS_VISITING_INL_H_
 #define V8_HEAP_OBJECTS_VISITING_INL_H_
 
-#include "src/heap/objects-visiting.h"
-
-#include "src/heap/array-buffer-tracker.h"
 #include "src/heap/embedder-tracing.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/objects-visiting.h"
+#include "src/objects/arguments.h"
 #include "src/objects/free-space-inl.h"
 #include "src/objects/js-weak-refs-inl.h"
 #include "src/objects/module-inl.h"
@@ -17,8 +16,9 @@
 #include "src/objects/objects-inl.h"
 #include "src/objects/oddball.h"
 #include "src/objects/ordered-hash-table.h"
+#include "src/objects/synthetic-module-inl.h"
+#include "src/objects/torque-defined-classes.h"
 #include "src/wasm/wasm-objects.h"
-#include "torque-generated/objects-body-descriptors-tq-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -61,8 +61,6 @@ ResultType HeapVisitor<ResultType, ConcreteVisitor>::Visit(Map map,
       return visitor->VisitStruct(map, object);
     case kVisitFreeSpace:
       return visitor->VisitFreeSpace(map, FreeSpace::cast(object));
-    case kVisitWeakArray:
-      return visitor->VisitWeakArray(map, object);
     case kDataOnlyVisitorIdCount:
     case kVisitorIdCount:
       UNREACHABLE();
@@ -167,19 +165,6 @@ ResultType HeapVisitor<ResultType, ConcreteVisitor>::VisitFreeSpace(
     visitor->VisitMapPointer(object);
   }
   return static_cast<ResultType>(object.size());
-}
-
-template <typename ResultType, typename ConcreteVisitor>
-ResultType HeapVisitor<ResultType, ConcreteVisitor>::VisitWeakArray(
-    Map map, HeapObject object) {
-  ConcreteVisitor* visitor = static_cast<ConcreteVisitor*>(this);
-  if (!visitor->ShouldVisit(object)) return ResultType();
-  int size = WeakArrayBodyDescriptor::SizeOf(map, object);
-  if (visitor->ShouldVisitMapPointer()) {
-    visitor->VisitMapPointer(object);
-  }
-  WeakArrayBodyDescriptor::IterateBody(map, object, size, visitor);
-  return size;
 }
 
 template <typename ConcreteVisitor>

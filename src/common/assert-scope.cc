@@ -14,8 +14,9 @@ namespace internal {
 
 namespace {
 
-base::LazyInstance<base::ThreadLocalPointer<PerThreadAssertData>>::type
-    current_assert_data = LAZY_INSTANCE_INITIALIZER;
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(base::Thread::LocalStorageKey,
+                                GetPerThreadAssertKey,
+                                base::Thread::CreateThreadLocalKey())
 
 }  // namespace
 
@@ -40,10 +41,11 @@ class PerThreadAssertData final {
   bool DecrementLevel() { return --nesting_level_ == 0; }
 
   static PerThreadAssertData* GetCurrent() {
-    return current_assert_data.Pointer()->Get();
+    return reinterpret_cast<PerThreadAssertData*>(
+        base::Thread::GetThreadLocal(*GetPerThreadAssertKey()));
   }
   static void SetCurrent(PerThreadAssertData* data) {
-    current_assert_data.Pointer()->Set(data);
+    base::Thread::SetThreadLocal(*GetPerThreadAssertKey(), data);
   }
 
  private:
@@ -93,7 +95,7 @@ bool PerThreadAssertScope<kType, kAllow>::IsAllowed() {
 namespace {
 template <PerIsolateAssertType kType>
 using DataBit = base::BitField<bool, kType, 1>;
-}
+}  // namespace
 
 template <PerIsolateAssertType kType, bool kAllow>
 PerIsolateAssertScope<kType, kAllow>::PerIsolateAssertScope(Isolate* isolate)
@@ -118,6 +120,8 @@ bool PerIsolateAssertScope<kType, kAllow>::IsAllowed(Isolate* isolate) {
 // -----------------------------------------------------------------------------
 // Instantiations.
 
+template class PerThreadAssertScope<GARBAGE_COLLECTION_ASSERT, false>;
+template class PerThreadAssertScope<GARBAGE_COLLECTION_ASSERT, true>;
 template class PerThreadAssertScope<HEAP_ALLOCATION_ASSERT, false>;
 template class PerThreadAssertScope<HEAP_ALLOCATION_ASSERT, true>;
 template class PerThreadAssertScope<HANDLE_ALLOCATION_ASSERT, false>;
@@ -126,6 +130,8 @@ template class PerThreadAssertScope<HANDLE_DEREFERENCE_ASSERT, false>;
 template class PerThreadAssertScope<HANDLE_DEREFERENCE_ASSERT, true>;
 template class PerThreadAssertScope<CODE_DEPENDENCY_CHANGE_ASSERT, false>;
 template class PerThreadAssertScope<CODE_DEPENDENCY_CHANGE_ASSERT, true>;
+template class PerThreadAssertScope<CODE_ALLOCATION_ASSERT, false>;
+template class PerThreadAssertScope<CODE_ALLOCATION_ASSERT, true>;
 
 template class PerIsolateAssertScope<JAVASCRIPT_EXECUTION_ASSERT, false>;
 template class PerIsolateAssertScope<JAVASCRIPT_EXECUTION_ASSERT, true>;

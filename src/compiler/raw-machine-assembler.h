@@ -56,6 +56,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
           PoisoningMitigationLevel::kPoisonCriticalOnly);
   ~RawMachineAssembler() = default;
 
+  RawMachineAssembler(const RawMachineAssembler&) = delete;
+  RawMachineAssembler& operator=(const RawMachineAssembler&) = delete;
+
   Isolate* isolate() const { return isolate_; }
   Graph* graph() const { return graph_; }
   Zone* zone() const { return graph()->zone(); }
@@ -311,6 +314,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* WordSar(Node* a, Node* b) {
     return AddNode(machine()->WordSar(), a, b);
   }
+  Node* WordSarShiftOutZeros(Node* a, Node* b) {
+    return AddNode(machine()->WordSarShiftOutZeros(), a, b);
+  }
   Node* WordRor(Node* a, Node* b) {
     return AddNode(machine()->WordRor(), a, b);
   }
@@ -345,6 +351,9 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   }
   Node* Word32Sar(Node* a, Node* b) {
     return AddNode(machine()->Word32Sar(), a, b);
+  }
+  Node* Word32SarShiftOutZeros(Node* a, Node* b) {
+    return AddNode(machine()->Word32SarShiftOutZeros(), a, b);
   }
   Node* Word32Ror(Node* a, Node* b) {
     return AddNode(machine()->Word32Ror(), a, b);
@@ -715,11 +724,11 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* TruncateFloat64ToUint32(Node* a) {
     return AddNode(machine()->TruncateFloat64ToUint32(), a);
   }
-  Node* TruncateFloat32ToInt32(Node* a) {
-    return AddNode(machine()->TruncateFloat32ToInt32(), a);
+  Node* TruncateFloat32ToInt32(Node* a, TruncateKind kind) {
+    return AddNode(machine()->TruncateFloat32ToInt32(kind), a);
   }
-  Node* TruncateFloat32ToUint32(Node* a) {
-    return AddNode(machine()->TruncateFloat32ToUint32(), a);
+  Node* TruncateFloat32ToUint32(Node* a, TruncateKind kind) {
+    return AddNode(machine()->TruncateFloat32ToUint32(kind), a);
   }
   Node* TryTruncateFloat32ToInt64(Node* a) {
     return AddNode(machine()->TryTruncateFloat32ToInt64(), a);
@@ -828,6 +837,12 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   Node* Float64SilenceNaN(Node* a) {
     return AddNode(machine()->Float64SilenceNaN(), a);
   }
+
+  // SIMD operations.
+  Node* I64x2Splat(Node* a) { return AddNode(machine()->I64x2Splat(), a); }
+  Node* I32x4Splat(Node* a) { return AddNode(machine()->I32x4Splat(), a); }
+  Node* I16x8Splat(Node* a) { return AddNode(machine()->I16x8Splat(), a); }
+  Node* I8x16Splat(Node* a) { return AddNode(machine()->I8x16Splat(), a); }
 
   // Stack operations.
   Node* LoadFramePointer() { return AddNode(machine()->LoadFramePointer()); }
@@ -961,7 +976,7 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   void DebugBreak();
   void Unreachable();
   void Comment(const std::string& msg);
-  void StaticAssert(Node* value);
+  void StaticAssert(Node* value, const char* source);
 
 #if DEBUG
   void Bind(RawMachineLabel* label, AssemblerDebugInfo info);
@@ -1005,7 +1020,8 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
     return AddNode(op, sizeof...(args) + 1, buffer);
   }
 
-  void SetSourcePosition(const char* file, int line);
+  void SetCurrentExternalSourcePosition(FileAndLine file_and_line);
+  FileAndLine GetCurrentExternalSourcePosition() const;
   SourcePositionTable* source_positions() { return source_positions_; }
 
  private:
@@ -1044,8 +1060,6 @@ class V8_EXPORT_PRIVATE RawMachineAssembler {
   NodeVector parameters_;
   BasicBlock* current_block_;
   PoisoningMitigationLevel poisoning_level_;
-
-  DISALLOW_COPY_AND_ASSIGN(RawMachineAssembler);
 };
 
 class V8_EXPORT_PRIVATE RawMachineLabel final {
@@ -1055,6 +1069,8 @@ class V8_EXPORT_PRIVATE RawMachineLabel final {
   explicit RawMachineLabel(Type type = kNonDeferred)
       : deferred_(type == kDeferred) {}
   ~RawMachineLabel();
+  RawMachineLabel(const RawMachineLabel&) = delete;
+  RawMachineLabel& operator=(const RawMachineLabel&) = delete;
 
   BasicBlock* block() const { return block_; }
 
@@ -1064,7 +1080,6 @@ class V8_EXPORT_PRIVATE RawMachineLabel final {
   bool bound_ = false;
   bool deferred_;
   friend class RawMachineAssembler;
-  DISALLOW_COPY_AND_ASSIGN(RawMachineLabel);
 };
 
 }  // namespace compiler

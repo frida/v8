@@ -209,11 +209,29 @@ RUNTIME_FUNCTION(Runtime_NewError) {
 
 RUNTIME_FUNCTION(Runtime_NewTypeError) {
   HandleScope scope(isolate);
-  DCHECK_EQ(2, args.length());
+  DCHECK_LE(args.length(), 4);
+  DCHECK_GE(args.length(), 1);
   CONVERT_INT32_ARG_CHECKED(template_index, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Object, arg0, 1);
   MessageTemplate message_template = MessageTemplateFromInt(template_index);
-  return *isolate->factory()->NewTypeError(message_template, arg0);
+
+  Handle<Object> arg0;
+  if (args.length() >= 2) {
+    CHECK(args[1].IsObject());
+    arg0 = args.at<Object>(1);
+  }
+
+  Handle<Object> arg1;
+  if (args.length() >= 3) {
+    CHECK(args[2].IsObject());
+    arg1 = args.at<Object>(2);
+  }
+  Handle<Object> arg2;
+  if (args.length() >= 4) {
+    CHECK(args[3].IsObject());
+    arg2 = args.at<Object>(3);
+  }
+
+  return *isolate->factory()->NewTypeError(message_template, arg0, arg1, arg2);
 }
 
 RUNTIME_FUNCTION(Runtime_NewReferenceError) {
@@ -308,13 +326,15 @@ RUNTIME_FUNCTION(Runtime_StackGuardWithGap) {
   return isolate->stack_guard()->HandleInterrupts();
 }
 
-RUNTIME_FUNCTION(Runtime_BytecodeBudgetInterrupt) {
+RUNTIME_FUNCTION(Runtime_BytecodeBudgetInterruptFromBytecode) {
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
   CONVERT_ARG_HANDLE_CHECKED(JSFunction, function, 0);
   function->raw_feedback_cell().set_interrupt_budget(FLAG_interrupt_budget);
   if (!function->has_feedback_vector()) {
-    JSFunction::EnsureFeedbackVector(function);
+    IsCompiledScope is_compiled_scope(
+        function->shared().is_compiled_scope(isolate));
+    JSFunction::EnsureFeedbackVector(function, &is_compiled_scope);
     // Also initialize the invocation count here. This is only really needed for
     // OSR. When we OSR functions with lazy feedback allocation we want to have
     // a non zero invocation count so we can inline functions.
@@ -324,9 +344,24 @@ RUNTIME_FUNCTION(Runtime_BytecodeBudgetInterrupt) {
   {
     SealHandleScope shs(isolate);
     isolate->counters()->runtime_profiler_ticks()->Increment();
-    isolate->runtime_profiler()->MarkCandidatesForOptimization();
+    isolate->runtime_profiler()->MarkCandidatesForOptimizationFromBytecode();
     return ReadOnlyRoots(isolate).undefined_value();
   }
+}
+
+RUNTIME_FUNCTION(Runtime_BytecodeBudgetInterruptFromCode) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(FeedbackCell, feedback_cell, 0);
+
+  DCHECK(feedback_cell->value().IsFeedbackVector());
+
+  feedback_cell->set_interrupt_budget(FLAG_interrupt_budget);
+
+  SealHandleScope shs(isolate);
+  isolate->counters()->runtime_profiler_ticks()->Increment();
+  isolate->runtime_profiler()->MarkCandidatesForOptimizationFromCode();
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 RUNTIME_FUNCTION(Runtime_AllocateInYoungGeneration) {
@@ -409,11 +444,13 @@ RUNTIME_FUNCTION(Runtime_ThrowIteratorError) {
   return isolate->Throw(*ErrorUtils::NewIteratorError(isolate, object));
 }
 
-RUNTIME_FUNCTION(Runtime_ThrowSpreadArgIsNullOrUndefined) {
+RUNTIME_FUNCTION(Runtime_ThrowSpreadArgError) {
   HandleScope scope(isolate);
-  DCHECK_EQ(1, args.length());
-  CONVERT_ARG_HANDLE_CHECKED(Object, object, 0);
-  return ErrorUtils::ThrowSpreadArgIsNullOrUndefinedError(isolate, object);
+  DCHECK_EQ(2, args.length());
+  CONVERT_SMI_ARG_CHECKED(message_id_smi, 0);
+  MessageTemplate message_id = MessageTemplateFromInt(message_id_smi);
+  CONVERT_ARG_HANDLE_CHECKED(Object, object, 1);
+  return ErrorUtils::ThrowSpreadArgError(isolate, message_id, object);
 }
 
 RUNTIME_FUNCTION(Runtime_ThrowCalledNonCallable) {
@@ -578,19 +615,21 @@ RUNTIME_FUNCTION(Runtime_GetTemplateObject) {
       isolate, native_context, description, shared_info, slot_id);
 }
 
-RUNTIME_FUNCTION(Runtime_ReportMessage) {
+RUNTIME_FUNCTION(Runtime_ReportMessageFromMicrotask) {
   // Helper to report messages and continue JS execution. This is intended to
-  // behave similarly to reporting exceptions which reach the top-level in
-  // Execution.cc, but allow the JS code to continue. This is useful for
-  // implementing algorithms such as RunMicrotasks in JS.
+  // behave similarly to reporting exceptions which reach the top-level, but
+  // allow the JS code to continue.
   HandleScope scope(isolate);
   DCHECK_EQ(1, args.length());
 
-  CONVERT_ARG_HANDLE_CHECKED(Object, message_obj, 0);
+  CONVERT_ARG_HANDLE_CHECKED(Object, exception, 0);
 
   DCHECK(!isolate->has_pending_exception());
-  isolate->set_pending_exception(*message_obj);
-  isolate->ReportPendingMessagesFromJavaScript();
+  isolate->set_pending_exception(*exception);
+  MessageLocation* no_location = nullptr;
+  Handle<JSMessageObject> message =
+      isolate->CreateMessageOrAbort(exception, no_location);
+  MessageHandler::ReportMessage(isolate, no_location, message);
   isolate->clear_pending_exception();
   return ReadOnlyRoots(isolate).undefined_value();
 }

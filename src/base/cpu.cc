@@ -4,12 +4,15 @@
 
 #include "src/base/cpu.h"
 
+#if defined(STARBOARD)
+#include "starboard/cpu_features.h"
+#endif
+
 #if V8_LIBC_MSVCRT
 #include <intrin.h>  // __cpuid()
 #endif
 #if V8_OS_LINUX
 #include <linux/auxvec.h>  // AT_HWCAP
-extern "C" char** environ;
 #endif
 #if V8_GLIBC_PREREQ(2, 16)
 #include <sys/auxv.h>  // getauxval()
@@ -17,7 +20,7 @@ extern "C" char** environ;
 #if V8_OS_QNX
 #include <sys/syspage.h>  // cpuinfo
 #endif
-#if (V8_OS_LINUX && (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64)) || V8_OS_ANDROID
+#if V8_OS_LINUX && (V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64)
 #include <elf.h>
 #endif
 #if V8_OS_AIX
@@ -76,7 +79,8 @@ static V8_INLINE void __cpuid(int cpu_info[4], int info_type) {
 
 #endif  // !V8_LIBC_MSVCRT
 
-#elif V8_HOST_ARCH_ARM || V8_HOST_ARCH_MIPS || V8_HOST_ARCH_MIPS64
+#elif V8_HOST_ARCH_ARM || V8_HOST_ARCH_ARM64 || V8_HOST_ARCH_MIPS || \
+    V8_HOST_ARCH_MIPS64
 
 #if V8_OS_LINUX
 
@@ -109,29 +113,80 @@ static V8_INLINE void __cpuid(int cpu_info[4], int info_type) {
 #define HWCAP_IDIV  (HWCAP_IDIVA | HWCAP_IDIVT)
 #define HWCAP_LPAE  (1 << 20)
 
+#endif  // V8_HOST_ARCH_ARM
+
+#if V8_HOST_ARCH_ARM64
+
+// See <uapi/asm/hwcap.h> kernel header.
+/*
+ * HWCAP flags - for elf_hwcap (in kernel) and AT_HWCAP
+ */
+#define HWCAP_FP (1 << 0)
+#define HWCAP_ASIMD (1 << 1)
+#define HWCAP_EVTSTRM (1 << 2)
+#define HWCAP_AES (1 << 3)
+#define HWCAP_PMULL (1 << 4)
+#define HWCAP_SHA1 (1 << 5)
+#define HWCAP_SHA2 (1 << 6)
+#define HWCAP_CRC32 (1 << 7)
+#define HWCAP_ATOMICS (1 << 8)
+#define HWCAP_FPHP (1 << 9)
+#define HWCAP_ASIMDHP (1 << 10)
+#define HWCAP_CPUID (1 << 11)
+#define HWCAP_ASIMDRDM (1 << 12)
+#define HWCAP_JSCVT (1 << 13)
+#define HWCAP_FCMA (1 << 14)
+#define HWCAP_LRCPC (1 << 15)
+#define HWCAP_DCPOP (1 << 16)
+#define HWCAP_SHA3 (1 << 17)
+#define HWCAP_SM3 (1 << 18)
+#define HWCAP_SM4 (1 << 19)
+#define HWCAP_ASIMDDP (1 << 20)
+#define HWCAP_SHA512 (1 << 21)
+#define HWCAP_SVE (1 << 22)
+#define HWCAP_ASIMDFHM (1 << 23)
+#define HWCAP_DIT (1 << 24)
+#define HWCAP_USCAT (1 << 25)
+#define HWCAP_ILRCPC (1 << 26)
+#define HWCAP_FLAGM (1 << 27)
+#define HWCAP_SSBS (1 << 28)
+#define HWCAP_SB (1 << 29)
+#define HWCAP_PACA (1 << 30)
+#define HWCAP_PACG (1UL << 31)
+
+#endif  // V8_HOST_ARCH_ARM64
+
+#if V8_HOST_ARCH_ARM || V8_HOST_ARCH_ARM64
+
 static uint32_t ReadELFHWCaps() {
+  uint32_t result = 0;
 #if V8_GLIBC_PREREQ(2, 16)
-  return static_cast<uint32_t>(getauxval(AT_HWCAP));
+  result = static_cast<uint32_t>(getauxval(AT_HWCAP));
 #else
-  char** head = environ;
-  while (*head++ != nullptr) {
-  }
-#ifdef __LP64__
-  using elf_auxv_t = Elf64_auxv_t;
-#else
-  using elf_auxv_t = Elf32_auxv_t;
-#endif
-  for (elf_auxv_t* entry = reinterpret_cast<elf_auxv_t*>(head);
-       entry->a_type != AT_NULL; ++entry) {
-    if (entry->a_type == AT_HWCAP) {
-      return entry->a_un.a_val;
+  // Read the ELF HWCAP flags by parsing /proc/self/auxv.
+  FILE* fp = fopen("/proc/self/auxv", "r");
+  if (fp != nullptr) {
+    struct {
+      uint32_t tag;
+      uint32_t value;
+    } entry;
+    for (;;) {
+      size_t n = fread(&entry, sizeof(entry), 1, fp);
+      if (n == 0 || (entry.tag == 0 && entry.value == 0)) {
+        break;
+      }
+      if (entry.tag == AT_HWCAP) {
+        result = entry.value;
+        break;
+      }
     }
+    fclose(fp);
   }
-  return 0u;
 #endif
+  return result;
 }
 
-#endif  // V8_HOST_ARCH_ARM
+#endif  // V8_HOST_ARCH_ARM || V8_HOST_ARCH_ARM64
 
 #if V8_HOST_ARCH_MIPS
 int __detect_fp64_mode(void) {
@@ -293,7 +348,56 @@ static bool HasListItem(const char* list, const char* item) {
 
 #endif  // V8_OS_LINUX
 
-#endif  //  V8_HOST_ARCH_ARM || V8_HOST_ARCH_MIPS || V8_HOST_ARCH_MIPS64
+#endif  // V8_HOST_ARCH_ARM || V8_HOST_ARCH_ARM64 ||
+        // V8_HOST_ARCH_MIPS || V8_HOST_ARCH_MIPS64
+
+#if defined(STARBOARD)
+
+bool CPU::StarboardDetectCPU() {
+#if (SB_API_VERSION >= 11)
+  SbCPUFeatures features;
+  if (!SbCPUFeaturesGet(&features)) {
+    return false;
+  }
+  architecture_ = features.arm.architecture_generation;
+  switch (features.architecture) {
+    case kSbCPUFeaturesArchitectureArm:
+    case kSbCPUFeaturesArchitectureArm64:
+      has_neon_ = features.arm.has_neon;
+      has_thumb2_ = features.arm.has_thumb2;
+      has_vfp_ = features.arm.has_vfp;
+      has_vfp3_ = features.arm.has_vfp3;
+      has_vfp3_d32_ = features.arm.has_vfp3_d32;
+      has_idiva_ = features.arm.has_idiva;
+      break;
+    case kSbCPUFeaturesArchitectureX86:
+    case kSbCPUFeaturesArchitectureX86_64:
+      // Following flags are mandatory for V8
+      has_cmov_ = features.x86.has_cmov;
+      has_sse2_ = features.x86.has_sse2;
+      // These flags are optional
+      has_sse3_ = features.x86.has_sse3;
+      has_ssse3_ = features.x86.has_ssse3;
+      has_sse41_ = features.x86.has_sse41;
+      has_sahf_ = features.x86.has_sahf;
+      has_avx_ = features.x86.has_avx;
+      has_fma3_ = features.x86.has_fma3;
+      has_bmi1_ = features.x86.has_bmi1;
+      has_bmi2_ = features.x86.has_bmi2;
+      has_lzcnt_ = features.x86.has_lzcnt;
+      has_popcnt_ = features.x86.has_popcnt;
+      break;
+    default:
+      return false;
+  }
+
+  return true;
+#else  // SB_API_VERSION >= 11
+  return false;
+#endif
+}
+
+#endif
 
 CPU::CPU()
     : stepping_(0),
@@ -332,10 +436,18 @@ CPU::CPU()
       has_vfp_(false),
       has_vfp3_(false),
       has_vfp3_d32_(false),
+      has_jscvt_(false),
       is_fp64_mode_(false),
       has_non_stop_time_stamp_counter_(false),
       has_msa_(false) {
   memcpy(vendor_, "Unknown", 8);
+
+#if defined(STARBOARD)
+  if (StarboardDetectCPU()) {
+    return;
+  }
+#endif
+
 #if V8_HOST_ARCH_IA32 || V8_HOST_ARCH_X64
   int cpu_info[4];
 
@@ -555,19 +667,6 @@ CPU::CPU()
   // We don't support any FPUs other than VFP.
   has_fpu_ = has_vfp_;
 
-#elif defined(__APPLE__)
-
-  architecture_ = 7;
-
-  has_fpu_ = true;
-
-  has_idiva_ = false;
-  has_neon_ = true;
-  has_thumb2_ = true;
-  has_vfp_ = true;
-  has_vfp3_ = true;
-  has_vfp3_d32_ = true;
-
 #elif V8_OS_QNX
 
   uint32_t cpu_flags = SYSPAGE_ENTRY(cpuinfo)->flags;
@@ -617,34 +716,52 @@ CPU::CPU()
   // Windows makes high-resolution thread timing information available in
   // user-space.
   has_non_stop_time_stamp_counter_ = true;
+
+#elif V8_OS_LINUX
+  // Try to extract the list of CPU features from ELF hwcaps.
+  uint32_t hwcaps = ReadELFHWCaps();
+  if (hwcaps != 0) {
+    has_jscvt_ = (hwcaps & HWCAP_JSCVT) != 0;
+  } else {
+    // Try to fallback to "Features" CPUInfo field
+    CPUInfo cpu_info;
+    char* features = cpu_info.ExtractField("Features");
+    has_jscvt_ = HasListItem(features, "jscvt");
+    delete[] features;
+  }
 #endif  // V8_OS_WIN
 
 #elif V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64
 
 #ifndef USE_SIMULATOR
 #if V8_OS_LINUX
+  // Read processor info from /proc/self/auxv.
   char* auxv_cpu_type = nullptr;
-  char** head = environ;
-  while (*head++ != nullptr) {
-  }
+  FILE* fp = fopen("/proc/self/auxv", "r");
+  if (fp != nullptr) {
 #if V8_TARGET_ARCH_PPC64
-  using elf_auxv_t = Elf64_auxv_t;
+    Elf64_auxv_t entry;
 #else
-  using elf_auxv_t = Elf32_auxv_t;
+    Elf32_auxv_t entry;
 #endif
-  for (elf_auxv_t* entry = reinterpret_cast<elf_auxv_t*>(head);
-       entry->a_type != AT_NULL; ++entry) {
-    switch (entry->a_type) {
-      case AT_PLATFORM:
-        auxv_cpu_type = reinterpret_cast<char*>(entry->a_un.a_val);
+    for (;;) {
+      size_t n = fread(&entry, sizeof(entry), 1, fp);
+      if (n == 0 || entry.a_type == AT_NULL) {
         break;
-      case AT_ICACHEBSIZE:
-        icache_line_size_ = entry->a_un.a_val;
-        break;
-      case AT_DCACHEBSIZE:
-        dcache_line_size_ = entry->a_un.a_val;
-        break;
+      }
+      switch (entry.a_type) {
+        case AT_PLATFORM:
+          auxv_cpu_type = reinterpret_cast<char*>(entry.a_un.a_val);
+          break;
+        case AT_ICACHEBSIZE:
+          icache_line_size_ = entry.a_un.a_val;
+          break;
+        case AT_DCACHEBSIZE:
+          dcache_line_size_ = entry.a_un.a_val;
+          break;
+      }
     }
+    fclose(fp);
   }
 
   part_ = -1;

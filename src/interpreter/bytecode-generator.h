@@ -32,7 +32,7 @@ class BytecodeJumpTable;
 class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
  public:
   explicit BytecodeGenerator(
-      UnoptimizedCompilationInfo* info,
+      Zone* zone, UnoptimizedCompilationInfo* info,
       const AstStringConstants* ast_string_constants,
       std::vector<FunctionLiteral*>* eager_inner_literals);
 
@@ -422,6 +422,7 @@ class BytecodeGenerator final : public AstVisitor<BytecodeGenerator> {
                                           Variable* variable);
   FeedbackSlot GetCachedLoadICSlot(const Expression* expr,
                                    const AstRawString* name);
+  FeedbackSlot GetCachedLoadSuperICSlot(const AstRawString* name);
   FeedbackSlot GetCachedStoreICSlot(const Expression* expr,
                                     const AstRawString* name);
   FeedbackSlot GetDummyCompareICSlot();

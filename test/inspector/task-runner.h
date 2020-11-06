@@ -17,6 +17,9 @@
 #include "src/utils/vector.h"
 #include "test/inspector/isolate-data.h"
 
+namespace v8 {
+namespace internal {
+
 class TaskRunner : public v8::base::Thread {
  public:
   class Task {
@@ -39,13 +42,12 @@ class TaskRunner : public v8::base::Thread {
   void RunMessageLoop(bool only_protocol);
   void QuitMessageLoop();
 
-  // TaskRunner takes ownership.
-  void Append(Task* task);
+  void Append(std::unique_ptr<Task>);
 
   void Terminate();
 
  private:
-  Task* GetNext(bool only_protocol);
+  std::unique_ptr<Task> GetNext(bool only_protocol);
   v8::Isolate* isolate() const { return data_->isolate(); }
 
   IsolateData::SetupGlobalTasks setup_global_tasks_;
@@ -58,8 +60,8 @@ class TaskRunner : public v8::base::Thread {
   // deferred_queue_ combined with queue_ (in this order) have all tasks in the
   // correct order. Sometimes we skip non-protocol tasks by moving them from
   // queue_ to deferred_queue_.
-  v8::internal::LockedQueue<Task*> queue_;
-  v8::internal::LockedQueue<Task*> deffered_queue_;
+  v8::internal::LockedQueue<std::unique_ptr<Task>> queue_;
+  v8::internal::LockedQueue<std::unique_ptr<Task>> deferred_queue_;
   v8::base::Semaphore process_queue_semaphore_;
 
   int nested_loop_count_;
@@ -68,5 +70,8 @@ class TaskRunner : public v8::base::Thread {
 
   DISALLOW_COPY_AND_ASSIGN(TaskRunner);
 };
+
+}  // namespace internal
+}  // namespace v8
 
 #endif  //  V8_TEST_INSPECTOR_PROTOCOL_TASK_RUNNER_H_

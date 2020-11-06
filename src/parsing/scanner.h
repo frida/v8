@@ -15,6 +15,7 @@
 #include "src/common/globals.h"
 #include "src/common/message-template.h"
 #include "src/parsing/literal-buffer.h"
+#include "src/parsing/parse-info.h"
 #include "src/parsing/token.h"
 #include "src/strings/char-predicates.h"
 #include "src/strings/unicode.h"
@@ -38,7 +39,7 @@ class Zone;
 // or one part of a surrogate pair that make a single 21 bit code point.
 class Utf16CharacterStream {
  public:
-  static const uc32 kEndOfInput = -1;
+  static constexpr uc32 kEndOfInput = static_cast<uc32>(-1);
 
   virtual ~Utf16CharacterStream() = default;
 
@@ -266,10 +267,13 @@ class V8_EXPORT_PRIVATE Scanner {
   };
 
   // -1 is outside of the range of any real source code.
-  static const int kNoOctalLocation = -1;
-  static const uc32 kEndOfInput = Utf16CharacterStream::kEndOfInput;
+  static constexpr uc32 kEndOfInput = Utf16CharacterStream::kEndOfInput;
+  static constexpr uc32 kInvalidSequence = static_cast<uc32>(-1);
 
-  explicit Scanner(Utf16CharacterStream* source, bool is_module);
+  static constexpr uc32 Invalid() { return Scanner::kInvalidSequence; }
+  static bool IsInvalid(uc32 c);
+
+  explicit Scanner(Utf16CharacterStream* source, UnoptimizedCompileFlags flags);
 
   void Initialize();
 
@@ -410,18 +414,6 @@ class V8_EXPORT_PRIVATE Scanner {
 
   bool FoundHtmlComment() const { return found_html_comment_; }
 
-  bool allow_harmony_optional_chaining() const {
-    return allow_harmony_optional_chaining_;
-  }
-
-  void set_allow_harmony_optional_chaining(bool allow) {
-    allow_harmony_optional_chaining_ = allow;
-  }
-
-  bool allow_harmony_nullish() const { return allow_harmony_nullish_; }
-
-  void set_allow_harmony_nullish(bool allow) { allow_harmony_nullish_ = allow; }
-
   const Utf16CharacterStream* stream() const { return source_; }
 
  private:
@@ -552,7 +544,8 @@ class V8_EXPORT_PRIVATE Scanner {
   }
 
   void PushBack(uc32 ch) {
-    DCHECK_LE(c0_, static_cast<uc32>(unibrow::Utf16::kMaxNonSurrogateCharCode));
+    DCHECK(IsInvalid(c0_) ||
+           base::IsInRange(c0_, 0u, unibrow::Utf16::kMaxNonSurrogateCharCode));
     source_->Back();
     c0_ = ch;
   }
@@ -634,7 +627,7 @@ class V8_EXPORT_PRIVATE Scanner {
   // number can be 000000001, so it's very long in characters but its value is
   // small.
   template <bool capture_raw>
-  uc32 ScanUnlimitedLengthHexNumber(int max_value, int beg_pos);
+  uc32 ScanUnlimitedLengthHexNumber(uc32 max_value, int beg_pos);
 
   // Scans a single JavaScript token.
   V8_INLINE Token::Value ScanSingleToken();
@@ -715,6 +708,8 @@ class V8_EXPORT_PRIVATE Scanner {
   const TokenDesc& next() const { return *next_; }
   const TokenDesc& next_next() const { return *next_next_; }
 
+  UnoptimizedCompileFlags flags_;
+
   TokenDesc* current_;    // desc for current token (as returned by Next())
   TokenDesc* next_;       // desc for next token (one token look-ahead)
   TokenDesc* next_next_;  // desc for the token after next (after PeakAhead())
@@ -729,12 +724,6 @@ class V8_EXPORT_PRIVATE Scanner {
 
   // Whether this scanner encountered an HTML comment.
   bool found_html_comment_;
-
-  // Harmony flags to allow ESNext features.
-  bool allow_harmony_optional_chaining_;
-  bool allow_harmony_nullish_;
-
-  const bool is_module_;
 
   // Values parsed from magic comments.
   LiteralBuffer source_url_;

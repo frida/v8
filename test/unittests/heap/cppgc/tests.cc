@@ -4,33 +4,41 @@
 
 #include "test/unittests/heap/cppgc/tests.h"
 
+#include <memory>
+
+#include "src/heap/cppgc/object-allocator.h"
+#include "test/unittests/heap/cppgc/test-platform.h"
+
 namespace cppgc {
+namespace internal {
 namespace testing {
 
 // static
-std::unique_ptr<cppgc::PageAllocator> TestWithPlatform::page_allocator_;
+std::shared_ptr<TestPlatform> TestWithPlatform::platform_;
 
 // static
 void TestWithPlatform::SetUpTestSuite() {
-  page_allocator_.reset(new v8::base::PageAllocator());
-  cppgc::InitializePlatform(page_allocator_.get());
+  platform_ = std::make_unique<TestPlatform>();
+  cppgc::InitializeProcess(platform_->GetPageAllocator());
 }
 
 // static
 void TestWithPlatform::TearDownTestSuite() {
-  cppgc::ShutdownPlatform();
-  page_allocator_.reset();
+  cppgc::ShutdownProcess();
+  platform_.reset();
 }
 
-void TestWithHeap::SetUp() {
-  heap_ = Heap::Create();
-  TestWithPlatform::SetUp();
+TestWithHeap::TestWithHeap()
+    : heap_(Heap::Create(platform_)),
+      allocation_handle_(heap_->GetAllocationHandle()) {}
+
+void TestWithHeap::ResetLinearAllocationBuffers() {
+  Heap::From(GetHeap())->object_allocator().ResetLinearAllocationBuffers();
 }
 
-void TestWithHeap::TearDown() {
-  heap_.reset();
-  TestWithPlatform::TearDown();
-}
+TestSupportingAllocationOnly::TestSupportingAllocationOnly()
+    : no_gc_scope_(*internal::Heap::From(GetHeap())) {}
 
 }  // namespace testing
+}  // namespace internal
 }  // namespace cppgc

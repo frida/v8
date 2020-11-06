@@ -59,12 +59,7 @@ namespace internal {
 // The ARM ABI does not specify the usage of register r9, which may be reserved
 // as the static base or thread register on some platforms, in which case we
 // leave it alone. Adjust the value of kR9Available accordingly:
-const int kR9Available = // 1 if available to us, 0 if reserved
-#if defined(__APPLE__)
-  0;
-#else
-  1;
-#endif
+const int kR9Available = 1;  // 1 if available to us, 0 if reserved
 
 // Register list in load/store instructions
 // Note that the bit values must match those used in actual instruction encoding
@@ -186,7 +181,10 @@ class DwVfpRegister : public RegisterBase<DwVfpRegister, kDoubleAfterLast> {
  public:
   static constexpr int kSizeInBytes = 8;
 
-  inline static int NumRegisters();
+  // This function differs from kNumRegisters by returning the number of double
+  // registers supported by the current CPU, while kNumRegisters always returns
+  // 32.
+  inline static int SupportedRegisterCount();
 
   static void split_code(int reg_code, int* vm, int* m) {
     DCHECK(from_code(reg_code).is_valid());
@@ -355,6 +353,8 @@ constexpr Register kWasmCompileLazyFuncIndexRegister = r4;
 // Give alias names to registers
 constexpr Register cp = r7;              // JavaScript context pointer.
 constexpr Register kRootRegister = r10;  // Roots array pointer.
+
+constexpr DoubleRegister kFPReturnRegister0 = d0;
 
 }  // namespace internal
 }  // namespace v8

@@ -215,7 +215,7 @@ class DebugFeatureTracker {
 class V8_EXPORT_PRIVATE Debug {
  public:
   // Debug event triggers.
-  void OnDebugBreak(Handle<FixedArray> break_points_hit);
+  void OnDebugBreak(Handle<FixedArray> break_points_hit, StepAction stepAction);
 
   base::Optional<Object> OnThrow(Handle<Object> exception)
       V8_WARN_UNUSED_RESULT;
@@ -248,6 +248,8 @@ class V8_EXPORT_PRIVATE Debug {
   void RemoveBreakpoint(int id);
   void RemoveBreakpointForWasmScript(Handle<Script> script, int id);
 
+  void RecordWasmScriptWithBreakpoints(Handle<Script> script);
+
   // Find breakpoints from the debug info and the break location and check
   // whether they are hit. Return an empty handle if not, or a FixedArray with
   // hit BreakPoint objects.
@@ -272,6 +274,7 @@ class V8_EXPORT_PRIVATE Debug {
                               std::vector<BreakLocation>* locations);
 
   bool IsBlackboxed(Handle<SharedFunctionInfo> shared);
+  bool ShouldBeSkipped();
 
   bool CanBreakAtEntry(Handle<SharedFunctionInfo> shared);
 
@@ -545,6 +548,9 @@ class V8_EXPORT_PRIVATE Debug {
 
   // Storage location for registers when handling debug break calls
   ThreadLocal thread_local_;
+
+  // This is a global handle, lazily initialized.
+  Handle<WeakArrayList> wasm_scripts_with_breakpoints_;
 
   Isolate* isolate_;
 

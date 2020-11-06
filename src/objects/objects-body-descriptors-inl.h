@@ -5,22 +5,22 @@
 #ifndef V8_OBJECTS_OBJECTS_BODY_DESCRIPTORS_INL_H_
 #define V8_OBJECTS_OBJECTS_BODY_DESCRIPTORS_INL_H_
 
-#include "src/objects/objects-body-descriptors.h"
-
 #include <algorithm>
 
 #include "src/codegen/reloc-info.h"
+#include "src/objects/arguments-inl.h"
 #include "src/objects/cell.h"
 #include "src/objects/data-handler.h"
-#include "src/objects/feedback-vector.h"
 #include "src/objects/foreign-inl.h"
 #include "src/objects/hash-table.h"
 #include "src/objects/js-collection.h"
 #include "src/objects/js-weak-refs.h"
+#include "src/objects/objects-body-descriptors.h"
 #include "src/objects/oddball.h"
 #include "src/objects/ordered-hash-table-inl.h"
 #include "src/objects/source-text-module.h"
 #include "src/objects/synthetic-module.h"
+#include "src/objects/torque-defined-classes-inl.h"
 #include "src/objects/transitions.h"
 #include "src/wasm/wasm-objects-inl.h"
 
@@ -502,29 +502,6 @@ class FeedbackMetadata::BodyDescriptor final : public BodyDescriptorBase {
   }
 };
 
-class FeedbackVector::BodyDescriptor final : public BodyDescriptorBase {
- public:
-  static bool IsValidSlot(Map map, HeapObject obj, int offset) {
-    return offset == kSharedFunctionInfoOffset ||
-           offset == kOptimizedCodeWeakOrSmiOffset ||
-           offset == kClosureFeedbackCellArrayOffset ||
-           offset >= kFeedbackSlotsOffset;
-  }
-
-  template <typename ObjectVisitor>
-  static inline void IterateBody(Map map, HeapObject obj, int object_size,
-                                 ObjectVisitor* v) {
-    IteratePointer(obj, kSharedFunctionInfoOffset, v);
-    IterateMaybeWeakPointer(obj, kOptimizedCodeWeakOrSmiOffset, v);
-    IteratePointer(obj, kClosureFeedbackCellArrayOffset, v);
-    IterateMaybeWeakPointers(obj, kFeedbackSlotsOffset, object_size, v);
-  }
-
-  static inline int SizeOf(Map map, HeapObject obj) {
-    return FeedbackVector::SizeFor(FeedbackVector::cast(obj).length());
-  }
-};
-
 class PreparseData::BodyDescriptor final : public BodyDescriptorBase {
  public:
   static bool IsValidSlot(Map map, HeapObject obj, int offset) {
@@ -594,6 +571,24 @@ class Foreign::BodyDescriptor final : public BodyDescriptorBase {
     v->VisitExternalReference(
         Foreign::cast(obj), reinterpret_cast<Address*>(
                                 obj.RawField(kForeignAddressOffset).address()));
+  }
+
+  static inline int SizeOf(Map map, HeapObject object) { return kSize; }
+};
+
+class WasmTypeInfo::BodyDescriptor final : public BodyDescriptorBase {
+ public:
+  static bool IsValidSlot(Map map, HeapObject obj, int offset) {
+    UNREACHABLE();
+  }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map map, HeapObject obj, int object_size,
+                                 ObjectVisitor* v) {
+    Foreign::BodyDescriptor::IterateBody<ObjectVisitor>(map, obj, object_size,
+                                                        v);
+    IteratePointer(obj, kParentOffset, v);
+    IteratePointer(obj, kSubtypesOffset, v);
   }
 
   static inline int SizeOf(Map map, HeapObject object) { return kSize; }
@@ -678,34 +673,6 @@ class Code::BodyDescriptor final : public BodyDescriptorBase {
 
   static inline int SizeOf(Map map, HeapObject object) {
     return Code::unchecked_cast(object).CodeSize();
-  }
-};
-
-class SeqOneByteString::BodyDescriptor final : public BodyDescriptorBase {
- public:
-  static bool IsValidSlot(Map map, HeapObject obj, int offset) { return false; }
-
-  template <typename ObjectVisitor>
-  static inline void IterateBody(Map map, HeapObject obj, int object_size,
-                                 ObjectVisitor* v) {}
-
-  static inline int SizeOf(Map map, HeapObject obj) {
-    SeqOneByteString string = SeqOneByteString::cast(obj);
-    return SeqOneByteString::SizeFor(string.synchronized_length());
-  }
-};
-
-class SeqTwoByteString::BodyDescriptor final : public BodyDescriptorBase {
- public:
-  static bool IsValidSlot(Map map, HeapObject obj, int offset) { return false; }
-
-  template <typename ObjectVisitor>
-  static inline void IterateBody(Map map, HeapObject obj, int object_size,
-                                 ObjectVisitor* v) {}
-
-  static inline int SizeOf(Map map, HeapObject obj) {
-    SeqTwoByteString string = SeqTwoByteString::cast(obj);
-    return SeqTwoByteString::SizeFor(string.synchronized_length());
   }
 };
 
@@ -825,6 +792,53 @@ class CodeDataContainer::BodyDescriptor final : public BodyDescriptorBase {
   }
 };
 
+class WasmArray::BodyDescriptor final : public BodyDescriptorBase {
+ public:
+  static bool IsValidSlot(Map map, HeapObject obj, int offset) {
+    // Fields in WasmArrays never change their types in place, so
+    // there should never be a need to call this function.
+    UNREACHABLE();
+    return false;
+  }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map map, HeapObject obj, int object_size,
+                                 ObjectVisitor* v) {
+    if (!WasmArray::type(map)->element_type().is_reference_type()) return;
+    IteratePointers(obj, WasmArray::kHeaderSize, object_size, v);
+  }
+
+  static inline int SizeOf(Map map, HeapObject object) {
+    return WasmArray::SizeFor(map, WasmArray::cast(object).length());
+  }
+};
+
+class WasmStruct::BodyDescriptor final : public BodyDescriptorBase {
+ public:
+  static bool IsValidSlot(Map map, HeapObject obj, int offset) {
+    // Fields in WasmStructs never change their types in place, so
+    // there should never be a need to call this function.
+    UNREACHABLE();
+    return false;
+  }
+
+  template <typename ObjectVisitor>
+  static inline void IterateBody(Map map, HeapObject obj, int object_size,
+                                 ObjectVisitor* v) {
+    WasmStruct wasm_struct = WasmStruct::cast(obj);
+    wasm::StructType* type = WasmStruct::GcSafeType(map);
+    for (uint32_t i = 0; i < type->field_count(); i++) {
+      if (!type->field(i).is_reference_type()) continue;
+      int offset = static_cast<int>(type->field_offset(i));
+      v->VisitPointer(wasm_struct, wasm_struct.RawField(offset));
+    }
+  }
+
+  static inline int SizeOf(Map map, HeapObject object) {
+    return map.instance_size();
+  }
+};
+
 class EmbedderDataArray::BodyDescriptor final : public BodyDescriptorBase {
  public:
   static bool IsValidSlot(Map map, HeapObject obj, int offset) {
@@ -896,7 +910,6 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case EMBEDDER_DATA_ARRAY_TYPE:
       return Op::template apply<EmbedderDataArray::BodyDescriptor>(p1, p2, p3,
                                                                    p4);
-    case FIXED_ARRAY_TYPE:
     case OBJECT_BOILERPLATE_DESCRIPTION_TYPE:
     case CLOSURE_FEEDBACK_CELL_ARRAY_TYPE:
     case HASH_TABLE_TYPE:
@@ -907,7 +920,6 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
     case SIMPLE_NUMBER_DICTIONARY_TYPE:
-    case STRING_TABLE_TYPE:
     case SCOPE_INFO_TYPE:
     case SCRIPT_CONTEXT_TABLE_TYPE:
       return Op::template apply<FixedArray::BodyDescriptor>(p1, p2, p3, p4);
@@ -926,10 +938,6 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
       return Op::template apply<Context::BodyDescriptor>(p1, p2, p3, p4);
     case NATIVE_CONTEXT_TYPE:
       return Op::template apply<NativeContext::BodyDescriptor>(p1, p2, p3, p4);
-    case WEAK_FIXED_ARRAY_TYPE:
-      return Op::template apply<WeakFixedArray::BodyDescriptor>(p1, p2, p3, p4);
-    case WEAK_ARRAY_LIST_TYPE:
-      return Op::template apply<WeakArrayList::BodyDescriptor>(p1, p2, p3, p4);
     case FIXED_DOUBLE_ARRAY_TYPE:
       return ReturnType();
     case FEEDBACK_METADATA_TYPE:
@@ -938,6 +946,7 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case PROPERTY_ARRAY_TYPE:
       return Op::template apply<PropertyArray::BodyDescriptor>(p1, p2, p3, p4);
     case DESCRIPTOR_ARRAY_TYPE:
+    case STRONG_DESCRIPTOR_ARRAY_TYPE:
       return Op::template apply<DescriptorArray::BodyDescriptor>(p1, p2, p3,
                                                                  p4);
     case TRANSITION_ARRAY_TYPE:
@@ -945,10 +954,14 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
                                                                  p4);
     case FEEDBACK_CELL_TYPE:
       return Op::template apply<FeedbackCell::BodyDescriptor>(p1, p2, p3, p4);
-    case FEEDBACK_VECTOR_TYPE:
-      return Op::template apply<FeedbackVector::BodyDescriptor>(p1, p2, p3, p4);
     case COVERAGE_INFO_TYPE:
       return Op::template apply<CoverageInfo::BodyDescriptor>(p1, p2, p3, p4);
+    case WASM_ARRAY_TYPE:
+      return Op::template apply<WasmArray::BodyDescriptor>(p1, p2, p3, p4);
+    case WASM_STRUCT_TYPE:
+      return Op::template apply<WasmStruct::BodyDescriptor>(p1, p2, p3, p4);
+    case WASM_TYPE_INFO_TYPE:
+      return Op::template apply<WasmTypeInfo::BodyDescriptor>(p1, p2, p3, p4);
     case JS_OBJECT_TYPE:
     case JS_ERROR_TYPE:
     case JS_ARGUMENTS_OBJECT_TYPE:
@@ -979,7 +992,6 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_MESSAGE_OBJECT_TYPE:
     case JS_BOUND_FUNCTION_TYPE:
-    case JS_FINALIZATION_REGISTRY_CLEANUP_ITERATOR_TYPE:
     case JS_FINALIZATION_REGISTRY_TYPE:
 #ifdef V8_INTL_SUPPORT
     case JS_V8_BREAK_ITERATOR_TYPE:
@@ -993,6 +1005,7 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case JS_RELATIVE_TIME_FORMAT_TYPE:
     case JS_SEGMENT_ITERATOR_TYPE:
     case JS_SEGMENTER_TYPE:
+    case JS_SEGMENTS_TYPE:
 #endif  // V8_INTL_SUPPORT
     case WASM_EXCEPTION_OBJECT_TYPE:
     case WASM_GLOBAL_OBJECT_TYPE:
@@ -1100,10 +1113,12 @@ ReturnType BodyDescriptorApply(InstanceType type, T1 p1, T2 p2, T3 p3, T4 p4) {
     case SYNTHETIC_MODULE_TYPE:
       return Op::template apply<SyntheticModule::BodyDescriptor>(p1, p2, p3,
                                                                  p4);
+// TODO(tebbi): Avoid duplicated cases when the body descriptors are identical.
 #define MAKE_TORQUE_BODY_DESCRIPTOR_APPLY(TYPE, TypeName) \
   case TYPE:                                              \
     return Op::template apply<TypeName::BodyDescriptor>(p1, p2, p3, p4);
-      TORQUE_BODY_DESCRIPTOR_LIST(MAKE_TORQUE_BODY_DESCRIPTOR_APPLY)
+      TORQUE_INSTANCE_TYPE_TO_BODY_DESCRIPTOR_LIST(
+          MAKE_TORQUE_BODY_DESCRIPTOR_APPLY)
 #undef MAKE_TORQUE_BODY_DESCRIPTOR_APPLY
 
     default:
@@ -1163,6 +1178,8 @@ class EphemeronHashTable::BodyDescriptor final : public BodyDescriptorBase {
     return object.SizeFromMap(map);
   }
 };
+
+#include "torque-generated/objects-body-descriptors-inl.inc"
 
 }  // namespace internal
 }  // namespace v8

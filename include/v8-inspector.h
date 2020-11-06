@@ -11,7 +11,7 @@
 #include <memory>
 #include <unordered_map>
 
-#include "v8.h"  // NOLINT(build/include)
+#include "v8.h"  // NOLINT(build/include_directory)
 
 namespace v8_inspector {
 
@@ -179,6 +179,10 @@ class V8_EXPORT V8InspectorClient {
   virtual void endUserGesture() {}
 
   virtual std::unique_ptr<StringBuffer> valueSubtype(v8::Local<v8::Value>) {
+    return nullptr;
+  }
+  virtual std::unique_ptr<StringBuffer> descriptionForValueSubtype(
+      v8::Local<v8::Context>, v8::Local<v8::Value>) {
     return nullptr;
   }
   virtual bool formatAccessorsAsProperties(v8::Local<v8::Value>) {

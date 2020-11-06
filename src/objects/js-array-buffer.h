@@ -7,7 +7,7 @@
 
 #include "src/objects/backing-store.h"
 #include "src/objects/js-objects.h"
-#include "torque-generated/bit-fields-tq.h"
+#include "torque-generated/bit-fields.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -17,7 +17,10 @@ namespace internal {
 
 class ArrayBufferExtension;
 
-class JSArrayBuffer : public JSObject {
+#include "torque-generated/src/objects/js-array-buffer-tq.inc"
+
+class JSArrayBuffer
+    : public TorqueGeneratedJSArrayBuffer<JSArrayBuffer, JSObject> {
  public:
 // The maximum length for JSArrayBuffer's supported by V8.
 // On 32-bit architectures we limit this to 2GiB, so that
@@ -29,11 +32,18 @@ class JSArrayBuffer : public JSObject {
   static constexpr size_t kMaxByteLength = kMaxSafeInteger;
 #endif
 
+  // When soft sandbox is enabled, creates entries in external pointer table for
+  // all JSArrayBuffer's fields that require soft sandbox protection (backing
+  // store pointer, backing store length, etc.).
+  // When sandbox is not enabled, it's a no-op.
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
+
   // [byte_length]: length in bytes
   DECL_PRIMITIVE_ACCESSORS(byte_length, size_t)
 
   // [backing_store]: backing memory for this array
-  DECL_PRIMITIVE_ACCESSORS(backing_store, void*)
+  DECL_GETTER(backing_store, void*)
+  inline void set_backing_store(Isolate* isolate, void* value);
 
   // [extension]: extension object used for GC
   DECL_PRIMITIVE_ACCESSORS(extension, ArrayBufferExtension*)
@@ -50,7 +60,7 @@ class JSArrayBuffer : public JSObject {
   // is deterministic. Depending on the V8 build mode there could be no padding.
   V8_INLINE void clear_padding();
 
-// Bit positions for [bit_field].
+  // Bit positions for [bit_field].
   DEFINE_TORQUE_GENERATED_JS_ARRAY_BUFFER_FLAGS()
 
   // [is_external]: true indicates that the embedder is in charge of freeing the
@@ -69,8 +79,6 @@ class JSArrayBuffer : public JSObject {
 
   // [is_shared]: tells whether this is an ArrayBuffer or a SharedArrayBuffer.
   DECL_BOOLEAN_ACCESSORS(is_shared)
-
-  DECL_CAST(JSArrayBuffer)
 
   // Initializes the fields of the ArrayBuffer. The provided backing_store can
   // be nullptr. If it is not nullptr, then the function registers it with
@@ -110,13 +118,21 @@ class JSArrayBuffer : public JSObject {
   void YoungMarkExtension();
   void YoungMarkExtensionPromoted();
 
+  //
+  // Serializer/deserializer support.
+  //
+
+  // Backing stores are serialized/deserialized separately. During serialization
+  // the backing store reference is stored in the backing store field and upon
+  // deserialization it is converted back to actual external (off-heap) pointer
+  // value.
+  inline uint32_t GetBackingStoreRefForDeserialization() const;
+  inline void SetBackingStoreRefForSerialization(uint32_t ref);
+
   // Dispatched behavior.
   DECL_PRINTER(JSArrayBuffer)
   DECL_VERIFIER(JSArrayBuffer)
 
-  // Layout description.
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                TORQUE_GENERATED_JS_ARRAY_BUFFER_FIELDS)
   static constexpr int kEndOfTaggedFieldsOffset = JSObject::kHeaderSize;
 
   static const int kSizeWithEmbedderFields =
@@ -124,8 +140,6 @@ class JSArrayBuffer : public JSObject {
       v8::ArrayBuffer::kEmbedderFieldCount * kEmbedderDataSlotSize;
 
   class BodyDescriptor;
-
-  OBJECT_CONSTRUCTORS(JSArrayBuffer, JSObject);
 
  private:
   inline ArrayBufferExtension** extension_location() const;
@@ -136,6 +150,8 @@ class JSArrayBuffer : public JSObject {
   inline uint32_t* extension_lo() const;
   inline uint32_t* extension_hi() const;
 #endif
+
+  TQ_OBJECT_CONSTRUCTORS(JSArrayBuffer)
 };
 
 // Each JSArrayBuffer (with a backing store) has a corresponding native-heap
@@ -209,44 +225,29 @@ class ArrayBufferExtension : public Malloced {
   void set_next(ArrayBufferExtension* extension) { next_ = extension; }
 };
 
-class JSArrayBufferView : public JSObject {
+class JSArrayBufferView
+    : public TorqueGeneratedJSArrayBufferView<JSArrayBufferView, JSObject> {
  public:
-  // [buffer]: ArrayBuffer that this typed array views.
-  DECL_ACCESSORS(buffer, Object)
-
   // [byte_offset]: offset of typed array in bytes.
   DECL_PRIMITIVE_ACCESSORS(byte_offset, size_t)
 
   // [byte_length]: length of typed array in bytes.
   DECL_PRIMITIVE_ACCESSORS(byte_length, size_t)
 
-  DECL_CAST(JSArrayBufferView)
-
   DECL_VERIFIER(JSArrayBufferView)
 
   inline bool WasDetached() const;
 
-// Layout description.
-#define JS_ARRAY_BUFFER_VIEW_FIELDS(V) \
-  V(kBufferOffset, kTaggedSize)        \
-  V(kEndOfTaggedFieldsOffset, 0)       \
-  /* Raw data fields. */               \
-  V(kByteOffsetOffset, kUIntptrSize)   \
-  V(kByteLengthOffset, kUIntptrSize)   \
-  /* Header size. */                   \
-  V(kHeaderSize, 0)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSObject::kHeaderSize,
-                                JS_ARRAY_BUFFER_VIEW_FIELDS)
-#undef JS_ARRAY_BUFFER_VIEW_FIELDS
+  static constexpr int kEndOfTaggedFieldsOffset = kByteOffsetOffset;
 
   STATIC_ASSERT(IsAligned(kByteOffsetOffset, kUIntptrSize));
   STATIC_ASSERT(IsAligned(kByteLengthOffset, kUIntptrSize));
 
-  OBJECT_CONSTRUCTORS(JSArrayBufferView, JSObject);
+  TQ_OBJECT_CONSTRUCTORS(JSArrayBufferView)
 };
 
-class JSTypedArray : public JSArrayBufferView {
+class JSTypedArray
+    : public TorqueGeneratedJSTypedArray<JSTypedArray, JSArrayBufferView> {
  public:
   // TODO(v8:4153): This should be equal to JSArrayBuffer::kMaxByteLength
   // eventually.
@@ -260,18 +261,23 @@ class JSTypedArray : public JSArrayBufferView {
       Isolate* isolate, Handle<JSTypedArray> o, Handle<Object> key,
       PropertyDescriptor* desc, Maybe<ShouldThrow> should_throw);
 
-  DECL_CAST(JSTypedArray)
-
   ExternalArrayType type();
   V8_EXPORT_PRIVATE size_t element_size();
 
   V8_EXPORT_PRIVATE Handle<JSArrayBuffer> GetBuffer();
 
+  // When soft sandbox is enabled, creates entries in external pointer table for
+  // all JSTypedArray's fields that require soft sandbox protection (external
+  // pointer, offset, length, etc.).
+  // When sandbox is not enabled, it's a no-op.
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
+
   // Use with care: returns raw pointer into heap.
   inline void* DataPtr();
 
-  inline void SetOffHeapDataPtr(void* base, Address offset);
-  inline void SetOnHeapDataPtr(HeapObject base, Address offset);
+  inline void SetOffHeapDataPtr(Isolate* isolate, void* base, Address offset);
+  inline void SetOnHeapDataPtr(Isolate* isolate, HeapObject base,
+                               Address offset);
 
   // Whether the buffer's backing store is on-heap or off-heap.
   inline bool is_on_heap() const;
@@ -286,10 +292,23 @@ class JSTypedArray : public JSArrayBufferView {
   // as Tagged_t value and an |external_pointer| value.
   // For full-pointer mode the compensation value is zero.
   static inline Address ExternalPointerCompensationForOnHeapArray(
-      const Isolate* isolate);
+      IsolateRoot isolate);
+
+  //
+  // Serializer/deserializer support.
+  //
+
+  // External backing stores are serialized/deserialized separately.
+  // During serialization the backing store reference is stored in the typed
+  // array object and upon deserialization it is converted back to actual
+  // external (off-heap) pointer value.
+  // The backing store reference is stored in the external_pointer field.
+  inline uint32_t GetExternalBackingStoreRefForDeserialization() const;
+  inline void SetExternalBackingStoreRefForSerialization(uint32_t ref);
 
   // Subtracts external pointer compensation from the external pointer value.
-  inline void RemoveExternalPointerCompensationForSerialization();
+  inline void RemoveExternalPointerCompensationForSerialization(
+      Isolate* isolate);
 
   static inline MaybeHandle<JSTypedArray> Validate(Isolate* isolate,
                                                    Handle<Object> receiver,
@@ -298,19 +317,6 @@ class JSTypedArray : public JSArrayBufferView {
   // Dispatched behavior.
   DECL_PRINTER(JSTypedArray)
   DECL_VERIFIER(JSTypedArray)
-
-// Layout description.
-#define JS_TYPED_ARRAY_FIELDS(V)                \
-  /* Raw data fields. */                        \
-  V(kLengthOffset, kUIntptrSize)                \
-  V(kExternalPointerOffset, kSystemPointerSize) \
-  V(kBasePointerOffset, kTaggedSize)            \
-  /* Header size. */                            \
-  V(kHeaderSize, 0)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSArrayBufferView::kHeaderSize,
-                                JS_TYPED_ARRAY_FIELDS)
-#undef JS_TYPED_ARRAY_FIELDS
 
   STATIC_ASSERT(IsAligned(kLengthOffset, kUIntptrSize));
   STATIC_ASSERT(IsAligned(kExternalPointerOffset, kSystemPointerSize));
@@ -330,36 +336,31 @@ class JSTypedArray : public JSArrayBufferView {
  private:
   friend class Deserializer;
 
-  // [base_pointer]: TODO(v8:4153)
-  DECL_ACCESSORS(base_pointer, Object)
-
   // [external_pointer]: TODO(v8:4153)
-  DECL_PRIMITIVE_ACCESSORS(external_pointer, Address)
+  DECL_GETTER(external_pointer, Address)
+  DECL_GETTER(external_pointer_raw, ExternalPointer_t)
 
-  OBJECT_CONSTRUCTORS(JSTypedArray, JSArrayBufferView);
+  inline void set_external_pointer(Isolate* isolate, Address value);
+
+  TQ_OBJECT_CONSTRUCTORS(JSTypedArray)
 };
 
-class JSDataView : public JSArrayBufferView {
+class JSDataView
+    : public TorqueGeneratedJSDataView<JSDataView, JSArrayBufferView> {
  public:
   // [data_pointer]: pointer to the actual data.
-  DECL_PRIMITIVE_ACCESSORS(data_pointer, void*)
+  DECL_GETTER(data_pointer, void*)
+  inline void set_data_pointer(Isolate* isolate, void* value);
 
-  DECL_CAST(JSDataView)
+  // When soft sandbox is enabled, creates entries in external pointer table for
+  // all JSDataView's fields that require soft sandbox protection (data pointer,
+  // offset, length, etc.).
+  // When sandbox is not enabled, it's a no-op.
+  inline void AllocateExternalPointerEntries(Isolate* isolate);
 
   // Dispatched behavior.
   DECL_PRINTER(JSDataView)
   DECL_VERIFIER(JSDataView)
-
-  // Layout description.
-#define JS_DATA_VIEW_FIELDS(V)       \
-  /* Raw data fields. */             \
-  V(kDataPointerOffset, kIntptrSize) \
-  /* Header size. */                 \
-  V(kHeaderSize, 0)
-
-  DEFINE_FIELD_OFFSET_CONSTANTS(JSArrayBufferView::kHeaderSize,
-                                JS_DATA_VIEW_FIELDS)
-#undef JS_DATA_VIEW_FIELDS
 
   STATIC_ASSERT(IsAligned(kDataPointerOffset, kUIntptrSize));
 
@@ -369,7 +370,7 @@ class JSDataView : public JSArrayBufferView {
 
   class BodyDescriptor;
 
-  OBJECT_CONSTRUCTORS(JSDataView, JSArrayBufferView);
+  TQ_OBJECT_CONSTRUCTORS(JSDataView)
 };
 
 }  // namespace internal

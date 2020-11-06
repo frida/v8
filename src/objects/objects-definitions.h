@@ -6,8 +6,7 @@
 #define V8_OBJECTS_OBJECTS_DEFINITIONS_H_
 
 #include "src/init/heap-symbols.h"
-
-#include "torque-generated/instance-types-tq.h"
+#include "torque-generated/instance-types.h"
 
 namespace v8 {
 
@@ -149,9 +148,6 @@ namespace internal {
   V(_, TEMPLATE_OBJECT_DESCRIPTION_TYPE, TemplateObjectDescription,           \
     template_object_description)                                              \
   V(_, TUPLE2_TYPE, Tuple2, tuple2)                                           \
-  V(_, WASM_CAPI_FUNCTION_DATA_TYPE, WasmCapiFunctionData,                    \
-    wasm_capi_function_data)                                                  \
-  V(_, WASM_DEBUG_INFO_TYPE, WasmDebugInfo, wasm_debug_info)                  \
   V(_, WASM_EXCEPTION_TAG_TYPE, WasmExceptionTag, wasm_exception_tag)         \
   V(_, WASM_EXPORTED_FUNCTION_DATA_TYPE, WasmExportedFunctionData,            \
     wasm_exported_function_data)                                              \
@@ -174,15 +170,6 @@ namespace internal {
 
 // Produces (Map, struct_name_map, StructNameMap) entries
 #define STRUCT_MAPS_LIST(V) STRUCT_LIST_GENERATOR(STRUCT_MAPS_LIST_ADAPTER, V)
-
-// Adapts one STRUCT_LIST_GENERATOR entry to the STRUCT_LIST entry
-#define TORQUE_INTERNAL_CLASS_LIST_MAPS_ADAPTER(V, NAME, Name, name) \
-  V(Map, name##_map, Name##Map)
-
-// Produces (NAME, Name, name) entries.
-#define TORQUE_INTERNAL_CLASS_MAPS_LIST(V) \
-  TORQUE_INTERNAL_CLASS_LIST_GENERATOR(    \
-      TORQUE_INTERNAL_CLASS_LIST_MAPS_ADAPTER, V)
 
 //
 // The following macros define list of allocation size objects and list of

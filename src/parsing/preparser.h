@@ -8,6 +8,7 @@
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
+#include "src/parsing/parse-info.h"
 #include "src/parsing/parser-base.h"
 #include "src/parsing/pending-compilation-error-handler.h"
 #include "src/parsing/preparser-logger.h"
@@ -574,6 +575,10 @@ class PreParserFactory {
   }
 
   PreParserExpression NewOptionalChain(const PreParserExpression& expr) {
+    // Needed to track `delete a?.#b` early errors
+    if (expr.IsPrivateReference()) {
+      return PreParserExpression::PrivateReference();
+    }
     return PreParserExpression::Default();
   }
 
@@ -644,6 +649,7 @@ class PreParserFactory {
                               bool optional_chain = false) {
     if (possibly_eval == Call::IS_POSSIBLY_EVAL) {
       DCHECK(expression.IsIdentifier() && expression.AsIdentifier().IsEval());
+      DCHECK(!optional_chain);
       return PreParserExpression::CallEval();
     }
     return PreParserExpression::Call();
@@ -921,12 +927,11 @@ class PreParser : public ParserBase<PreParser> {
             AstValueFactory* ast_value_factory,
             PendingCompilationErrorHandler* pending_error_handler,
             RuntimeCallStats* runtime_call_stats, Logger* logger,
-            int script_id = -1, bool parsing_module = false,
-            bool parsing_on_main_thread = true)
+            UnoptimizedCompileFlags flags, bool parsing_on_main_thread = true)
       : ParserBase<PreParser>(zone, scanner, stack_limit, nullptr,
                               ast_value_factory, pending_error_handler,
-                              runtime_call_stats, logger, script_id,
-                              parsing_module, parsing_on_main_thread),
+                              runtime_call_stats, logger, flags,
+                              parsing_on_main_thread),
         use_counts_(nullptr),
         preparse_data_builder_(nullptr),
         preparse_data_builder_buffer_() {
@@ -954,8 +959,7 @@ class PreParser : public ParserBase<PreParser> {
   PreParseResult PreParseFunction(
       const AstRawString* function_name, FunctionKind kind,
       FunctionSyntaxKind function_syntax_kind, DeclarationScope* function_scope,
-      int* use_counts, ProducedPreparseData** produced_preparser_scope_data,
-      int script_id);
+      int* use_counts, ProducedPreparseData** produced_preparser_scope_data);
 
   PreparseDataBuilder* preparse_data_builder() const {
     return preparse_data_builder_;
@@ -1525,6 +1529,11 @@ class PreParser : public ParserBase<PreParser> {
   }
 
   V8_INLINE PreParserExpression ThisExpression() {
+    UseThis();
+    return PreParserExpression::This();
+  }
+
+  V8_INLINE PreParserExpression NewThisExpression(int pos) {
     UseThis();
     return PreParserExpression::This();
   }

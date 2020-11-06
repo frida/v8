@@ -18,12 +18,12 @@
 namespace v8 {
 namespace internal {
 
+#include "torque-generated/src/objects/debug-objects-tq-inl.inc"
+
 TQ_OBJECT_CONSTRUCTORS_IMPL(BreakPoint)
 TQ_OBJECT_CONSTRUCTORS_IMPL(BreakPointInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(CoverageInfo)
 TQ_OBJECT_CONSTRUCTORS_IMPL(DebugInfo)
-
-TQ_OBJECT_CONSTRUCTORS_IMPL(WasmValue)
 
 NEVER_READ_ONLY_SPACE_IMPL(DebugInfo)
 
@@ -52,6 +52,9 @@ BytecodeArray DebugInfo::DebugBytecodeArray() {
   DCHECK_EQ(shared().GetDebugBytecodeArray(), debug_bytecode_array());
   return BytecodeArray::cast(debug_bytecode_array());
 }
+
+TQ_OBJECT_CONSTRUCTORS_IMPL(WasmValue)
+NEVER_READ_ONLY_SPACE_IMPL(WasmValue)
 
 }  // namespace internal
 }  // namespace v8
