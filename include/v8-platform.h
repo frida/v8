@@ -17,6 +17,11 @@
 #include "v8-source-location.h"  // NOLINT(build/include_directory)
 #include "v8config.h"            // NOLINT(build/include_directory)
 
+#ifdef __GNUC__
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
+#endif
+
 namespace v8 {
 
 class Isolate;
@@ -1679,5 +1684,9 @@ class ConditionVariableImpl {
 };
 
 }  // namespace v8
+
+#ifdef __GNUC__
+#pragma GCC diagnostic pop
+#endif
 
 #endif  // V8_V8_PLATFORM_H_

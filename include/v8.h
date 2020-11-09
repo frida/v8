@@ -20,6 +20,12 @@
 
 #include <memory>
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4251)
+#pragma warning(disable: 4996)
+#endif
+
 #include "cppgc/common.h"
 #include "v8-array-buffer.h"       // NOLINT(build/include_directory)
 #include "v8-container.h"          // NOLINT(build/include_directory)
@@ -61,6 +67,10 @@
 #include "v8-version.h"            // NOLINT(build/include_directory)
 #include "v8-wasm.h"               // NOLINT(build/include_directory)
 #include "v8config.h"              // NOLINT(build/include_directory)
+
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // We reserve the V8_* prefix for macros defined in V8 public API and
 // assume there are no name conflicts with the embedder's code.
