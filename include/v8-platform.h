@@ -161,6 +161,8 @@ class TaskRunner {
  */
 class JobDelegate {
  public:
+  virtual ~JobDelegate() = default;
+
   /**
    * Returns true if this thread should return from the worker task on the
    * current thread ASAP. Workers should periodically invoke ShouldYield (or
