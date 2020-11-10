@@ -922,9 +922,9 @@ void ResourceConstraints::ConfigureDefaultsFromHeapSize(
   i::Heap::GenerationSizesFromHeapSize(maximum_heap_size_in_bytes,
                                        &young_generation, &old_generation);
   set_max_young_generation_size_in_bytes(
-      i::Max(young_generation, i::Heap::MinYoungGenerationSize()));
+      std::max(young_generation, i::Heap::MinYoungGenerationSize()));
   set_max_old_generation_size_in_bytes(
-      i::Max(old_generation, i::Heap::MinOldGenerationSize()));
+      std::max(old_generation, i::Heap::MinOldGenerationSize()));
   if (initial_heap_size_in_bytes > 0) {
     i::Heap::GenerationSizesFromHeapSize(initial_heap_size_in_bytes,
                                          &young_generation, &old_generation);
@@ -934,7 +934,7 @@ void ResourceConstraints::ConfigureDefaultsFromHeapSize(
   }
   if (i::kPlatformRequiresCodeRange) {
     set_code_range_size_in_bytes(
-        i::Min(i::kMaximalCodeRangeSize, maximum_heap_size_in_bytes));
+        std::min(i::kMaximalCodeRangeSize, maximum_heap_size_in_bytes));
   }
 }
 
@@ -949,8 +949,8 @@ void ResourceConstraints::ConfigureDefaults(uint64_t physical_memory,
 
   if (virtual_memory_limit > 0 && i::kPlatformRequiresCodeRange) {
     set_code_range_size_in_bytes(
-        i::Min(i::kMaximalCodeRangeSize,
-               static_cast<size_t>(virtual_memory_limit / 8)));
+        std::min(i::kMaximalCodeRangeSize,
+                 static_cast<size_t>(virtual_memory_limit / 8)));
   }
 }
 
@@ -2249,7 +2249,9 @@ Local<String> Module::GetModuleRequest(int i) const {
       i::Handle<i::SourceTextModule>::cast(self)->info().module_requests(),
       isolate);
   CHECK_LT(i, module_requests->length());
-  return ToApiHandle<String>(i::handle(module_requests->get(i), isolate));
+  i::Handle<i::ModuleRequest> module_request(
+      i::ModuleRequest::cast(module_requests->get(i)), isolate);
+  return ToApiHandle<String>(i::handle(module_request->specifier(), isolate));
 }
 
 Location Module::GetModuleRequestLocation(int i) const {
@@ -5776,7 +5778,7 @@ bool v8::V8::Initialize(const int build_config) {
 #if V8_OS_LINUX || V8_OS_MACOSX
 bool TryHandleWebAssemblyTrapPosix(int sig_code, siginfo_t* info,
                                    void* context) {
-#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
+#if V8_TARGET_ARCH_X64 && !V8_OS_ANDROID
   return i::trap_handler::TryHandleSignal(sig_code, info, context);
 #else
   return false;
@@ -5791,11 +5793,10 @@ bool V8::TryHandleSignal(int signum, void* info, void* context) {
 
 #if V8_OS_WIN
 bool TryHandleWebAssemblyTrapWindows(EXCEPTION_POINTERS* exception) {
-#if V8_TRAP_HANDLER_SUPPORTED && V8_TARGET_ARCH_X64
+#if V8_TARGET_ARCH_X64
   return i::trap_handler::TryHandleWasmTrap(exception);
-#else
-  return false;
 #endif
+  return false;
 }
 #endif
 
@@ -7329,6 +7330,7 @@ CompiledWasmModule::CompiledWasmModule(
 }
 
 OwnedBuffer CompiledWasmModule::Serialize() {
+  TRACE_EVENT0("v8.wasm", "wasm.SerializeModule");
   i::wasm::WasmSerializer wasm_serializer(native_module_.get());
   size_t buffer_size = wasm_serializer.GetSerializedNativeModuleSize();
   std::unique_ptr<uint8_t[]> buffer(new uint8_t[buffer_size]);
@@ -7680,7 +7682,7 @@ Local<ArrayBuffer> v8::ArrayBufferView::Buffer() {
 size_t v8::ArrayBufferView::CopyContents(void* dest, size_t byte_length) {
   i::Handle<i::JSArrayBufferView> self = Utils::OpenHandle(this);
   size_t byte_offset = self->byte_offset();
-  size_t bytes_to_copy = i::Min(byte_length, self->byte_length());
+  size_t bytes_to_copy = std::min(byte_length, self->byte_length());
   if (bytes_to_copy) {
     i::DisallowHeapAllocation no_gc;
     i::Isolate* isolate = self->GetIsolate();

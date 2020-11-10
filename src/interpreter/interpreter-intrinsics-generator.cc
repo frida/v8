@@ -28,6 +28,8 @@ class IntrinsicsGenerator {
       : isolate_(assembler->isolate()),
         zone_(assembler->zone()),
         assembler_(assembler) {}
+  IntrinsicsGenerator(const IntrinsicsGenerator&) = delete;
+  IntrinsicsGenerator& operator=(const IntrinsicsGenerator&) = delete;
 
   TNode<Object> InvokeIntrinsic(
       TNode<Uint32T> function_id, TNode<Context> context,
@@ -63,8 +65,6 @@ class IntrinsicsGenerator {
   Isolate* isolate_;
   Zone* zone_;
   InterpreterAssembler* assembler_;
-
-  DISALLOW_COPY_AND_ASSIGN(IntrinsicsGenerator);
 };
 
 TNode<Object> GenerateInvokeIntrinsic(
@@ -182,8 +182,7 @@ TNode<Object> IntrinsicsGenerator::IntrinsicAsStubCall(
   }
   stub_args[index++] = context;
   return __ CAST(__ CallStubN(StubCallMode::kCallCodeObject,
-                              callable.descriptor(), 1, input_count,
-                              stub_args));
+                              callable.descriptor(), input_count, stub_args));
 }
 
 TNode<Object> IntrinsicsGenerator::IntrinsicAsBuiltinCall(

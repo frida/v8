@@ -41,13 +41,6 @@ namespace {
 
 base::SmallVector<TaskRunner*, 2> task_runners;
 
-void Terminate() {
-  for (TaskRunner* task_runner : task_runners) {
-    task_runner->Terminate();
-    task_runner->Join();
-  }
-}
-
 class UtilsExtension : public IsolateData::SetupGlobalTask {
  public:
   ~UtilsExtension() override = default;
@@ -154,7 +147,9 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
   static void Quit(const v8::FunctionCallbackInfo<v8::Value>& args) {
     fflush(stdout);
     fflush(stderr);
-    Terminate();
+    // Only terminate, so not join the threads here, since joining concurrently
+    // from multiple threads can be undefined behaviour (see pthread_join).
+    for (TaskRunner* task_runner : task_runners) task_runner->Terminate();
   }
 
   static void Setlocale(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -759,8 +754,8 @@ int InspectorTestMain(int argc, char* argv[]) {
     IsolateData::SetupGlobalTasks frontend_extensions;
     frontend_extensions.emplace_back(new UtilsExtension());
     TaskRunner frontend_runner(
-        std::move(frontend_extensions), true, &ready_semaphore,
-        startup_data.data ? &startup_data : nullptr, false);
+        std::move(frontend_extensions), kDoCatchExceptions, &ready_semaphore,
+        startup_data.data ? &startup_data : nullptr, kNoInspector);
     ready_semaphore.Wait();
 
     int frontend_context_group_id = 0;
@@ -773,8 +768,8 @@ int InspectorTestMain(int argc, char* argv[]) {
     backend_extensions.emplace_back(new SetTimeoutExtension());
     backend_extensions.emplace_back(new InspectorExtension());
     TaskRunner backend_runner(
-        std::move(backend_extensions), false, &ready_semaphore,
-        startup_data.data ? &startup_data : nullptr, true);
+        std::move(backend_extensions), kDontCatchExceptions, &ready_semaphore,
+        startup_data.data ? &startup_data : nullptr, kWithInspector);
     ready_semaphore.Wait();
     UtilsExtension::set_backend_task_runner(&backend_runner);
 
@@ -797,7 +792,7 @@ int InspectorTestMain(int argc, char* argv[]) {
     backend_runner.Join();
 
     UtilsExtension::ClearAllSessions();
-    delete startup_data.data;
+    delete[] startup_data.data;
 
     // TaskRunners go out of scope here, which causes Isolate teardown and all
     // running background tasks to be properly joined.

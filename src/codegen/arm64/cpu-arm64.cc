@@ -9,7 +9,7 @@
 #include "src/codegen/arm64/utils-arm64.h"
 #include "src/codegen/cpu-features.h"
 
-#if defined(V8_OS_MACOSX) || defined(V8_OS_IOS)
+#if V8_OS_MACOSX
 #include <libkern/OSCacheControl.h>
 #endif
 
@@ -45,7 +45,7 @@ void CpuFeatures::FlushICache(void* address, size_t length) {
 #if defined(V8_HOST_ARCH_ARM64)
 #if defined(V8_OS_WIN)
   ::FlushInstructionCache(GetCurrentProcess(), address, length);
-#elif defined(V8_OS_MACOSX) || defined(V8_OS_IOS)
+#elif defined(V8_OS_MACOSX)
   sys_icache_invalidate(address, length);
 #else
   // The code below assumes user space cache operations are allowed. The goal
@@ -112,7 +112,7 @@ void CpuFeatures::FlushICache(void* address, size_t length) {
       // This code does not write to memory but without the dependency gcc might
       // move this code before the code is generated.
       : "cc", "memory");  // NOLINT
-#endif  // !(defined(V8_OS_WIN) || defined(V8_OS_MACOSX) || defined(V8_OS_IOS))
+#endif  // V8_OS_WIN
 #endif  // V8_HOST_ARCH_ARM64
 }
 

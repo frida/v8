@@ -252,11 +252,6 @@ void HeapObject::HeapObjectVerify(Isolate* isolate) {
       TORQUE_INSTANCE_CHECKERS_MULTIPLE_FULLY_DEFINED(MAKE_TORQUE_CASE)
 #undef MAKE_TORQUE_CASE
 
-    case DESCRIPTOR_ARRAY_TYPE:
-    case STRONG_DESCRIPTOR_ARRAY_TYPE:
-      DescriptorArray::cast(*this).DescriptorArrayVerify(isolate);
-      break;
-
     case FOREIGN_TYPE:
       break;  // No interesting fields.
 
@@ -1388,6 +1383,17 @@ void Module::ModuleVerify(Isolate* isolate) {
   }
 
   CHECK_NE(hash(), 0);
+}
+
+void ModuleRequest::ModuleRequestVerify(Isolate* isolate) {
+  TorqueGeneratedClassVerifiers::ModuleRequestVerify(*this, isolate);
+  CHECK_EQ(0, import_assertions().length() % 3);
+
+  for (int i = 0; i < import_assertions().length(); i += 3) {
+    CHECK(import_assertions().get(i).IsString());      // Assertion key
+    CHECK(import_assertions().get(i + 1).IsString());  // Assertion value
+    CHECK(import_assertions().get(i + 2).IsSmi());     // Assertion location
+  }
 }
 
 void SourceTextModule::SourceTextModuleVerify(Isolate* isolate) {

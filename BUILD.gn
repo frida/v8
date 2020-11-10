@@ -112,6 +112,7 @@ declare_args() {
   # Disable arguments adaptor frame (sets -dV8_NO_ARGUMENTS_ADAPTOR).
   v8_disable_arguments_adaptor =
       v8_current_cpu == "x86" || v8_current_cpu == "x64" ||
+      v8_current_cpu == "mipsel" || v8_current_cpu == "mips64el" ||
       v8_current_cpu == "arm"
 
   # Sets -dOBJECT_PRINT.
@@ -715,9 +716,6 @@ config("toolchain") {
   }
   if (v8_current_cpu == "arm64") {
     defines += [ "V8_TARGET_ARCH_ARM64" ]
-    if ((target_os == "mac" || target_os == "ios") && arm_version >= 83) {
-      defines += [ "V8_TARGET_PTRAUTH" ]
-    }
     if (v8_control_flow_integrity) {
       # TODO(v8:10026): Enable this in src/build.
       if (current_cpu == "arm64") {
@@ -3309,6 +3307,8 @@ v8_source_set("v8_base_without_compiler") {
     "src/strings/uri.h",
     "src/tasks/cancelable-task.cc",
     "src/tasks/cancelable-task.h",
+    "src/tasks/operations-barrier.cc",
+    "src/tasks/operations-barrier.h",
     "src/tasks/task-utils.cc",
     "src/tasks/task-utils.h",
     "src/third_party/siphash/halfsiphash.cc",
@@ -4086,7 +4086,6 @@ v8_component("v8_libbase") {
     "src/base/ieee754.cc",
     "src/base/ieee754.h",
     "src/base/iterator.h",
-    "src/base/lazy-instance.cc",
     "src/base/lazy-instance.h",
     "src/base/logging.cc",
     "src/base/logging.h",
@@ -4099,8 +4098,6 @@ v8_component("v8_libbase") {
     "src/base/overflowing-math.h",
     "src/base/page-allocator.cc",
     "src/base/page-allocator.h",
-    "src/base/platform/threading-backend.cc",
-    "src/base/platform/threading-backend.h",
     "src/base/platform/condition-variable.cc",
     "src/base/platform/condition-variable.h",
     "src/base/platform/elapsed-timer.h",
@@ -4232,10 +4229,6 @@ v8_component("v8_libbase") {
     ]
 
     data_deps += [ "//build/win:runtime_libs" ]
-  }
-
-  if (target_os == "ios") {
-    defines += [ "V8_TARGET_OS_IOS" ]
   }
 
   if (v8_current_cpu == "mips" || v8_current_cpu == "mips64") {

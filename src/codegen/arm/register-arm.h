@@ -59,12 +59,7 @@ namespace internal {
 // The ARM ABI does not specify the usage of register r9, which may be reserved
 // as the static base or thread register on some platforms, in which case we
 // leave it alone. Adjust the value of kR9Available accordingly:
-const int kR9Available = // 1 if available to us, 0 if reserved
-#if defined(V8_TARGET_OS_IOS)
-  0;
-#else
-  1;
-#endif
+const int kR9Available = 1;  // 1 if available to us, 0 if reserved
 
 // Register list in load/store instructions
 // Note that the bit values must match those used in actual instruction encoding

@@ -29,16 +29,17 @@ void ReportUncaughtException(v8::Isolate* isolate,
       isolate, try_catch.Message()
                    ->GetSourceLine(isolate->GetCurrentContext())
                    .ToLocalChecked());
-  fprintf(stderr, "Unhandle exception: %s @%s[%d]\n", message.data(),
+  fprintf(stderr, "Unhandled exception: %s @%s[%d]\n", message.data(),
           source_line.data(), line);
 }
 
 }  //  namespace
 
 TaskRunner::TaskRunner(IsolateData::SetupGlobalTasks setup_global_tasks,
-                       bool catch_exceptions,
+                       CatchExceptions catch_exceptions,
                        v8::base::Semaphore* ready_semaphore,
-                       v8::StartupData* startup_data, bool with_inspector)
+                       v8::StartupData* startup_data,
+                       WithInspector with_inspector)
     : Thread(Options("Task Runner")),
       setup_global_tasks_(std::move(setup_global_tasks)),
       startup_data_(startup_data),

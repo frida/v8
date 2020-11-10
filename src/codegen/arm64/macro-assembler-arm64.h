@@ -147,15 +147,7 @@ enum PreShiftImmMode {
 
 class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
  public:
-  TurboAssembler(Isolate* isolate, CodeObjectRequired create_code_object,
-                 std::unique_ptr<AssemblerBuffer> buffer = {})
-      : TurboAssemblerBase(isolate, create_code_object, std::move(buffer)) {}
-
-  TurboAssembler(Isolate* isolate, const AssemblerOptions& options,
-                 CodeObjectRequired create_code_object,
-                 std::unique_ptr<AssemblerBuffer> buffer = {})
-      : TurboAssemblerBase(isolate, options, create_code_object,
-                           std::move(buffer)) {}
+  using TurboAssemblerBase::TurboAssemblerBase;
 
 #if DEBUG
   void set_allow_macro_instructions(bool value) {

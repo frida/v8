@@ -536,7 +536,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   };
 
   static void InitializeOncePerProcess();
-  static void TearDown();
 
   // Creates Isolate object. Must be used instead of constructing Isolate with
   // new operator.

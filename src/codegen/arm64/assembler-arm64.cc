@@ -739,9 +739,6 @@ void Assembler::EndBlockVeneerPool() {
 
 void Assembler::br(const Register& xn) {
   DCHECK(xn.Is64Bits());
-#ifdef V8_TARGET_PTRAUTH
-  Emit(XPACI | Rd(xn));
-#endif
   Emit(BR | Rn(xn));
 }
 
@@ -750,9 +747,6 @@ void Assembler::blr(const Register& xn) {
   // The pattern 'blr xzr' is used as a guard to detect when execution falls
   // through the constant pool. It should not be emitted.
   DCHECK_NE(xn, xzr);
-#ifdef V8_TARGET_PTRAUTH
-  Emit(XPACI | Rd(xn));
-#endif
   Emit(BLR | Rn(xn));
 }
 

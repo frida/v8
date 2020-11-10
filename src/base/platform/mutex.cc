@@ -6,105 +6,8 @@
 
 #include <errno.h>
 
-#include "src/base/platform/threading-backend.h"
-
 namespace v8 {
 namespace base {
-
-Mutex::Mutex() : impl_(GetThreadingBackend()->CreatePlainMutex()) {
-#ifdef DEBUG
-  level_ = 0;
-#endif
-}
-
-
-Mutex::~Mutex() {
-  DCHECK_EQ(0, level_);
-}
-
-
-void Mutex::Lock() {
-  impl_->Lock();
-  AssertUnheldAndMark();
-}
-
-
-void Mutex::Unlock() {
-  AssertHeldAndUnmark();
-  impl_->Unlock();
-}
-
-
-bool Mutex::TryLock() {
-  if (!impl_->TryLock()) {
-    return false;
-  }
-  AssertUnheldAndMark();
-  return true;
-}
-
-
-RecursiveMutex::RecursiveMutex()
-  : impl_(GetThreadingBackend()->CreateRecursiveMutex()) {
-#ifdef DEBUG
-  level_ = 0;
-#endif
-}
-
-
-RecursiveMutex::~RecursiveMutex() {
-  DCHECK_EQ(0, level_);
-}
-
-
-void RecursiveMutex::Lock() {
-  impl_->Lock();
-#ifdef DEBUG
-  DCHECK_LE(0, level_);
-  level_++;
-#endif
-}
-
-
-void RecursiveMutex::Unlock() {
-#ifdef DEBUG
-  DCHECK_LT(0, level_);
-  level_--;
-#endif
-  impl_->Unlock();
-}
-
-
-bool RecursiveMutex::TryLock() {
-  if (!impl_->TryLock()) {
-    return false;
-  }
-#ifdef DEBUG
-  DCHECK_LE(0, level_);
-  level_++;
-#endif
-  return true;
-}
-
-
-SharedMutex::SharedMutex() : impl_(GetThreadingBackend()->CreateSharedMutex()) {
-}
-
-SharedMutex::~SharedMutex() {
-}
-
-void SharedMutex::LockShared() { impl_->LockShared(); }
-
-void SharedMutex::LockExclusive() { impl_->LockExclusive(); }
-
-void SharedMutex::UnlockShared() { impl_->UnlockShared(); }
-
-void SharedMutex::UnlockExclusive() { impl_->UnlockExclusive(); }
-
-bool SharedMutex::TryLockShared() { return impl_->TryLockShared(); }
-
-bool SharedMutex::TryLockExclusive() { return impl_->TryLockExclusive(); }
-
 
 #if V8_OS_POSIX
 
@@ -173,155 +76,222 @@ static V8_INLINE bool TryLockNativeHandle(pthread_mutex_t* mutex) {
   return true;
 }
 
-#elif V8_OS_WIN
 
-static V8_INLINE void InitializeNativeHandle(PCRITICAL_SECTION cs) {
-  InitializeCriticalSection(cs);
-}
-
-
-static V8_INLINE void InitializeRecursiveNativeHandle(PCRITICAL_SECTION cs) {
-  InitializeCriticalSection(cs);
-}
-
-
-static V8_INLINE void DestroyNativeHandle(PCRITICAL_SECTION cs) {
-  DeleteCriticalSection(cs);
-}
-
-
-static V8_INLINE void LockNativeHandle(PCRITICAL_SECTION cs) {
-  EnterCriticalSection(cs);
-}
-
-
-static V8_INLINE void UnlockNativeHandle(PCRITICAL_SECTION cs) {
-  LeaveCriticalSection(cs);
-}
-
-
-static V8_INLINE bool TryLockNativeHandle(PCRITICAL_SECTION cs) {
-  return TryEnterCriticalSection(cs) != FALSE;
-}
-
-#endif
-
-NativeMutex::NativeMutex() {
+Mutex::Mutex() {
   InitializeNativeHandle(&native_handle_);
+#ifdef DEBUG
+  level_ = 0;
+#endif
 }
 
 
-NativeMutex::~NativeMutex() {
+Mutex::~Mutex() {
   DestroyNativeHandle(&native_handle_);
+  DCHECK_EQ(0, level_);
 }
 
 
-void NativeMutex::Lock() {
+void Mutex::Lock() {
   LockNativeHandle(&native_handle_);
+  AssertUnheldAndMark();
 }
 
 
-void NativeMutex::Unlock() {
+void Mutex::Unlock() {
+  AssertHeldAndUnmark();
   UnlockNativeHandle(&native_handle_);
 }
 
 
-bool NativeMutex::TryLock() {
-  return TryLockNativeHandle(&native_handle_);
+bool Mutex::TryLock() {
+  if (!TryLockNativeHandle(&native_handle_)) {
+    return false;
+  }
+  AssertUnheldAndMark();
+  return true;
 }
 
 
-NativeRecursiveMutex::NativeRecursiveMutex() {
+RecursiveMutex::RecursiveMutex() {
   InitializeRecursiveNativeHandle(&native_handle_);
+#ifdef DEBUG
+  level_ = 0;
+#endif
 }
 
 
-NativeRecursiveMutex::~NativeRecursiveMutex() {
+RecursiveMutex::~RecursiveMutex() {
   DestroyNativeHandle(&native_handle_);
+  DCHECK_EQ(0, level_);
 }
 
 
-void NativeRecursiveMutex::Lock() {
+void RecursiveMutex::Lock() {
   LockNativeHandle(&native_handle_);
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
 }
 
 
-void NativeRecursiveMutex::Unlock() {
+void RecursiveMutex::Unlock() {
+#ifdef DEBUG
+  DCHECK_LT(0, level_);
+  level_--;
+#endif
   UnlockNativeHandle(&native_handle_);
 }
 
 
-bool NativeRecursiveMutex::TryLock() {
-  return TryLockNativeHandle(&native_handle_);
+bool RecursiveMutex::TryLock() {
+  if (!TryLockNativeHandle(&native_handle_)) {
+    return false;
+  }
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
+  return true;
 }
 
-#if V8_OS_POSIX
+SharedMutex::SharedMutex() { pthread_rwlock_init(&native_handle_, nullptr); }
 
-NativeSharedMutex::NativeSharedMutex() {
-  pthread_rwlock_init(&native_handle_, nullptr);
-}
-
-NativeSharedMutex::~NativeSharedMutex() {
+SharedMutex::~SharedMutex() {
   int result = pthread_rwlock_destroy(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
-void NativeSharedMutex::LockShared() {
+void SharedMutex::LockShared() {
   int result = pthread_rwlock_rdlock(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
-void NativeSharedMutex::LockExclusive() {
+void SharedMutex::LockExclusive() {
   int result = pthread_rwlock_wrlock(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
-void NativeSharedMutex::UnlockShared() {
+void SharedMutex::UnlockShared() {
   int result = pthread_rwlock_unlock(&native_handle_);
   DCHECK_EQ(0, result);
   USE(result);
 }
 
-void NativeSharedMutex::UnlockExclusive() {
+void SharedMutex::UnlockExclusive() {
   // Same code as {UnlockShared} on POSIX.
   UnlockShared();
 }
 
-bool NativeSharedMutex::TryLockShared() {
+bool SharedMutex::TryLockShared() {
   return pthread_rwlock_tryrdlock(&native_handle_) == 0;
 }
 
-bool NativeSharedMutex::TryLockExclusive() {
+bool SharedMutex::TryLockExclusive() {
   return pthread_rwlock_trywrlock(&native_handle_) == 0;
 }
 
 #elif V8_OS_WIN
 
-NativeSharedMutex::NativeSharedMutex() {
-  InitializeNativeHandle(&native_handle_);
+Mutex::Mutex() : native_handle_(SRWLOCK_INIT) {
+#ifdef DEBUG
+  level_ = 0;
+#endif
 }
 
-NativeSharedMutex::~NativeSharedMutex() {
-  DestroyNativeHandle(&native_handle_);
+
+Mutex::~Mutex() {
+  DCHECK_EQ(0, level_);
 }
 
-void NativeSharedMutex::LockShared() { LockNativeHandle(&native_handle_); }
 
-void NativeSharedMutex::LockExclusive() { LockNativeHandle(&native_handle_); }
-
-void NativeSharedMutex::UnlockShared() { UnlockNativeHandle(&native_handle_); }
-
-void NativeSharedMutex::UnlockExclusive() { UnlockNativeHandle(&native_handle_); }
-
-bool NativeSharedMutex::TryLockShared() {
-  return TryLockNativeHandle(&native_handle_);
+void Mutex::Lock() {
+  AcquireSRWLockExclusive(&native_handle_);
+  AssertUnheldAndMark();
 }
 
-bool NativeSharedMutex::TryLockExclusive() {
-  return TryLockNativeHandle(&native_handle_);
+
+void Mutex::Unlock() {
+  AssertHeldAndUnmark();
+  ReleaseSRWLockExclusive(&native_handle_);
+}
+
+
+bool Mutex::TryLock() {
+  if (!TryAcquireSRWLockExclusive(&native_handle_)) {
+    return false;
+  }
+  AssertUnheldAndMark();
+  return true;
+}
+
+
+RecursiveMutex::RecursiveMutex() {
+  InitializeCriticalSection(&native_handle_);
+#ifdef DEBUG
+  level_ = 0;
+#endif
+}
+
+
+RecursiveMutex::~RecursiveMutex() {
+  DeleteCriticalSection(&native_handle_);
+  DCHECK_EQ(0, level_);
+}
+
+
+void RecursiveMutex::Lock() {
+  EnterCriticalSection(&native_handle_);
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
+}
+
+
+void RecursiveMutex::Unlock() {
+#ifdef DEBUG
+  DCHECK_LT(0, level_);
+  level_--;
+#endif
+  LeaveCriticalSection(&native_handle_);
+}
+
+
+bool RecursiveMutex::TryLock() {
+  if (!TryEnterCriticalSection(&native_handle_)) {
+    return false;
+  }
+#ifdef DEBUG
+  DCHECK_LE(0, level_);
+  level_++;
+#endif
+  return true;
+}
+
+SharedMutex::SharedMutex() : native_handle_(SRWLOCK_INIT) {}
+
+SharedMutex::~SharedMutex() {}
+
+void SharedMutex::LockShared() { AcquireSRWLockShared(&native_handle_); }
+
+void SharedMutex::LockExclusive() { AcquireSRWLockExclusive(&native_handle_); }
+
+void SharedMutex::UnlockShared() { ReleaseSRWLockShared(&native_handle_); }
+
+void SharedMutex::UnlockExclusive() {
+  ReleaseSRWLockExclusive(&native_handle_);
+}
+
+bool SharedMutex::TryLockShared() {
+  return TryAcquireSRWLockShared(&native_handle_);
+}
+
+bool SharedMutex::TryLockExclusive() {
+  return TryAcquireSRWLockExclusive(&native_handle_);
 }
 
 #elif V8_OS_STARBOARD

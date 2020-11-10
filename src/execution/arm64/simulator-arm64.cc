@@ -3207,10 +3207,6 @@ void Simulator::VisitSystem(Instruction* instr) {
   }
 }
 
-void Simulator::VisitPointerAuthentication(Instruction* instr) {
-  // Ignore xpac{i,d,lri} as we don't need to simulate the auth bits.
-}
-
 bool Simulator::GetValue(const char* desc, int64_t* value) {
   int regnum = CodeFromName(desc);
   if (regnum >= 0) {

@@ -202,10 +202,6 @@ VisitorId Map::GetVisitorId(Map map) {
     case PROPERTY_CELL_TYPE:
       return kVisitPropertyCell;
 
-    case DESCRIPTOR_ARRAY_TYPE:
-    case STRONG_DESCRIPTOR_ARRAY_TYPE:
-      return kVisitDescriptorArray;
-
     case TRANSITION_ARRAY_TYPE:
       return kVisitTransitionArray;
 
@@ -509,7 +505,7 @@ bool Map::TransitionRemovesTaggedField(Map target) const {
 bool Map::TransitionChangesTaggedFieldToUntaggedField(Map target) const {
   int inobject = NumberOfFields();
   int target_inobject = target.NumberOfFields();
-  int limit = Min(inobject, target_inobject);
+  int limit = std::min(inobject, target_inobject);
   for (int i = 0; i < limit; i++) {
     FieldIndex index = FieldIndex::ForPropertyIndex(target, i);
     if (!IsUnboxedDoubleField(index) && target.IsUnboxedDoubleField(index)) {
@@ -2492,7 +2488,8 @@ bool Map::EquivalentToForTransition(const Map other) const {
   if (instance_type() == JS_FUNCTION_TYPE) {
     // JSFunctions require more checks to ensure that sloppy function is
     // not equivalent to strict function.
-    int nof = Min(NumberOfOwnDescriptors(), other.NumberOfOwnDescriptors());
+    int nof =
+        std::min(NumberOfOwnDescriptors(), other.NumberOfOwnDescriptors());
     return instance_descriptors(kRelaxedLoad)
         .IsEqualUpTo(other.instance_descriptors(kRelaxedLoad), nof);
   }

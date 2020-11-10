@@ -65,10 +65,25 @@ class V8_BASE_EXPORT ConditionVariable final {
   // was notified prior to the timeout.
   bool WaitFor(Mutex* mutex, const TimeDelta& rel_time) V8_WARN_UNUSED_RESULT;
 
- private:
-  std::unique_ptr<ConditionVariableImpl> impl_;
-};
+  // The implementation-defined native handle type.
+#if V8_OS_POSIX
+  using NativeHandle = pthread_cond_t;
+#elif V8_OS_WIN
+  using NativeHandle = CONDITION_VARIABLE;
+#elif V8_OS_STARBOARD
+  using NativeHandle = SbConditionVariable;
+#endif
 
+  NativeHandle& native_handle() {
+    return native_handle_;
+  }
+  const NativeHandle& native_handle() const {
+    return native_handle_;
+  }
+
+ private:
+  NativeHandle native_handle_;
+};
 
 // POD ConditionVariable initialized lazily (i.e. the first time Pointer() is
 // called).
@@ -86,61 +101,6 @@ using LazyConditionVariable =
                        ThreadSafeInitOnceTrait>::type;
 
 #define LAZY_CONDITION_VARIABLE_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
-
-
-// -----------------------------------------------------------------------------
-// Default implementation
-
-class V8_BASE_EXPORT NativeConditionVariable final
-  : public ConditionVariableImpl {
- public:
-  NativeConditionVariable();
-  NativeConditionVariable(const NativeConditionVariable&) = delete;
-  NativeConditionVariable& operator=(const NativeConditionVariable&) = delete;
-  ~NativeConditionVariable();
-
-  void NotifyOne();
-  void NotifyAll();
-  void Wait(MutexImpl* mutex);
-  bool WaitFor(MutexImpl* mutex, int64_t delta_in_microseconds)
-    V8_WARN_UNUSED_RESULT;
-
-#if V8_OS_POSIX
-  using NativeHandle = pthread_cond_t;
-#elif V8_OS_WIN
-  struct Event;
-  class NativeHandle final {
-   public:
-    NativeHandle() : waitlist_(NULL), freelist_(NULL) {}
-    NativeHandle(const NativeHandle&) = delete;
-    NativeHandle& operator=(const NativeHandle&) = delete;
-    ~NativeHandle();
-
-    Event* Pre() V8_WARN_UNUSED_RESULT;
-    void Post(Event* event, bool result);
-
-    Mutex* mutex() { return &mutex_; }
-    Event* waitlist() { return waitlist_; }
-
-   private:
-    Event* waitlist_;
-    Event* freelist_;
-    Mutex mutex_;
-  };
-#elif V8_OS_STARBOARD
-  using NativeHandle = SbConditionVariable;
-#endif
-
-  NativeHandle& native_handle() {
-    return native_handle_;
-  }
-  const NativeHandle& native_handle() const {
-    return native_handle_;
-  }
-
- private:
-  NativeHandle native_handle_;
-};
 
 }  // namespace base
 }  // namespace v8
