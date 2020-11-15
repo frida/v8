@@ -101,6 +101,12 @@ if (v8_snapshot_toolchain == "") {
       # cross compile Windows arm64 with host toolchain.
       v8_snapshot_toolchain = host_toolchain
     }
+  } else if (current_os == host_os && current_cpu == "arm" &&
+             host_cpu == "arm64") {
+    # This is an arm64 -> arm cross-compile, but arm64 hosts can usually run arm
+    # binaries built for the same OS, so build the snapshot with the current
+    # toolchain here, too.
+    v8_snapshot_toolchain = current_toolchain
   }
 }
 
