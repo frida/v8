@@ -4377,7 +4377,7 @@ v8_source_set("v8_cppgc_shared") {
       sources += [ "src/heap/base/asm/ppc/push_registers_asm.cc" ]
     } else if (current_cpu == "s390x") {
       sources += [ "src/heap/base/asm/s390/push_registers_asm.cc" ]
-    } else if (current_cpu == "mipsel") {
+    } else if (current_cpu == "mips" || current_cpu == "mipsel") {
       sources += [ "src/heap/base/asm/mips/push_registers_asm.cc" ]
     } else if (current_cpu == "mips64el") {
       sources += [ "src/heap/base/asm/mips64/push_registers_asm.cc" ]
