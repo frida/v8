@@ -4063,7 +4063,7 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
     } else if (__ emit_debug_code()) {
       __ Assert(eq, AbortReason::kUnexpectedAdditionalPopValue,
                 g.ToRegister(additional_pop_count),
-                Operand(static_cast<int64_t>(0)));
+                Operand(static_cast<int32_t>(0)));
     }
   }
 #ifdef V8_NO_ARGUMENTS_ADAPTOR
