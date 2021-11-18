@@ -92,7 +92,7 @@ vars = {
 
 deps = {
   'build':
-    Var('frida_url') + '/v8-build.git' + '@' + '96e08404eef73c900f63d765cf1b34a98909dcb2',
+    Var('frida_url') + '/v8-build.git' + '@' + '931f5e879a1095589353fe26c0531ffddbbacf7b',
   'third_party/depot_tools':
     Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + '982b2a757087c2519e42b82b93cbfe5adf43cdd5',
   'third_party/icu':
