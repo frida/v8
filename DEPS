@@ -92,7 +92,7 @@ vars = {
 
 deps = {
   'build':
-    Var('frida_url') + '/v8-build.git' + '@' + '931f5e879a1095589353fe26c0531ffddbbacf7b',
+    Var('frida_url') + '/v8-build.git' + '@' + '5ff06f5db2471837b260466f1785907f2725019d',
   'third_party/depot_tools':
     Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + '982b2a757087c2519e42b82b93cbfe5adf43cdd5',
   'third_party/icu':
@@ -292,7 +292,7 @@ deps = {
   'third_party/protobuf':
     Var('chromium_url') + '/external/github.com/google/protobuf'+ '@' + 'b68a347f56137b4b1a746e8c7438495a6ac1bd91',
   'third_party/zlib':
-    Var('frida_url') + '/v8-zlib.git' + '@' + 'd9973e886fe442bef713f4d04fe2d62fc65d3648',
+    Var('frida_url') + '/v8-zlib.git' + '@' + '424d4ff8dbe56c67df5c7a4d1f2b523fde205bce',
   'third_party/jsoncpp/source':
     Var('chromium_url') + '/external/github.com/open-source-parsers/jsoncpp.git'+ '@' + '9059f5cad030ba11d37818847443a53918c327b1',
   'third_party/ittapi': {
