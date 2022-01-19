@@ -4185,6 +4185,16 @@ v8_component("v8_libbase") {
       "dl",
       "rt",
     ]
+  } else if (current_os == "freebsd") {
+    sources += [
+      "src/base/debug/stack_trace_posix.cc",
+      "src/base/platform/platform-freebsd.cc",
+    ]
+
+    libs = [
+      "execinfo",
+      "pthread",
+    ]
   } else if (is_android) {
     if (current_toolchain == host_toolchain) {
       libs = [
@@ -4259,7 +4269,7 @@ v8_component("v8_libbase") {
     data += [ "tools/sanitizers/tsan_suppressions.txt" ]
   }
 
-  # TODO(jochen): Add support for qnx, freebsd, openbsd, netbsd, and solaris.
+  # TODO(jochen): Add support for qnx, openbsd, netbsd, and solaris.
 }
 
 v8_component("v8_libplatform") {
