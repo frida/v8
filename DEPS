@@ -274,7 +274,7 @@ deps = {
           'version': Var('luci_go'),
         },
       ],
-      'condition': 'host_cpu != "s390" and host_os != "aix"',
+      'condition': 'host_cpu != "s390" and host_os != "aix" and host_os != "freebsd"',
       'dep_type': 'cipd',
   },
   'tools/clang/dsymutil': {
@@ -509,7 +509,7 @@ hooks = [
     'name': 'clang',
     'pattern': '.',
     # clang not supported on aix
-    'condition': 'host_os != "aix"',
+    'condition': 'host_os != "aix" and host_os != "freebsd"',
     'action': ['python', 'tools/clang/scripts/update.py'],
   },
   {
