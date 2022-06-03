@@ -292,7 +292,7 @@ deps = {
   'third_party/protobuf':
     Var('chromium_url') + '/external/github.com/google/protobuf'+ '@' + 'b68a347f56137b4b1a746e8c7438495a6ac1bd91',
   'third_party/zlib':
-    Var('frida_url') + '/v8-zlib.git' + '@' + '424d4ff8dbe56c67df5c7a4d1f2b523fde205bce',
+    Var('frida_url') + '/v8-zlib.git' + '@' + 'e7b2838f2442478999ffd3a650939ebe462f18c7',
   'third_party/jsoncpp/source':
     Var('chromium_url') + '/external/github.com/open-source-parsers/jsoncpp.git'+ '@' + '9059f5cad030ba11d37818847443a53918c327b1',
   'third_party/ittapi': {
