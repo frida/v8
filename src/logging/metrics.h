@@ -22,9 +22,11 @@ namespace metrics {
 
 class Recorder : public std::enable_shared_from_this<Recorder> {
  public:
-  V8_EXPORT_PRIVATE void SetRecorder(
+  V8_EXPORT_PRIVATE void SetEmbedderRecorder(
       Isolate* isolate,
       const std::shared_ptr<v8::metrics::Recorder>& embedder_recorder);
+
+  V8_EXPORT_PRIVATE bool HasEmbedderRecorder() const;
 
   V8_EXPORT_PRIVATE void NotifyIsolateDisposal();
 
@@ -83,7 +85,7 @@ class Recorder : public std::enable_shared_from_this<Recorder> {
 
 template <class T, int64_t (base::TimeDelta::*precision)() const =
                        &base::TimeDelta::InMicroseconds>
-class TimedScope {
+class V8_NODISCARD TimedScope {
  public:
   explicit TimedScope(T* event) : event_(event) { Start(); }
   ~TimedScope() { Stop(); }

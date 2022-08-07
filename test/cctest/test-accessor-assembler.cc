@@ -32,12 +32,12 @@ void TestStubCacheOffsetCalculation(StubCache::Table table) {
     auto map = m.Parameter<Map>(2);
     TNode<IntPtrT> primary_offset =
         m.StubCachePrimaryOffsetForTesting(name, map);
-    Node* result;
+    TNode<IntPtrT> result;
     if (table == StubCache::kPrimary) {
       result = primary_offset;
     } else {
       CHECK_EQ(StubCache::kSecondary, table);
-      result = m.StubCacheSecondaryOffsetForTesting(name, primary_offset);
+      result = m.StubCacheSecondaryOffsetForTesting(name, map);
     }
     m.Return(m.SmiTag(result));
   }
@@ -83,8 +83,7 @@ void TestStubCacheOffsetCalculation(StubCache::Table table) {
         if (table == StubCache::kPrimary) {
           expected_result = primary_offset;
         } else {
-          expected_result =
-              StubCache::SecondaryOffsetForTesting(*name, primary_offset);
+          expected_result = StubCache::SecondaryOffsetForTesting(*name, *map);
         }
       }
       Handle<Object> result = ft.Call(name, map).ToHandleChecked();
@@ -208,7 +207,7 @@ TEST(TryProbeStubCache) {
 
   // Ensure that GC does happen because from now on we are going to fill our
   // own stub cache instance with raw values.
-  DisallowHeapAllocation no_gc;
+  DisallowGarbageCollection no_gc;
 
   // Populate {stub_cache}.
   const int N = StubCache::kPrimaryTableSize + StubCache::kSecondaryTableSize;
@@ -217,7 +216,8 @@ TEST(TryProbeStubCache) {
     Handle<Name> name = names[index % names.size()];
     Handle<JSObject> receiver = receivers[index % receivers.size()];
     Handle<Code> handler = handlers[index % handlers.size()];
-    stub_cache.Set(*name, receiver->map(), MaybeObject::FromObject(*handler));
+    stub_cache.Set(*name, receiver->map(),
+                   MaybeObject::FromObject(ToCodeT(*handler)));
   }
 
   // Perform some queries.

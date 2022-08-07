@@ -37,7 +37,7 @@ base::LazyInstance<std::weak_ptr<ReadOnlyArtifacts>>::type
 
 std::shared_ptr<ReadOnlyArtifacts> InitializeSharedReadOnlyArtifacts() {
   std::shared_ptr<ReadOnlyArtifacts> artifacts;
-  if (COMPRESS_POINTERS_BOOL) {
+  if (COMPRESS_POINTERS_IN_ISOLATE_CAGE_BOOL) {
     artifacts = std::make_shared<PointerCompressedReadOnlyArtifacts>();
   } else {
     artifacts = std::make_shared<SingleCopyReadOnlyArtifacts>();
@@ -76,8 +76,8 @@ void ReadOnlyHeap::SetUp(Isolate* isolate,
         artifacts = InitializeSharedReadOnlyArtifacts();
         artifacts->InitializeChecksum(read_only_snapshot_data);
         ro_heap = CreateInitalHeapForBootstrapping(isolate, artifacts);
-        ro_heap->DeseralizeIntoIsolate(isolate, read_only_snapshot_data,
-                                       can_rehash);
+        ro_heap->DeserializeIntoIsolate(isolate, read_only_snapshot_data,
+                                        can_rehash);
         read_only_heap_created = true;
       } else {
         // With pointer compression, there is one ReadOnlyHeap per Isolate.
@@ -104,15 +104,15 @@ void ReadOnlyHeap::SetUp(Isolate* isolate,
     auto* ro_heap = new ReadOnlyHeap(new ReadOnlySpace(isolate->heap()));
     isolate->SetUpFromReadOnlyArtifacts(nullptr, ro_heap);
     if (read_only_snapshot_data != nullptr) {
-      ro_heap->DeseralizeIntoIsolate(isolate, read_only_snapshot_data,
-                                     can_rehash);
+      ro_heap->DeserializeIntoIsolate(isolate, read_only_snapshot_data,
+                                      can_rehash);
     }
   }
 }
 
-void ReadOnlyHeap::DeseralizeIntoIsolate(Isolate* isolate,
-                                         SnapshotData* read_only_snapshot_data,
-                                         bool can_rehash) {
+void ReadOnlyHeap::DeserializeIntoIsolate(Isolate* isolate,
+                                          SnapshotData* read_only_snapshot_data,
+                                          bool can_rehash) {
   DCHECK_NOT_NULL(read_only_snapshot_data);
   ReadOnlyDeserializer des(isolate, read_only_snapshot_data, can_rehash);
   des.DeserializeIntoIsolate();
@@ -129,7 +129,7 @@ ReadOnlyHeap::ReadOnlyHeap(ReadOnlyHeap* ro_heap, ReadOnlySpace* ro_space)
     : read_only_space_(ro_space),
       read_only_object_cache_(ro_heap->read_only_object_cache_) {
   DCHECK(ReadOnlyHeap::IsReadOnlySpaceShared());
-  DCHECK(COMPRESS_POINTERS_BOOL);
+  DCHECK(COMPRESS_POINTERS_IN_ISOLATE_CAGE_BOOL);
 }
 
 // static
@@ -139,7 +139,7 @@ ReadOnlyHeap* ReadOnlyHeap::CreateInitalHeapForBootstrapping(
 
   std::unique_ptr<ReadOnlyHeap> ro_heap;
   auto* ro_space = new ReadOnlySpace(isolate->heap());
-  if (COMPRESS_POINTERS_BOOL) {
+  if (COMPRESS_POINTERS_IN_ISOLATE_CAGE_BOOL) {
     ro_heap.reset(new ReadOnlyHeap(ro_space));
   } else {
     std::unique_ptr<SoleReadOnlyHeap> sole_ro_heap(
@@ -249,10 +249,16 @@ bool ReadOnlyHeap::read_only_object_cache_is_initialized() const {
   return read_only_object_cache_.size() > 0;
 }
 
-ReadOnlyHeapObjectIterator::ReadOnlyHeapObjectIterator(ReadOnlyHeap* ro_heap)
+size_t ReadOnlyHeap::read_only_object_cache_size() const {
+  return read_only_object_cache_.size();
+}
+
+ReadOnlyHeapObjectIterator::ReadOnlyHeapObjectIterator(
+    const ReadOnlyHeap* ro_heap)
     : ReadOnlyHeapObjectIterator(ro_heap->read_only_space()) {}
 
-ReadOnlyHeapObjectIterator::ReadOnlyHeapObjectIterator(ReadOnlySpace* ro_space)
+ReadOnlyHeapObjectIterator::ReadOnlyHeapObjectIterator(
+    const ReadOnlySpace* ro_space)
     : ro_space_(ro_space),
       current_page_(V8_ENABLE_THIRD_PARTY_HEAP_BOOL
                         ? std::vector<ReadOnlyPage*>::iterator()

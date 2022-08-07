@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "include/v8-function.h"
 #include "src/execution/frames-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/cctest/compiler/function-tester.h"
@@ -13,7 +14,7 @@ namespace compiler {
 static void IsOptimized(const v8::FunctionCallbackInfo<v8::Value>& args) {
   JavaScriptFrameIterator it(CcTest::i_isolate());
   JavaScriptFrame* frame = it.frame();
-  return args.GetReturnValue().Set(frame->is_optimized());
+  return args.GetReturnValue().Set(frame->is_turbofan());
 }
 
 

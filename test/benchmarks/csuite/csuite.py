@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 # Copyright 2018 the V8 project authors. All rights reserved.
 '''
 C S u i t e                                         because who can remember?
@@ -19,7 +19,7 @@ runs the versions we pull into ./test/benchmarks/data.
 Examples:
 
 Say you want to see how much optimization buys you:
-  ./csuite.py kraken baseline ~/src/v8/out/d8 -x="--noopt"
+  ./csuite.py kraken baseline ~/src/v8/out/d8 -x="--noturbofan"
   ./csuite.py kraken compare ~/src/v8/out/d8
 
 Suppose you are comparing two binaries, quick n' dirty style:
@@ -144,14 +144,23 @@ if __name__ == '__main__':
   if mode == "baseline":
     cmdline = "%s > %s" % (cmdline_base, output_file)
   else:
-    cmdline = "%s | %s %s" \
-        % (cmdline_base, compare_baseline_py_path, output_file)
+    output_file_compare = output_file + "_compare"
+    cmdline = "%s > %s" % (cmdline_base, output_file_compare)
 
   if opts.verbose:
     print("Spawning subprocess: %s." % cmdline)
   return_code = subprocess.call(cmdline, shell=True, cwd=suite_path)
   if return_code < 0:
     print("Error return code: %d." % return_code)
+
   if mode == "baseline":
     print("Wrote %s." % output_file)
     print("Run %s again with compare mode to see results." % suite)
+  else:
+    print("Wrote %s." % output_file_compare)
+    cmdline = "python %s  %s -f %s" % (compare_baseline_py_path, output_file, output_file_compare)
+    if opts.verbose:
+      print("Spawning subprocess: %s." % cmdline)
+    return_code = subprocess.call(cmdline, shell=True, cwd=suite_path)
+    if return_code < 0:
+      print("Error return code: %d." % return_code)

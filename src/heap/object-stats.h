@@ -76,7 +76,7 @@
   V(SCRIPT_SOURCE_NON_EXTERNAL_ONE_BYTE_TYPE)    \
   V(SCRIPT_SOURCE_NON_EXTERNAL_TWO_BYTE_TYPE)    \
   V(SERIALIZED_OBJECTS_TYPE)                     \
-  V(SINGLE_CHARACTER_STRING_CACHE_TYPE)          \
+  V(SINGLE_CHARACTER_STRING_TABLE_TYPE)          \
   V(STRING_SPLIT_CACHE_TYPE)                     \
   V(STRING_EXTERNAL_RESOURCE_ONE_BYTE_TYPE)      \
   V(STRING_EXTERNAL_RESOURCE_TWO_BYTE_TYPE)      \
@@ -107,10 +107,9 @@ class ObjectStats {
   // ObjectStats are kept in two arrays, counts and sizes. Related stats are
   // stored in a contiguous linear buffer. Stats groups are stored one after
   // another.
-  enum {
-    FIRST_VIRTUAL_TYPE = LAST_TYPE + 1,
-    OBJECT_STATS_COUNT = FIRST_VIRTUAL_TYPE + LAST_VIRTUAL_TYPE + 1,
-  };
+  static constexpr int FIRST_VIRTUAL_TYPE = LAST_TYPE + 1;
+  static constexpr int OBJECT_STATS_COUNT =
+      FIRST_VIRTUAL_TYPE + LAST_VIRTUAL_TYPE + 1;
 
   void ClearObjectStats(bool clear_last_time_stats = false);
 
@@ -167,7 +166,6 @@ class ObjectStats {
   size_t tagged_fields_count_;
   size_t embedder_fields_count_;
   size_t inobject_smi_fields_count_;
-  size_t unboxed_double_fields_count_;
   size_t boxed_double_fields_count_;
   size_t string_data_count_;
   size_t raw_fields_count_;

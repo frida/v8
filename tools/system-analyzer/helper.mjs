@@ -2,256 +2,87 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-const KB = 1024;
-const MB = KB * KB;
-const GB = MB * KB;
-const kMillis2Seconds = 1 / 1000;
+export class Group {
+  constructor(key, id, parentTotal, entries, length = 0) {
+    this.key = key;
+    this.id = id;
+    this.entries = entries;
+    this.length = length || entries.length;
+    this.parentTotal = parentTotal;
+  }
 
-function formatBytes(bytes) {
-  const units = ['B', 'KiB', 'MiB', 'GiB'];
-  const divisor = 1024;
-  let index = 0;
-  while (index < units.length && bytes >= divisor) {
-    index++;
-    bytes /= divisor;
+  get percent() {
+    return this.length / this.parentTotal * 100;
   }
-  return bytes.toFixed(2) + units[index];
-}
 
-function formatSeconds(millis) {
-  return (millis * kMillis2Seconds).toFixed(2) + 's';
-}
+  add() {
+    this.length++;
+  }
 
-class CSSColor {
-  static getColor(name) {
-    const style = getComputedStyle(document.body);
-    return style.getPropertyValue(`--${name}`);
-  }
-  static get backgroundColor() {
-    return CSSColor.getColor('backgroud-color');
-  }
-  static get surfaceColor() {
-    return CSSColor.getColor('surface-color');
-  }
-  static get primaryColor() {
-    return CSSColor.getColor('primary-color');
-  }
-  static get secondaryColor() {
-    return CSSColor.getColor('secondary-color');
-  }
-  static get onSurfaceColor() {
-    return CSSColor.getColor('on-surface-color');
-  }
-  static get onBackgroundColor() {
-    return CSSColor.getColor('on-background-color');
-  }
-  static get onPrimaryColor() {
-    return CSSColor.getColor('on-primary-color');
-  }
-  static get onSecondaryColor() {
-    return CSSColor.getColor('on-secondary-color');
-  }
-  static get defaultColor() {
-    return CSSColor.getColor('default-color');
-  }
-  static get errorColor() {
-    return CSSColor.getColor('error-color');
-  }
-  static get mapBackgroundColor() {
-    return CSSColor.getColor('map-background-color');
-  }
-  static get timelineBackgroundColor() {
-    return CSSColor.getColor('timeline-background-color');
-  }
-  static get red() {
-    return CSSColor.getColor('red');
-  }
-  static get green() {
-    return CSSColor.getColor('green');
-  }
-  static get yellow() {
-    return CSSColor.getColor('yellow');
-  }
-  static get blue() {
-    return CSSColor.getColor('blue');
-  }
-  static get orange() {
-    return CSSColor.getColor('orange');
-  }
-  static get violet() {
-    return CSSColor.getColor('violet');
+  addEntry(entry) {
+    this.length++;
+    this.entries.push(entry);
   }
 }
 
-function typeToColor(type) {
-  switch (type) {
-    case 'new':
-      return CSSColor.green;
-    case 'Normalize':
-      return CSSColor.violet;
-    case 'SlowToFast':
-      return CSSColor.orange;
-    case 'InitialMap':
-      return CSSColor.yellow;
-    case 'Transition':
-      return CSSColor.primaryColor;
-    case 'ReplaceDescriptors':
-      return CSSColor.red;
-    case 'LoadGlobalIC':
-      return CSSColor.green;
-    case 'LoadIC':
-      return CSSColor.primaryColor;
-    case 'StoreInArrayLiteralIC':
-      return CSSColor.violet;
-    case 'StoreGlobalIC':
-      return CSSColor.blue;
-    case 'StoreIC':
-      return CSSColor.orange;
-    case 'KeyedLoadIC':
-      return CSSColor.red;
-    case 'KeyedStoreIC':
-      return CSSColor.yellow;
-  }
-  return CSSColor.secondaryColor;
-}
-
-class DOM {
-  static div(classes) {
-    const node = document.createElement('div');
-    if (classes !== void 0) {
-      if (typeof classes === 'string') {
-        node.classList.add(classes);
-      } else {
-        classes.forEach(cls => node.classList.add(cls));
-      }
+export function groupBy(array, keyFunction, collect = false) {
+  if (array.length === 0) return [];
+  if (keyFunction === undefined) keyFunction = each => each;
+  const keyToGroup = new Map();
+  const groups = [];
+  const sharedEmptyArray = [];
+  let id = 0;
+  // This is performance critical, resorting to for-loop
+  for (let each of array) {
+    const key = keyFunction(each);
+    let group = keyToGroup.get(key);
+    if (group !== undefined) {
+      collect ? group.addEntry(each) : group.add();
+      continue;
     }
-    return node;
+    let entries = collect ? [each] : sharedEmptyArray;
+    group = new Group(key, id++, array.length, entries, 1);
+    groups.push(group);
+    keyToGroup.set(key, group);
   }
+  // Sort by length
+  return groups.sort((a, b) => b.length - a.length);
+}
 
-  static table(className) {
-    const node = document.createElement('table');
-    if (className) node.classList.add(className);
-    return node;
-  }
-
-  static td(textOrNode, className) {
-    const node = document.createElement('td');
-    if (typeof textOrNode === 'object') {
-      node.appendChild(textOrNode);
-    } else if (textOrNode) {
-      node.innerText = textOrNode;
+export function arrayEquals(left, right, compareFn) {
+  if (left == right) return true;
+  if (left.length != right.length) return false;
+  if (compareFn === undefined) {
+    for (let i = 0; i < left.length; i++) {
+      if (left[i] != right[i]) return false;
     }
-    if (className) node.classList.add(className);
-    return node;
-  }
-
-  static tr(className) {
-    const node = document.createElement('tr');
-    if (className) node.classList.add(className);
-    return node;
-  }
-
-  static text(string) {
-    return document.createTextNode(string);
-  }
-
-  static removeAllChildren(node) {
-    let range = document.createRange();
-    range.selectNodeContents(node);
-    range.deleteContents();
-  }
-
-  static defineCustomElement(path, generator) {
-    let name = path.substring(path.lastIndexOf('/') + 1, path.length);
-    path = path + '-template.html';
-    fetch(path)
-        .then(stream => stream.text())
-        .then(
-            templateText =>
-                customElements.define(name, generator(templateText)));
-  }
-}
-
-function $(id) {
-  return document.querySelector(id)
-}
-
-class V8CustomElement extends HTMLElement {
-  constructor(templateText) {
-    super();
-    const shadowRoot = this.attachShadow({mode: 'open'});
-    shadowRoot.innerHTML = templateText;
-  }
-  $(id) {
-    return this.shadowRoot.querySelector(id);
-  }
-
-  querySelectorAll(query) {
-    return this.shadowRoot.querySelectorAll(query);
-  }
-}
-
-class LazyTable {
-  constructor(table, rowData, rowElementCreator) {
-    this._table = table;
-    this._rowData = rowData;
-    this._rowElementCreator = rowElementCreator;
-    const tbody = table.querySelector('tbody');
-    table.replaceChild(document.createElement('tbody'), tbody);
-    table.querySelector('tfoot td').onclick = (e) => this._addMoreRows();
-    this._addMoreRows();
-  }
-
-  _nextRowDataSlice() {
-    return this._rowData.splice(0, 100);
-  }
-
-  _addMoreRows() {
-    const fragment = new DocumentFragment();
-    for (let row of this._nextRowDataSlice()) {
-      const tr = this._rowElementCreator(row);
-      fragment.appendChild(tr);
+  } else {
+    for (let i = 0; i < left.length; i++) {
+      if (!compareFn(left[i], right[i])) return false;
     }
-    this._table.querySelector('tbody').appendChild(fragment);
   }
+  return true;
 }
 
-class LazyTable {
-  constructor(table, rowData, rowElementCreator) {
-    this._table = table;
-    this._rowData = rowData;
-    this._rowElementCreator = rowElementCreator;
-    const tbody = table.querySelector('tbody');
-    table.replaceChild(document.createElement('tbody'), tbody);
-    table.querySelector('tfoot td').onclick = (e) => this._addMoreRows();
-    this._addMoreRows();
+export function entriesEquals(left, right) {
+  if (left == right) return true;
+  if (left == undefined) return right == undefined;
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  if (leftEntries.length !== rightEntries.length) return false;
+  for (let i = 0; i < leftEntries.length; i++) {
+    const l = leftEntries[i];
+    const r = rightEntries[i];
+    if (l[0] != r[0]) return false;
+    if (l[1] != r[1]) return false;
   }
-
-  _nextRowDataSlice() {
-    return this._rowData.splice(0, 100);
-  }
-
-  _addMoreRows() {
-    const fragment = new DocumentFragment();
-    for (let row of this._nextRowDataSlice()) {
-      const tr = this._rowElementCreator(row);
-      fragment.appendChild(tr);
-    }
-    this._table.querySelector('tbody').appendChild(fragment);
-  }
+  return true;
 }
 
-function delay(time) {
-  return new Promise(resolver => setTimeout(resolver, time));
+export function keysEquals(left, right) {
+  if (left == right) return true;
+  if (left == undefined) return right == undefined;
+  return arrayEquals(Object.keys(left), Object.keys(right));
 }
 
-export {
-  DOM,
-  $,
-  V8CustomElement,
-  formatBytes,
-  typeToColor,
-  CSSColor,
-  delay,
-  LazyTable,
-};
+export * from '../js/helper.mjs'

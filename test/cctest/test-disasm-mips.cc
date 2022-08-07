@@ -28,12 +28,7 @@
 
 #include <stdlib.h>
 
-#include "src/init/v8.h"
-
-#include "src/codegen/macro-assembler.h"
-#include "src/debug/debug.h"
 #include "src/diagnostics/disasm.h"
-#include "src/diagnostics/disassembler.h"
 #include "src/execution/frames-inl.h"
 #include "test/cctest/cctest.h"
 
@@ -45,7 +40,7 @@ bool prev_instr_compact_branch = false;
 bool DisassembleAndCompare(byte* pc, const char* compare_string) {
   disasm::NameConverter converter;
   disasm::Disassembler disasm(converter);
-  EmbeddedVector<char, 128> disasm_buffer;
+  base::EmbeddedVector<char, 128> disasm_buffer;
 
   if (prev_instr_compact_branch) {
     disasm.InstructionDecode(disasm_buffer, pc);

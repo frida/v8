@@ -3,19 +3,14 @@
 // found in the LICENSE file.
 
 #include "src/compiler/js-create-lowering.h"
-#include "src/codegen/code-factory.h"
+
 #include "src/codegen/tick-counter.h"
-#include "src/compiler/access-builder.h"
 #include "src/compiler/compilation-dependencies.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/js-operator.h"
 #include "src/compiler/machine-operator.h"
-#include "src/compiler/node-properties.h"
-#include "src/compiler/operator-properties.h"
 #include "src/execution/isolate-inl.h"
 #include "src/objects/arguments.h"
-#include "src/objects/feedback-vector.h"
-#include "test/unittests/compiler/compiler-test-utils.h"
 #include "test/unittests/compiler/graph-unittest.h"
 #include "test/unittests/compiler/node-test-utils.h"
 #include "testing/gmock-support.h"
@@ -54,9 +49,9 @@ class JSCreateLoweringTest : public TypedGraphTest {
         graph()->NewNode(common()->StateValues(0, SparseInputMask::Dense()));
     return graph()->NewNode(
         common()->FrameState(
-            BailoutId::None(), OutputFrameStateCombine::Ignore(),
+            BytecodeOffset::None(), OutputFrameStateCombine::Ignore(),
             common()->CreateFrameStateFunctionInfo(
-                FrameStateType::kInterpretedFunction, 1, 0, shared)),
+                FrameStateType::kUnoptimizedFunction, 1, 0, shared)),
         state_values, state_values, state_values, NumberConstant(0),
         UndefinedConstant(), outer_frame_state);
   }
@@ -157,7 +152,7 @@ TEST_F(JSCreateLoweringTest, JSCreateFunctionContextViaInlinedAllocation) {
   Node* const control = graph()->start();
   Reduction const r = Reduce(graph()->NewNode(
       javascript()->CreateFunctionContext(
-          handle(ScopeInfo::Empty(isolate()), isolate()), 8, FUNCTION_SCOPE),
+          MakeRef(broker(), ScopeInfo::Empty(isolate())), 8, FUNCTION_SCOPE),
       context, effect, control));
   ASSERT_TRUE(r.Changed());
   EXPECT_THAT(r.replacement(),
@@ -171,8 +166,8 @@ TEST_F(JSCreateLoweringTest, JSCreateFunctionContextViaInlinedAllocation) {
 // JSCreateWithContext
 
 TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
-  Handle<ScopeInfo> scope_info =
-      ReadOnlyRoots(isolate()).empty_function_scope_info_handle();
+  ScopeInfoRef scope_info =
+      MakeRef(broker(), ReadOnlyRoots(isolate()).empty_function_scope_info());
   Node* const object = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();
@@ -193,8 +188,8 @@ TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
 // JSCreateCatchContext
 
 TEST_F(JSCreateLoweringTest, JSCreateCatchContext) {
-  Handle<ScopeInfo> scope_info =
-      ReadOnlyRoots(isolate()).empty_function_scope_info_handle();
+  ScopeInfoRef scope_info =
+      MakeRef(broker(), ReadOnlyRoots(isolate()).empty_function_scope_info());
   Node* const exception = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();

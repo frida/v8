@@ -6,14 +6,12 @@
 
 #include "src/codegen/macro-assembler.h"
 #include "src/execution/isolate-inl.h"
-#include "src/init/v8.h"
-#include "test/cctest/cctest.h"
 
 namespace v8 {
 namespace internal {
 
-Handle<Code> AssembleCodeImpl(std::function<void(MacroAssembler&)> assemble) {
-  Isolate* isolate = CcTest::i_isolate();
+Handle<Code> AssembleCodeImpl(Isolate* isolate,
+                              std::function<void(MacroAssembler&)> assemble) {
   MacroAssembler assm(isolate, CodeObjectRequired::kYes);
 
   assemble(assm);

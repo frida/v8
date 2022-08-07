@@ -6,6 +6,7 @@
 
 #include "src/ast/ast-value-factory.h"
 #include "src/ast/scopes.h"
+#include "src/common/globals.h"
 #include "src/heap/local-factory-inl.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/objects-inl.h"
@@ -16,44 +17,35 @@ namespace internal {
 
 bool SourceTextModuleDescriptor::AstRawStringComparer::operator()(
     const AstRawString* lhs, const AstRawString* rhs) const {
-  return ThreeWayCompare(lhs, rhs) < 0;
-}
-
-int SourceTextModuleDescriptor::AstRawStringComparer::ThreeWayCompare(
-    const AstRawString* lhs, const AstRawString* rhs) {
-  // Fast path for equal pointers: a pointer is not strictly less than itself.
-  if (lhs == rhs) return false;
-
-  // Order by contents (ordering by hash is unstable across runs).
-  if (lhs->is_one_byte() != rhs->is_one_byte()) {
-    return lhs->is_one_byte() ? -1 : 1;
-  }
-  if (lhs->byte_length() != rhs->byte_length()) {
-    return lhs->byte_length() - rhs->byte_length();
-  }
-  return memcmp(lhs->raw_data(), rhs->raw_data(), lhs->byte_length());
+  return AstRawString::Compare(lhs, rhs) < 0;
 }
 
 bool SourceTextModuleDescriptor::ModuleRequestComparer::operator()(
     const AstModuleRequest* lhs, const AstModuleRequest* rhs) const {
-  if (int specifier_comparison = AstRawStringComparer::ThreeWayCompare(
-          lhs->specifier(), rhs->specifier()))
+  if (int specifier_comparison =
+          AstRawString::Compare(lhs->specifier(), rhs->specifier())) {
     return specifier_comparison < 0;
-
-  if (lhs->import_assertions()->size() != rhs->import_assertions()->size())
-    return (lhs->import_assertions()->size() <
-            rhs->import_assertions()->size());
+  }
 
   auto lhsIt = lhs->import_assertions()->cbegin();
   auto rhsIt = rhs->import_assertions()->cbegin();
-  for (; lhsIt != lhs->import_assertions()->cend(); ++lhsIt, ++rhsIt) {
+  for (; lhsIt != lhs->import_assertions()->cend() &&
+         rhsIt != rhs->import_assertions()->cend();
+       ++lhsIt, ++rhsIt) {
     if (int assertion_key_comparison =
-            AstRawStringComparer::ThreeWayCompare(lhsIt->first, rhsIt->first))
+            AstRawString::Compare(lhsIt->first, rhsIt->first)) {
       return assertion_key_comparison < 0;
+    }
 
-    if (int assertion_value_comparison = AstRawStringComparer::ThreeWayCompare(
-            lhsIt->second.first, rhsIt->second.first))
+    if (int assertion_value_comparison =
+            AstRawString::Compare(lhsIt->second.first, rhsIt->second.first)) {
       return assertion_value_comparison < 0;
+    }
+  }
+
+  if (lhs->import_assertions()->size() != rhs->import_assertions()->size()) {
+    return (lhs->import_assertions()->size() <
+            rhs->import_assertions()->size());
   }
 
   return false;
@@ -125,33 +117,36 @@ void SourceTextModuleDescriptor::AddStarExport(
 }
 
 namespace {
-template <typename LocalIsolate>
-Handle<PrimitiveHeapObject> ToStringOrUndefined(LocalIsolate* isolate,
+template <typename IsolateT>
+Handle<PrimitiveHeapObject> ToStringOrUndefined(IsolateT* isolate,
                                                 const AstRawString* s) {
   if (s == nullptr) return isolate->factory()->undefined_value();
   return s->string();
 }
 }  // namespace
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<ModuleRequest> SourceTextModuleDescriptor::AstModuleRequest::Serialize(
-    LocalIsolate* isolate) const {
+    IsolateT* isolate) const {
   // The import assertions will be stored in this array in the form:
   // [key1, value1, location1, key2, value2, location2, ...]
   Handle<FixedArray> import_assertions_array =
       isolate->factory()->NewFixedArray(
-          static_cast<int>(import_assertions()->size() * 3));
+          static_cast<int>(import_assertions()->size() *
+                           ModuleRequest::kAssertionEntrySize),
+          AllocationType::kOld);
 
   int i = 0;
   for (auto iter = import_assertions()->cbegin();
-       iter != import_assertions()->cend(); ++iter, i += 3) {
+       iter != import_assertions()->cend();
+       ++iter, i += ModuleRequest::kAssertionEntrySize) {
     import_assertions_array->set(i, *iter->first->string());
     import_assertions_array->set(i + 1, *iter->second.first->string());
     import_assertions_array->set(i + 2,
                                  Smi::FromInt(iter->second.second.beg_pos));
   }
   return v8::internal::ModuleRequest::New(isolate, specifier()->string(),
-                                          import_assertions_array);
+                                          import_assertions_array, position());
 }
 template Handle<ModuleRequest>
 SourceTextModuleDescriptor::AstModuleRequest::Serialize(Isolate* isolate) const;
@@ -159,9 +154,9 @@ template Handle<ModuleRequest>
 SourceTextModuleDescriptor::AstModuleRequest::Serialize(
     LocalIsolate* isolate) const;
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<SourceTextModuleInfoEntry> SourceTextModuleDescriptor::Entry::Serialize(
-    LocalIsolate* isolate) const {
+    IsolateT* isolate) const {
   CHECK(Smi::IsValid(module_request));  // TODO(neis): Check earlier?
   return SourceTextModuleInfoEntry::New(
       isolate, ToStringOrUndefined(isolate, export_name),
@@ -174,9 +169,9 @@ SourceTextModuleDescriptor::Entry::Serialize(Isolate* isolate) const;
 template Handle<SourceTextModuleInfoEntry>
 SourceTextModuleDescriptor::Entry::Serialize(LocalIsolate* isolate) const;
 
-template <typename LocalIsolate>
+template <typename IsolateT>
 Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
-    LocalIsolate* isolate, Zone* zone) const {
+    IsolateT* isolate, Zone* zone) const {
   // We serialize regular exports in a way that lets us later iterate over their
   // local names and for each local name immediately access all its export
   // names.  (Regular exports have neither import name nor module request.)
@@ -197,7 +192,8 @@ Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
       ++count;
     } while (next != regular_exports_.end() && next->first == it->first);
 
-    Handle<FixedArray> export_names = isolate->factory()->NewFixedArray(count);
+    Handle<FixedArray> export_names =
+        isolate->factory()->NewFixedArray(count, AllocationType::kOld);
     data[index + SourceTextModuleInfo::kRegularExportLocalNameOffset] =
         it->second->local_name->string();
     data[index + SourceTextModuleInfo::kRegularExportCellIndexOffset] =
@@ -221,7 +217,8 @@ Handle<FixedArray> SourceTextModuleDescriptor::SerializeRegularExports(
 
   // We cannot create the FixedArray earlier because we only now know the
   // precise size.
-  Handle<FixedArray> result = isolate->factory()->NewFixedArray(index);
+  Handle<FixedArray> result =
+      isolate->factory()->NewFixedArray(index, AllocationType::kOld);
   for (int i = 0; i < index; ++i) {
     result->set(i, *data[i]);
   }

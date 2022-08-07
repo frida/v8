@@ -4,6 +4,7 @@
 
 #include "src/heap/cppgc/marking-visitor.h"
 
+#include "src/heap/cppgc/globals.h"
 #include "src/heap/cppgc/heap.h"
 #include "src/heap/cppgc/marking-state.h"
 
@@ -11,7 +12,7 @@ namespace cppgc {
 namespace internal {
 
 MarkingVisitorBase::MarkingVisitorBase(HeapBase& heap,
-                                       MarkingStateBase& marking_state)
+                                       BasicMarkingState& marking_state)
     : marking_state_(marking_state) {}
 
 void MarkingVisitorBase::Visit(const void* object, TraceDescriptor desc) {
@@ -25,9 +26,9 @@ void MarkingVisitorBase::VisitWeak(const void* object, TraceDescriptor desc,
                                                weak_member);
 }
 
-void MarkingVisitorBase::VisitEphemeron(const void* key,
+void MarkingVisitorBase::VisitEphemeron(const void* key, const void* value,
                                         TraceDescriptor value_desc) {
-  marking_state_.ProcessEphemeron(key, value_desc);
+  marking_state_.ProcessEphemeron(key, value, value_desc, *this);
 }
 
 void MarkingVisitorBase::VisitWeakContainer(const void* object,
@@ -54,9 +55,9 @@ ConservativeMarkingVisitor::ConservativeMarkingVisitor(
 
 void ConservativeMarkingVisitor::VisitFullyConstructedConservatively(
     HeapObjectHeader& header) {
-  if (header.IsMarked()) {
+  if (header.IsMarked<AccessMode::kAtomic>()) {
     if (marking_state_.IsMarkedWeakContainer(header))
-      marking_state_.PushMarkedWeakContainer(header);
+      marking_state_.ReTraceMarkedWeakContainer(visitor_, header);
     return;
   }
   ConservativeTracingVisitor::VisitFullyConstructedConservatively(header);
@@ -65,7 +66,9 @@ void ConservativeMarkingVisitor::VisitFullyConstructedConservatively(
 void ConservativeMarkingVisitor::VisitInConstructionConservatively(
     HeapObjectHeader& header, TraceConservativelyCallback callback) {
   DCHECK(!marking_state_.IsMarkedWeakContainer(header));
-  marking_state_.MarkNoPush(header);
+  // In construction objects found through conservative can be marked if they
+  // hold a reference to themselves.
+  if (!marking_state_.MarkNoPush(header)) return;
   marking_state_.AccountMarkedBytes(header);
   callback(this, header);
 }
@@ -74,18 +77,20 @@ MutatorMarkingVisitor::MutatorMarkingVisitor(HeapBase& heap,
                                              MutatorMarkingState& marking_state)
     : MarkingVisitorBase(heap, marking_state) {}
 
-void MutatorMarkingVisitor::VisitRoot(const void* object, TraceDescriptor desc,
-                                      const SourceLocation&) {
-  Visit(object, desc);
+RootMarkingVisitor::RootMarkingVisitor(MutatorMarkingState& marking_state)
+    : mutator_marking_state_(marking_state) {}
+
+void RootMarkingVisitor::VisitRoot(const void* object, TraceDescriptor desc,
+                                   const SourceLocation&) {
+  mutator_marking_state_.MarkAndPush(object, desc);
 }
 
-void MutatorMarkingVisitor::VisitWeakRoot(const void* object,
-                                          TraceDescriptor desc,
-                                          WeakCallback weak_callback,
-                                          const void* weak_root,
-                                          const SourceLocation&) {
-  static_cast<MutatorMarkingState&>(marking_state_)
-      .InvokeWeakRootsCallbackIfNeeded(object, desc, weak_callback, weak_root);
+void RootMarkingVisitor::VisitWeakRoot(const void* object, TraceDescriptor desc,
+                                       WeakCallback weak_callback,
+                                       const void* weak_root,
+                                       const SourceLocation&) {
+  mutator_marking_state_.InvokeWeakRootsCallbackIfNeeded(
+      object, desc, weak_callback, weak_root);
 }
 
 ConcurrentMarkingVisitor::ConcurrentMarkingVisitor(

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2020 the V8 project authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
@@ -6,7 +6,6 @@
 import heapq
 import os
 import platform
-import random
 import signal
 import subprocess
 
@@ -23,14 +22,17 @@ def list_processes_linux():
     return []
   try:
     cmd = 'pgrep -fa %s' % OUT_DIR
-    output = subprocess.check_output(cmd, shell=True) or ''
+    output = subprocess.check_output(cmd, shell=True, text=True) or ''
     processes = [
       (int(line.split()[0]), line[line.index(OUT_DIR):])
       for line in output.splitlines()
     ]
     # Filter strange process with name as out dir.
     return [p for p in processes if p[1] != OUT_DIR]
-  except:
+  except Exception as e:
+    # TODO(https://crbug.com/v8/13101): Remove after investigation.
+    print('Fetching process list failed.')
+    print(e)
     return []
 
 

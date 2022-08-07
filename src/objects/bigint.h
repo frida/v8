@@ -14,6 +14,11 @@
 #include "src/objects/object-macros.h"
 
 namespace v8 {
+
+namespace bigint {
+class FromStringAccumulator;
+}  // namespace bigint
+
 namespace internal {
 
 void MutableBigInt_AbsoluteAddAndCanonicalize(Address result_addr,
@@ -38,7 +43,7 @@ class BigIntBase : public PrimitiveHeapObject {
   }
 
   // For use by the GC.
-  inline int synchronized_length() const {
+  inline int length(AcquireLoadTag) const {
     int32_t bitfield = ACQUIRE_READ_INT32_FIELD(*this, kBitfieldOffset);
     return LengthBits::decode(static_cast<uint32_t>(bitfield));
   }
@@ -54,10 +59,10 @@ class BigIntBase : public PrimitiveHeapObject {
   // Sign and length are stored in the same bitfield.  Since the GC needs to be
   // able to read the length concurrently, the getters and setters are atomic.
   static const int kLengthFieldBits = 30;
-  STATIC_ASSERT(kMaxLength <= ((1 << kLengthFieldBits) - 1));
+  static_assert(kMaxLength <= ((1 << kLengthFieldBits) - 1));
   using SignBits = base::BitField<bool, 0, 1>;
   using LengthBits = SignBits::Next<int, kLengthFieldBits>;
-  STATIC_ASSERT(LengthBits::kLastUsedBit < 32);
+  static_assert(LengthBits::kLastUsedBit < 32);
 
   // Layout description.
 #define BIGINT_FIELDS(V)                                                  \
@@ -85,7 +90,7 @@ class BigIntBase : public PrimitiveHeapObject {
   using digit_t = uintptr_t;
   static const int kDigitSize = sizeof(digit_t);
   // kMaxLength definition assumes this:
-  STATIC_ASSERT(kDigitSize == kSystemPointerSize);
+  static_assert(kDigitSize == kSystemPointerSize);
 
   static const int kDigitBits = kDigitSize * kBitsPerByte;
   static const int kHalfDigitBits = kDigitBits / 2;
@@ -122,7 +127,7 @@ class FreshlyAllocatedBigInt : public BigIntBase {
  public:
   inline static FreshlyAllocatedBigInt cast(Object object);
   inline static FreshlyAllocatedBigInt unchecked_cast(Object o) {
-    return bit_cast<FreshlyAllocatedBigInt>(o);
+    return base::bit_cast<FreshlyAllocatedBigInt>(o);
   }
 
   // Clear uninitialized padding space.
@@ -237,28 +242,25 @@ class BigInt : public BigIntBase {
       Isolate* isolate, Handle<Object> number);
 
   // ECMAScript's ToBigInt (throws for Number input)
-  static MaybeHandle<BigInt> FromObject(Isolate* isolate, Handle<Object> obj);
+  V8_EXPORT_PRIVATE static MaybeHandle<BigInt> FromObject(Isolate* isolate,
+                                                          Handle<Object> obj);
 
   class BodyDescriptor;
 
  private:
-  template <typename LocalIsolate>
+  template <typename IsolateT>
   friend class StringToBigIntHelper;
   friend class ValueDeserializer;
   friend class ValueSerializer;
 
   // Special functions for StringToBigIntHelper:
-  template <typename LocalIsolate>
-  static Handle<BigInt> Zero(LocalIsolate* isolate, AllocationType allocation =
-                                                        AllocationType::kYoung);
-  template <typename LocalIsolate>
-  static MaybeHandle<FreshlyAllocatedBigInt> AllocateFor(
-      LocalIsolate* isolate, int radix, int charcount, ShouldThrow should_throw,
-      AllocationType allocation);
-  static void InplaceMultiplyAdd(FreshlyAllocatedBigInt x, uintptr_t factor,
-                                 uintptr_t summand);
-  template <typename LocalIsolate>
-  static Handle<BigInt> Finalize(Handle<FreshlyAllocatedBigInt> x, bool sign);
+  template <typename IsolateT>
+  static Handle<BigInt> Zero(
+      IsolateT* isolate, AllocationType allocation = AllocationType::kYoung);
+  template <typename IsolateT>
+  static MaybeHandle<BigInt> Allocate(
+      IsolateT* isolate, bigint::FromStringAccumulator* accumulator,
+      bool negative, AllocationType allocation);
 
   // Special functions for ValueSerializer/ValueDeserializer:
   uint32_t GetBitfieldForSerialization() const;
@@ -268,7 +270,7 @@ class BigInt : public BigIntBase {
   void SerializeDigits(uint8_t* storage);
   V8_WARN_UNUSED_RESULT static MaybeHandle<BigInt> FromSerializedDigits(
       Isolate* isolate, uint32_t bitfield,
-      Vector<const uint8_t> digits_storage);
+      base::Vector<const uint8_t> digits_storage);
 
   OBJECT_CONSTRUCTORS(BigInt, BigIntBase);
 };

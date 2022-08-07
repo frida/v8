@@ -2,6 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#if !V8_ENABLE_WEBASSEMBLY
+#error This header should only be included if WebAssembly is enabled.
+#endif  // !V8_ENABLE_WEBASSEMBLY
+
 #ifndef V8_WASM_FUNCTION_BODY_DECODER_H_
 #define V8_WASM_FUNCTION_BODY_DECODER_H_
 
@@ -11,10 +15,12 @@
 #include "src/wasm/decoder.h"
 #include "src/wasm/wasm-opcodes.h"
 #include "src/wasm/wasm-result.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
 
+class AccountingAllocator;
 class BitVector;  // forward declaration
 
 namespace wasm {
@@ -67,12 +73,11 @@ struct BodyLocalDecls {
 
 V8_EXPORT_PRIVATE bool DecodeLocalDecls(const WasmFeatures& enabled,
                                         BodyLocalDecls* decls,
+                                        const WasmModule* module,
                                         const byte* start, const byte* end);
 
-V8_EXPORT_PRIVATE BitVector* AnalyzeLoopAssignmentForTesting(Zone* zone,
-                                                             size_t num_locals,
-                                                             const byte* start,
-                                                             const byte* end);
+V8_EXPORT_PRIVATE BitVector* AnalyzeLoopAssignmentForTesting(
+    Zone* zone, uint32_t num_locals, const byte* start, const byte* end);
 
 // Computes the length of the opcode at the given address.
 V8_EXPORT_PRIVATE unsigned OpcodeLength(const byte* pc, const byte* end);
@@ -87,20 +92,23 @@ V8_EXPORT_PRIVATE std::pair<uint32_t, uint32_t> StackEffect(
     const WasmModule* module, const FunctionSig* sig, const byte* pc,
     const byte* end);
 
+// Checks if the underlying hardware supports the Wasm SIMD proposal.
+V8_EXPORT_PRIVATE bool CheckHardwareSupportsSimd();
+
 // A simple forward iterator for bytecodes.
 class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
   // Base class for both iterators defined below.
   class iterator_base {
    public:
-    inline iterator_base& operator++() {
+    iterator_base& operator++() {
       DCHECK_LT(ptr_, end_);
       ptr_ += OpcodeLength(ptr_, end_);
       return *this;
     }
-    inline bool operator==(const iterator_base& that) {
+    bool operator==(const iterator_base& that) const {
       return this->ptr_ == that.ptr_;
     }
-    inline bool operator!=(const iterator_base& that) {
+    bool operator!=(const iterator_base& that) const {
       return this->ptr_ != that.ptr_;
     }
 
@@ -116,7 +124,7 @@ class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
       : public iterator_base,
         public base::iterator<std::input_iterator_tag, WasmOpcode> {
    public:
-    inline WasmOpcode operator*() {
+    WasmOpcode operator*() {
       DCHECK_LT(ptr_, end_);
       return static_cast<WasmOpcode>(*ptr_);
     }
@@ -132,7 +140,7 @@ class V8_EXPORT_PRIVATE BytecodeIterator : public NON_EXPORTED_BASE(Decoder) {
       : public iterator_base,
         public base::iterator<std::input_iterator_tag, uint32_t> {
    public:
-    inline uint32_t operator*() {
+    uint32_t operator*() {
       DCHECK_LT(ptr_, end_);
       return static_cast<uint32_t>(ptr_ - start_);
     }

@@ -9,10 +9,12 @@
 #include <functional>
 #include <string>
 
-#include "include/v8.h"
-#include "src/heap/factory.h"
+#include "include/v8-exception.h"
+#include "include/v8-isolate.h"
+#include "include/v8-local-handle.h"
+#include "include/v8-primitive.h"
+#include "include/v8-script.h"
 #include "src/objects/objects-inl.h"
-#include "src/regexp/regexp.h"
 #include "test/fuzzer/fuzzer-support.h"
 
 // This is a hexdump of test/fuzzer/regexp_builtins/mjsunit.js generated using
@@ -182,7 +184,7 @@ std::string PickRandomPresetPattern(FuzzerArgs* args) {
       "\\p{Changes_When_NFKC_Casefolded}",
   };
   static constexpr int preset_pattern_count = arraysize(preset_patterns);
-  STATIC_ASSERT(preset_pattern_count < 0xFF);
+  static_assert(preset_pattern_count < 0xFF);
 
   return std::string(preset_patterns[RandomByte(args) % preset_pattern_count]);
 }
@@ -243,9 +245,10 @@ std::string GenerateRandomFlags(FuzzerArgs* args) {
   // TODO(mbid,v8:10765): Find a way to generate the kLinear flag sometimes,
   // but only for patterns that are supported by the experimental engine.
   constexpr size_t kFlagCount = JSRegExp::kFlagCount;
-  CHECK_EQ(JSRegExp::kLinear, 1 << (kFlagCount - 1));
-  CHECK_EQ(JSRegExp::kDotAll, 1 << (kFlagCount - 2));
-  STATIC_ASSERT((1 << kFlagCount) - 1 <= 0xFF);
+  CHECK_EQ(JSRegExp::kHasIndices, 1 << (kFlagCount - 1));
+  CHECK_EQ(JSRegExp::kLinear, 1 << (kFlagCount - 2));
+  CHECK_EQ(JSRegExp::kDotAll, 1 << (kFlagCount - 3));
+  static_assert((1 << kFlagCount) - 1 <= 0xFF);
 
   const size_t flags = RandomByte(args) & ((1 << kFlagCount) - 1);
 
@@ -258,6 +261,7 @@ std::string GenerateRandomFlags(FuzzerArgs* args) {
   if (flags & JSRegExp::kSticky) buffer[cursor++] = 'y';
   if (flags & JSRegExp::kUnicode) buffer[cursor++] = 'u';
   if (flags & JSRegExp::kDotAll) buffer[cursor++] = 's';
+  if (flags & JSRegExp::kHasIndices) buffer[cursor++] = 'd';
 
   return std::string(buffer, cursor);
 }
@@ -378,10 +382,11 @@ void CompileRunAndVerify(FuzzerArgs* args, const std::string& source) {
   }
 
   if (!ResultsAreIdentical(args)) {
-    uint32_t hash = StringHasher::HashSequentialString(
+    uint32_t raw_hash_field = StringHasher::HashSequentialString(
         args->input_data, static_cast<int>(args->input_length),
         kRegExpBuiltinsFuzzerHashSeed);
-    FATAL("!ResultAreIdentical(args); RegExpBuiltinsFuzzerHash=%x", hash);
+    FATAL("!ResultAreIdentical(args); RegExpBuiltinsFuzzerHash=%x",
+          raw_hash_field);
   }
 }
 

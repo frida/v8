@@ -43,7 +43,7 @@ void CheckAllObjectsOnPage(const std::vector<Handle<FixedArray>>& handles,
 }  // namespace
 
 HEAP_TEST(CompactionFullAbortedPage) {
-  if (FLAG_never_compact) return;
+  if (!FLAG_compact || FLAG_crash_on_aborted_evacuation) return;
   // Test the scenario where we reach OOM during compaction and the whole page
   // is aborted.
 
@@ -66,7 +66,7 @@ HEAP_TEST(CompactionFullAbortedPage) {
 
     {
       HandleScope scope2(isolate);
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       auto compaction_page_handles = heap::CreatePadding(
           heap,
           static_cast<int>(MemoryChunkLayout::AllocatableMemoryInDataPage()),
@@ -79,7 +79,8 @@ HEAP_TEST(CompactionFullAbortedPage) {
 
       heap->set_force_oom(true);
       CcTest::CollectAllGarbage();
-      heap->mark_compact_collector()->EnsureSweepingCompleted();
+      heap->mark_compact_collector()->EnsureSweepingCompleted(
+          MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
 
       // Check that all handles still point to the same page, i.e., compaction
       // has been aborted on the page.
@@ -100,13 +101,13 @@ int GetObjectSize(int objects_per_page) {
   // Make sure that object_size is a multiple of kTaggedSize.
   int object_size =
       ((allocatable / kTaggedSize) / objects_per_page) * kTaggedSize;
-  return Min(kMaxRegularHeapObjectSize, object_size);
+  return std::min(kMaxRegularHeapObjectSize, object_size);
 }
 
 }  // namespace
 
 HEAP_TEST(CompactionPartiallyAbortedPage) {
-  if (FLAG_never_compact) return;
+  if (!FLAG_compact || FLAG_crash_on_aborted_evacuation) return;
   // Test the scenario where we reach OOM during compaction and parts of the
   // page have already been migrated to a new one.
 
@@ -135,7 +136,7 @@ HEAP_TEST(CompactionPartiallyAbortedPage) {
       HandleScope scope2(isolate);
       // Fill another page with objects of size {object_size} (last one is
       // properly adjusted).
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       auto compaction_page_handles = heap::CreatePadding(
           heap,
           static_cast<int>(MemoryChunkLayout::AllocatableMemoryInDataPage()),
@@ -150,7 +151,7 @@ HEAP_TEST(CompactionPartiallyAbortedPage) {
         // Add another page that is filled with {num_objects} objects of size
         // {object_size}.
         HandleScope scope3(isolate);
-        CHECK(heap->old_space()->Expand());
+        CHECK(heap->old_space()->TryExpandImpl());
         const int num_objects = 3;
         std::vector<Handle<FixedArray>> page_to_fill_handles =
             heap::CreatePadding(heap, object_size * num_objects,
@@ -160,7 +161,8 @@ HEAP_TEST(CompactionPartiallyAbortedPage) {
 
         heap->set_force_oom(true);
         CcTest::CollectAllGarbage();
-        heap->mark_compact_collector()->EnsureSweepingCompleted();
+        heap->mark_compact_collector()->EnsureSweepingCompleted(
+            MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
 
         bool migration_aborted = false;
         for (Handle<FixedArray> object : compaction_page_handles) {
@@ -186,7 +188,7 @@ HEAP_TEST(CompactionPartiallyAbortedPage) {
 }
 
 HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
-  if (FLAG_never_compact) return;
+  if (!FLAG_compact || FLAG_crash_on_aborted_evacuation) return;
   // Test evacuating a page partially when it contains recorded
   // slots and invalidated objects.
 
@@ -216,7 +218,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
       HandleScope scope2(isolate);
       // Fill another page with objects of size {object_size} (last one is
       // properly adjusted).
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       auto compaction_page_handles = heap::CreatePadding(
           heap,
           static_cast<int>(MemoryChunkLayout::AllocatableMemoryInDataPage()),
@@ -232,13 +234,15 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
         }
       }
       // First object is going to be evacuated.
+      HeapObject front_object = *compaction_page_handles.front();
       to_be_aborted_page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(
-          *compaction_page_handles.front());
+          front_object, front_object.Size());
       // Last object is NOT going to be evacuated.
       // This happens since not all objects fit on the only other page in the
       // old space, the GC isn't allowed to allocate another page.
+      HeapObject back_object = *compaction_page_handles.back();
       to_be_aborted_page->RegisterObjectWithInvalidatedSlots<OLD_TO_NEW>(
-          *compaction_page_handles.back());
+          back_object, back_object.Size());
       to_be_aborted_page->SetFlag(
           MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
 
@@ -246,7 +250,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
         // Add another page that is filled with {num_objects} objects of size
         // {object_size}.
         HandleScope scope3(isolate);
-        CHECK(heap->old_space()->Expand());
+        CHECK(heap->old_space()->TryExpandImpl());
         const int num_objects = 3;
         std::vector<Handle<FixedArray>> page_to_fill_handles =
             heap::CreatePadding(heap, object_size * num_objects,
@@ -256,7 +260,8 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
 
         heap->set_force_oom(true);
         CcTest::CollectAllGarbage();
-        heap->mark_compact_collector()->EnsureSweepingCompleted();
+        heap->mark_compact_collector()->EnsureSweepingCompleted(
+            MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
 
         CHECK_EQ(Page::FromHeapObject(*compaction_page_handles.front()),
                  page_to_fill);
@@ -269,7 +274,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithInvalidatedSlots) {
 }
 
 HEAP_TEST(CompactionPartiallyAbortedPageIntraAbortedPointers) {
-  if (FLAG_never_compact) return;
+  if (!FLAG_compact || FLAG_crash_on_aborted_evacuation) return;
   // Test the scenario where we reach OOM during compaction and parts of the
   // page have already been migrated to a new one. Objects on the aborted page
   // are linked together. This test makes sure that intra-aborted page pointers
@@ -303,7 +308,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageIntraAbortedPointers) {
       HandleScope temporary_scope(isolate);
       // Fill a fresh page with objects of size {object_size} (last one is
       // properly adjusted).
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       std::vector<Handle<FixedArray>> compaction_page_handles =
           heap::CreatePadding(
               heap,
@@ -324,7 +329,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageIntraAbortedPointers) {
       // Add another page that is filled with {num_objects} objects of size
       // {object_size}.
       HandleScope scope3(isolate);
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       const int num_objects = 2;
       int used_memory = object_size * num_objects;
       std::vector<Handle<FixedArray>> page_to_fill_handles =
@@ -334,7 +339,8 @@ HEAP_TEST(CompactionPartiallyAbortedPageIntraAbortedPointers) {
 
       heap->set_force_oom(true);
       CcTest::CollectAllGarbage();
-      heap->mark_compact_collector()->EnsureSweepingCompleted();
+      heap->mark_compact_collector()->EnsureSweepingCompleted(
+          MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
 
       // The following check makes sure that we compacted "some" objects, while
       // leaving others in place.
@@ -362,7 +368,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageIntraAbortedPointers) {
 }
 
 HEAP_TEST(CompactionPartiallyAbortedPageWithRememberedSetEntries) {
-  if (FLAG_never_compact || FLAG_always_promote_young_mc) return;
+  if (!FLAG_compact || FLAG_single_generation) return;
   // Test the scenario where we reach OOM during compaction and parts of the
   // page have already been migrated to a new one. Objects on the aborted page
   // are linked together and the very first object on the aborted page points
@@ -398,7 +404,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithRememberedSetEntries) {
       HandleScope temporary_scope(isolate);
       // Fill another page with objects of size {object_size} (last one is
       // properly adjusted).
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       auto compaction_page_handles = heap::CreatePadding(
           heap,
           static_cast<int>(MemoryChunkLayout::AllocatableMemoryInDataPage()),
@@ -425,7 +431,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithRememberedSetEntries) {
       // Add another page that is filled with {num_objects} objects of size
       // {object_size}.
       HandleScope scope3(isolate);
-      CHECK(heap->old_space()->Expand());
+      CHECK(heap->old_space()->TryExpandImpl());
       const int num_objects = 2;
       int used_memory = object_size * num_objects;
       std::vector<Handle<FixedArray>> page_to_fill_handles =
@@ -435,7 +441,8 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithRememberedSetEntries) {
 
       heap->set_force_oom(true);
       CcTest::CollectAllGarbage();
-      heap->mark_compact_collector()->EnsureSweepingCompleted();
+      heap->mark_compact_collector()->EnsureSweepingCompleted(
+          MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
 
       // The following check makes sure that we compacted "some" objects, while
       // leaving others in place.
@@ -466,7 +473,7 @@ HEAP_TEST(CompactionPartiallyAbortedPageWithRememberedSetEntries) {
       // object.
       Address broken_address = holder->address() + 2 * kTaggedSize + 1;
       // Convert it to a vector to create a string from it.
-      Vector<const uint8_t> string_to_broken_addresss(
+      base::Vector<const uint8_t> string_to_broken_addresss(
           reinterpret_cast<const uint8_t*>(&broken_address), kTaggedSize);
 
       Handle<String> string;

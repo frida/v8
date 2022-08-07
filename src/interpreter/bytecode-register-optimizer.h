@@ -8,6 +8,8 @@
 #include "src/base/compiler-specific.h"
 #include "src/common/globals.h"
 #include "src/interpreter/bytecode-register-allocator.h"
+#include "src/zone/zone-containers.h"
+#include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {
@@ -65,7 +67,7 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
   bool EnsureAllRegistersAreFlushed() const;
 
   // Prepares for |bytecode|.
-  template <Bytecode bytecode, AccumulatorUse accumulator_use>
+  template <Bytecode bytecode, ImplicitRegisterUse implicit_register_use>
   V8_INLINE void PrepareForBytecode() {
     if (Bytecodes::IsJump(bytecode) || Bytecodes::IsSwitch(bytecode) ||
         bytecode == Bytecode::kDebugger ||
@@ -85,13 +87,13 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
     // Materialize the accumulator if it is read by the bytecode. The
     // accumulator is special and no other register can be materialized
     // in it's place.
-    if (BytecodeOperands::ReadsAccumulator(accumulator_use)) {
+    if (BytecodeOperands::ReadsAccumulator(implicit_register_use)) {
       Materialize(accumulator_info_);
     }
 
     // Materialize an equivalent to the accumulator if it will be
     // clobbered when the bytecode is dispatched.
-    if (BytecodeOperands::WritesAccumulator(accumulator_use)) {
+    if (BytecodeOperands::WritesAccumulator(implicit_register_use)) {
       PrepareOutputRegister(accumulator_);
     }
   }
@@ -120,6 +122,7 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
   void RegisterAllocateEvent(Register reg) override;
   void RegisterListAllocateEvent(RegisterList reg_list) override;
   void RegisterListFreeEvent(RegisterList reg) override;
+  void RegisterFreeEvent(Register reg) override;
 
   // Update internal state for register transfer from |input| to |output|
   void RegisterTransfer(RegisterInfo* input, RegisterInfo* output);
@@ -177,8 +180,7 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
 
   uint32_t NextEquivalenceId() {
     equivalence_id_++;
-    // TODO(rmcilroy): use the same type for these and remove static_cast.
-    CHECK_NE(static_cast<size_t>(equivalence_id_), kInvalidEquivalenceId);
+    CHECK_NE(equivalence_id_, kInvalidEquivalenceId);
     return equivalence_id_;
   }
 
@@ -198,7 +200,7 @@ class V8_EXPORT_PRIVATE BytecodeRegisterOptimizer final
   ZoneDeque<RegisterInfo*> registers_needing_flushed_;
 
   // Counter for equivalence sets identifiers.
-  int equivalence_id_;
+  uint32_t equivalence_id_;
 
   BytecodeWriter* bytecode_writer_;
   bool flush_required_;

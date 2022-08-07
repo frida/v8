@@ -27,14 +27,18 @@
 
 #include "src/diagnostics/perf-jit.h"
 
-// Only compile the {PerfJitLogger} on Linux.
+#include "src/common/assert-scope.h"
+
+// Only compile the {LinuxPerfJitLogger} on Linux.
 #if V8_OS_LINUX
 
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
 #include <memory>
 
+#include "src/base/platform/wrappers.h"
 #include "src/codegen/assembler.h"
 #include "src/codegen/source-position-table.h"
 #include "src/diagnostics/eh-frame.h"
@@ -42,7 +46,10 @@
 #include "src/objects/shared-function-info.h"
 #include "src/snapshot/embedded/embedded-data.h"
 #include "src/utils/ostreams.h"
+
+#if V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-code-manager.h"
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 namespace v8 {
 namespace internal {
@@ -104,26 +111,30 @@ struct PerfJitCodeUnwindingInfo : PerfJitBase {
   // Followed by size_ - sizeof(PerfJitCodeUnwindingInfo) bytes of data.
 };
 
-const char PerfJitLogger::kFilenameFormatString[] = "./jit-%d.dump";
+const char LinuxPerfJitLogger::kFilenameFormatString[] = "./jit-%d.dump";
 
 // Extra padding for the PID in the filename
-const int PerfJitLogger::kFilenameBufferPadding = 16;
+const int LinuxPerfJitLogger::kFilenameBufferPadding = 16;
 
-base::LazyRecursiveMutex PerfJitLogger::file_mutex_;
-// The following static variables are protected by PerfJitLogger::file_mutex_.
-uint64_t PerfJitLogger::reference_count_ = 0;
-void* PerfJitLogger::marker_address_ = nullptr;
-uint64_t PerfJitLogger::code_index_ = 0;
-FILE* PerfJitLogger::perf_output_handle_ = nullptr;
+static const char kStringTerminator[] = {'\0'};
+static const char kRepeatedNameMarker[] = {'\xff', '\0'};
 
-void PerfJitLogger::OpenJitDumpFile() {
+base::LazyRecursiveMutex LinuxPerfJitLogger::file_mutex_;
+// The following static variables are protected by
+// LinuxPerfJitLogger::file_mutex_.
+int LinuxPerfJitLogger::process_id_ = 0;
+uint64_t LinuxPerfJitLogger::reference_count_ = 0;
+void* LinuxPerfJitLogger::marker_address_ = nullptr;
+uint64_t LinuxPerfJitLogger::code_index_ = 0;
+FILE* LinuxPerfJitLogger::perf_output_handle_ = nullptr;
+
+void LinuxPerfJitLogger::OpenJitDumpFile() {
   // Open the perf JIT dump file.
   perf_output_handle_ = nullptr;
 
   int bufferSize = sizeof(kFilenameFormatString) + kFilenameBufferPadding;
-  ScopedVector<char> perf_dump_name(bufferSize);
-  int size = SNPrintF(perf_dump_name, kFilenameFormatString,
-                      base::OS::GetCurrentProcessId());
+  base::ScopedVector<char> perf_dump_name(bufferSize);
+  int size = SNPrintF(perf_dump_name, kFilenameFormatString, process_id_);
   CHECK_NE(size, -1);
 
   int fd = open(perf_dump_name.begin(), O_CREAT | O_TRUNC | O_RDWR, 0666);
@@ -143,13 +154,13 @@ void PerfJitLogger::OpenJitDumpFile() {
   setvbuf(perf_output_handle_, nullptr, _IOFBF, kLogBufferSize);
 }
 
-void PerfJitLogger::CloseJitDumpFile() {
+void LinuxPerfJitLogger::CloseJitDumpFile() {
   if (perf_output_handle_ == nullptr) return;
-  fclose(perf_output_handle_);
+  base::Fclose(perf_output_handle_);
   perf_output_handle_ = nullptr;
 }
 
-void* PerfJitLogger::OpenMarkerFile(int fd) {
+void* LinuxPerfJitLogger::OpenMarkerFile(int fd) {
   long page_size = sysconf(_SC_PAGESIZE);  // NOLINT(runtime/int)
   if (page_size == -1) return nullptr;
 
@@ -161,15 +172,17 @@ void* PerfJitLogger::OpenMarkerFile(int fd) {
   return (marker_address == MAP_FAILED) ? nullptr : marker_address;
 }
 
-void PerfJitLogger::CloseMarkerFile(void* marker_address) {
+void LinuxPerfJitLogger::CloseMarkerFile(void* marker_address) {
   if (marker_address == nullptr) return;
   long page_size = sysconf(_SC_PAGESIZE);  // NOLINT(runtime/int)
   if (page_size == -1) return;
   munmap(marker_address, page_size);
 }
 
-PerfJitLogger::PerfJitLogger(Isolate* isolate) : CodeEventLogger(isolate) {
+LinuxPerfJitLogger::LinuxPerfJitLogger(Isolate* isolate)
+    : CodeEventLogger(isolate) {
   base::LockGuard<base::RecursiveMutex> guard_file(file_mutex_.Pointer());
+  process_id_ = base::OS::GetCurrentProcessId();
 
   reference_count_++;
   // If this is the first logger, open the file and write the header.
@@ -180,7 +193,7 @@ PerfJitLogger::PerfJitLogger(Isolate* isolate) : CodeEventLogger(isolate) {
   }
 }
 
-PerfJitLogger::~PerfJitLogger() {
+LinuxPerfJitLogger::~LinuxPerfJitLogger() {
   base::LockGuard<base::RecursiveMutex> guard_file(file_mutex_.Pointer());
 
   reference_count_--;
@@ -190,7 +203,7 @@ PerfJitLogger::~PerfJitLogger() {
   }
 }
 
-uint64_t PerfJitLogger::GetTimestamp() {
+uint64_t LinuxPerfJitLogger::GetTimestamp() {
   struct timespec ts;
   int result = clock_gettime(CLOCK_MONOTONIC, &ts);
   DCHECK_EQ(0, result);
@@ -199,16 +212,17 @@ uint64_t PerfJitLogger::GetTimestamp() {
   return (ts.tv_sec * kNsecPerSec) + ts.tv_nsec;
 }
 
-void PerfJitLogger::LogRecordedBuffer(
+void LinuxPerfJitLogger::LogRecordedBuffer(
     Handle<AbstractCode> abstract_code,
     MaybeHandle<SharedFunctionInfo> maybe_shared, const char* name,
     int length) {
-  if (FLAG_perf_basic_prof_only_functions &&
-      (abstract_code->kind() != CodeKind::INTERPRETED_FUNCTION &&
-       abstract_code->kind() != CodeKind::TURBOFAN &&
-       abstract_code->kind() != CodeKind::NATIVE_CONTEXT_INDEPENDENT &&
-       abstract_code->kind() != CodeKind::TURBOPROP)) {
-    return;
+  if (FLAG_perf_basic_prof_only_functions) {
+    CodeKind code_kind = abstract_code->kind(isolate_);
+    if (code_kind != CodeKind::INTERPRETED_FUNCTION &&
+        code_kind != CodeKind::TURBOFAN && code_kind != CodeKind::MAGLEV &&
+        code_kind != CodeKind::BASELINE) {
+      return;
+    }
   }
 
   base::LockGuard<base::RecursiveMutex> guard_file(file_mutex_.Pointer());
@@ -216,13 +230,13 @@ void PerfJitLogger::LogRecordedBuffer(
   if (perf_output_handle_ == nullptr) return;
 
   // We only support non-interpreted functions.
-  if (!abstract_code->IsCode()) return;
+  if (!abstract_code->IsCode(isolate_)) return;
   Handle<Code> code = Handle<Code>::cast(abstract_code);
   DCHECK(code->raw_instruction_start() == code->address() + Code::kHeaderSize);
 
   // Debug info has to be emitted first.
   Handle<SharedFunctionInfo> shared;
-  if (FLAG_perf_prof && !maybe_shared.ToHandle(&shared)) {
+  if (FLAG_perf_prof && maybe_shared.ToHandle(&shared)) {
     // TODO(herhut): This currently breaks for js2wasm/wasm2js functions.
     if (code->kind() != CodeKind::JS_TO_WASM_FUNCTION &&
         code->kind() != CodeKind::WASM_TO_JS_FUNCTION) {
@@ -240,31 +254,29 @@ void PerfJitLogger::LogRecordedBuffer(
                         length);
 }
 
-void PerfJitLogger::LogRecordedBuffer(const wasm::WasmCode* code,
-                                      const char* name, int length) {
+#if V8_ENABLE_WEBASSEMBLY
+void LinuxPerfJitLogger::LogRecordedBuffer(const wasm::WasmCode* code,
+                                           const char* name, int length) {
   base::LockGuard<base::RecursiveMutex> guard_file(file_mutex_.Pointer());
 
   if (perf_output_handle_ == nullptr) return;
 
-  if (FLAG_perf_prof_annotate_wasm) {
-    LogWriteDebugInfo(code);
-  }
+  if (FLAG_perf_prof_annotate_wasm) LogWriteDebugInfo(code);
 
   WriteJitCodeLoadEntry(code->instructions().begin(),
                         code->instructions().length(), name, length);
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
-void PerfJitLogger::WriteJitCodeLoadEntry(const uint8_t* code_pointer,
-                                          uint32_t code_size, const char* name,
-                                          int name_length) {
-  static const char string_terminator[] = "\0";
-
+void LinuxPerfJitLogger::WriteJitCodeLoadEntry(const uint8_t* code_pointer,
+                                               uint32_t code_size,
+                                               const char* name,
+                                               int name_length) {
   PerfJitCodeLoad code_load;
   code_load.event_ = PerfJitCodeLoad::kLoad;
   code_load.size_ = sizeof(code_load) + name_length + 1 + code_size;
   code_load.time_stamp_ = GetTimestamp();
-  code_load.process_id_ =
-      static_cast<uint32_t>(base::OS::GetCurrentProcessId());
+  code_load.process_id_ = static_cast<uint32_t>(process_id_);
   code_load.thread_id_ = static_cast<uint32_t>(base::OS::GetCurrentThreadId());
   code_load.vma_ = reinterpret_cast<uint64_t>(code_pointer);
   code_load.code_address_ = reinterpret_cast<uint64_t>(code_pointer);
@@ -275,7 +287,7 @@ void PerfJitLogger::WriteJitCodeLoadEntry(const uint8_t* code_pointer,
 
   LogWriteBytes(reinterpret_cast<const char*>(&code_load), sizeof(code_load));
   LogWriteBytes(name, name_length);
-  LogWriteBytes(string_terminator, 1);
+  LogWriteBytes(kStringTerminator, sizeof(kStringTerminator));
   LogWriteBytes(reinterpret_cast<const char*>(code_pointer), code_size);
 }
 
@@ -285,25 +297,12 @@ constexpr char kUnknownScriptNameString[] = "<unknown>";
 constexpr size_t kUnknownScriptNameStringLen =
     arraysize(kUnknownScriptNameString) - 1;
 
-size_t GetScriptNameLength(const SourcePositionInfo& info) {
-  if (!info.script.is_null()) {
-    Object name_or_url = info.script->GetNameOrSourceURL();
-    if (name_or_url.IsString()) {
-      String str = String::cast(name_or_url);
-      if (str.IsOneByteRepresentation()) return str.length();
-      int length;
-      str.ToCString(DISALLOW_NULLS, FAST_STRING_TRAVERSAL, &length);
-      return static_cast<size_t>(length);
-    }
-  }
-  return kUnknownScriptNameStringLen;
-}
-
-Vector<const char> GetScriptName(const SourcePositionInfo& info,
-                                 std::unique_ptr<char[]>* storage,
-                                 const DisallowHeapAllocation& no_gc) {
-  if (!info.script.is_null()) {
-    Object name_or_url = info.script->GetNameOrSourceURL();
+namespace {
+base::Vector<const char> GetScriptName(Object maybeScript,
+                                       std::unique_ptr<char[]>* storage,
+                                       const DisallowGarbageCollection& no_gc) {
+  if (maybeScript.IsScript()) {
+    Object name_or_url = Script::cast(maybeScript).GetNameOrSourceURL();
     if (name_or_url.IsSeqOneByteString()) {
       SeqOneByteString str = SeqOneByteString::cast(name_or_url);
       return {reinterpret_cast<char*>(str.GetChars(no_gc)),
@@ -318,12 +317,14 @@ Vector<const char> GetScriptName(const SourcePositionInfo& info,
   return {kUnknownScriptNameString, kUnknownScriptNameStringLen};
 }
 
+}  // namespace
+
 SourcePositionInfo GetSourcePositionInfo(Handle<Code> code,
                                          Handle<SharedFunctionInfo> function,
                                          SourcePosition pos) {
+  DisallowGarbageCollection disallow;
   if (code->is_turbofanned()) {
-    DisallowHeapAllocation disallow;
-    return pos.InliningStack(code)[0];
+    return pos.FirstInfo(code);
   } else {
     return SourcePositionInfo(pos, function);
   }
@@ -331,37 +332,50 @@ SourcePositionInfo GetSourcePositionInfo(Handle<Code> code,
 
 }  // namespace
 
-void PerfJitLogger::LogWriteDebugInfo(Handle<Code> code,
-                                      Handle<SharedFunctionInfo> shared) {
-  // Compute the entry count and get the name of the script.
+void LinuxPerfJitLogger::LogWriteDebugInfo(Handle<Code> code,
+                                           Handle<SharedFunctionInfo> shared) {
+  // Line ends of all scripts have been initialized prior to this.
+  DisallowGarbageCollection no_gc;
+  // The WasmToJS wrapper stubs have source position entries.
+  if (!shared->HasSourceCode()) return;
+
+  PerfJitCodeDebugInfo debug_info;
+  uint32_t size = sizeof(debug_info);
+
+  ByteArray source_position_table =
+      code->SourcePositionTable(isolate_, *shared);
+  // Compute the entry count and get the names of all scripts.
+  // Avoid additional work if the script name is repeated. Multiple script
+  // names only occur for cross-script inlining.
   uint32_t entry_count = 0;
-  for (SourcePositionTableIterator iterator(code->SourcePositionTable());
+  Object last_script = Smi::zero();
+  std::vector<base::Vector<const char>> script_names;
+  for (SourcePositionTableIterator iterator(source_position_table);
        !iterator.done(); iterator.Advance()) {
+    SourcePositionInfo info(
+        GetSourcePositionInfo(code, shared, iterator.source_position()));
+    Object current_script = *info.script;
+    if (current_script != last_script) {
+      std::unique_ptr<char[]> name_storage;
+      auto name = GetScriptName(shared->script(), &name_storage, no_gc);
+      script_names.push_back(name);
+      // Add the size of the name after each entry.
+      size += name.size() + sizeof(kStringTerminator);
+      last_script = current_script;
+    } else {
+      size += sizeof(kRepeatedNameMarker);
+    }
     entry_count++;
   }
   if (entry_count == 0) return;
-  // The WasmToJS wrapper stubs have source position entries.
-  if (!shared->HasSourceCode()) return;
-  Handle<Script> script(Script::cast(shared->script()), isolate_);
-
-  PerfJitCodeDebugInfo debug_info;
 
   debug_info.event_ = PerfJitCodeLoad::kDebugInfo;
   debug_info.time_stamp_ = GetTimestamp();
   debug_info.address_ = code->InstructionStart();
   debug_info.entry_count_ = entry_count;
 
-  uint32_t size = sizeof(debug_info);
   // Add the sizes of fixed parts of entries.
   size += entry_count * sizeof(PerfJitDebugEntry);
-  // Add the size of the name after each entry.
-
-  for (SourcePositionTableIterator iterator(code->SourcePositionTable());
-       !iterator.done(); iterator.Advance()) {
-    SourcePositionInfo info(
-        GetSourcePositionInfo(code, shared, iterator.source_position()));
-    size += GetScriptNameLength(info) + 1;
-  }
 
   int padding = ((size + 7) & (~7)) - size;
   debug_info.size_ = size + padding;
@@ -369,7 +383,9 @@ void PerfJitLogger::LogWriteDebugInfo(Handle<Code> code,
 
   Address code_start = code->InstructionStart();
 
-  for (SourcePositionTableIterator iterator(code->SourcePositionTable());
+  last_script = Smi::zero();
+  int script_names_index = 0;
+  for (SourcePositionTableIterator iterator(source_position_table);
        !iterator.done(); iterator.Advance()) {
     SourcePositionInfo info(
         GetSourcePositionInfo(code, shared, iterator.source_position()));
@@ -381,18 +397,25 @@ void PerfJitLogger::LogWriteDebugInfo(Handle<Code> code,
     entry.line_number_ = info.line + 1;
     entry.column_ = info.column + 1;
     LogWriteBytes(reinterpret_cast<const char*>(&entry), sizeof(entry));
-    // The extracted name may point into heap-objects, thus disallow GC.
-    DisallowHeapAllocation no_gc;
-    std::unique_ptr<char[]> name_storage;
-    Vector<const char> name_string = GetScriptName(info, &name_storage, no_gc);
-    LogWriteBytes(name_string.begin(),
-                  static_cast<uint32_t>(name_string.size()) + 1);
+    Object current_script = *info.script;
+    if (current_script != last_script) {
+      auto name_string = script_names[script_names_index];
+      LogWriteBytes(name_string.begin(),
+                    static_cast<uint32_t>(name_string.size()));
+      LogWriteBytes(kStringTerminator, sizeof(kStringTerminator));
+      script_names_index++;
+      last_script = current_script;
+    } else {
+      // Use the much shorter kRepeatedNameMarker for repeated names.
+      LogWriteBytes(kRepeatedNameMarker, sizeof(kRepeatedNameMarker));
+    }
   }
   char padding_bytes[8] = {0};
   LogWriteBytes(padding_bytes, padding);
 }
 
-void PerfJitLogger::LogWriteDebugInfo(const wasm::WasmCode* code) {
+#if V8_ENABLE_WEBASSEMBLY
+void LinuxPerfJitLogger::LogWriteDebugInfo(const wasm::WasmCode* code) {
   wasm::WasmModuleSourceMap* source_map =
       code->native_module()->GetWasmSourceMap();
   wasm::WireBytesRef code_ref =
@@ -451,15 +474,16 @@ void PerfJitLogger::LogWriteDebugInfo(const wasm::WasmCode* code) {
     entry.column_ = 1;
     LogWriteBytes(reinterpret_cast<const char*>(&entry), sizeof(entry));
     std::string name_string = source_map->GetFilename(offset);
-    LogWriteBytes(name_string.c_str(),
-                  static_cast<int>(name_string.size() + 1));
+    LogWriteBytes(name_string.c_str(), static_cast<int>(name_string.size()));
+    LogWriteBytes(kStringTerminator, sizeof(kStringTerminator));
   }
 
   char padding_bytes[8] = {0};
   LogWriteBytes(padding_bytes, padding);
 }
+#endif  // V8_ENABLE_WEBASSEMBLY
 
-void PerfJitLogger::LogWriteUnwindingInfo(Code code) {
+void LinuxPerfJitLogger::LogWriteUnwindingInfo(Code code) {
   PerfJitCodeUnwindingInfo unwinding_info_header;
   unwinding_info_header.event_ = PerfJitCodeLoad::kUnwindingInfo;
   unwinding_info_header.time_stamp_ = GetTimestamp();
@@ -494,19 +518,19 @@ void PerfJitLogger::LogWriteUnwindingInfo(Code code) {
   LogWriteBytes(padding_bytes, static_cast<int>(padding_size));
 }
 
-void PerfJitLogger::CodeMoveEvent(AbstractCode from, AbstractCode to) {
+void LinuxPerfJitLogger::CodeMoveEvent(AbstractCode from, AbstractCode to) {
   // We may receive a CodeMove event if a BytecodeArray object moves. Otherwise
   // code relocation is not supported.
-  CHECK(from.IsBytecodeArray());
+  CHECK(from.IsBytecodeArray(isolate_));
 }
 
-void PerfJitLogger::LogWriteBytes(const char* bytes, int size) {
+void LinuxPerfJitLogger::LogWriteBytes(const char* bytes, int size) {
   size_t rv = fwrite(bytes, 1, size, perf_output_handle_);
   DCHECK(static_cast<size_t>(size) == rv);
   USE(rv);
 }
 
-void PerfJitLogger::LogWriteHeader() {
+void LinuxPerfJitLogger::LogWriteHeader() {
   DCHECK_NOT_NULL(perf_output_handle_);
   PerfJitHeader header;
 
@@ -515,7 +539,7 @@ void PerfJitLogger::LogWriteHeader() {
   header.size_ = sizeof(header);
   header.elf_mach_target_ = GetElfMach();
   header.reserved_ = 0xDEADBEEF;
-  header.process_id_ = base::OS::GetCurrentProcessId();
+  header.process_id_ = process_id_;
   header.time_stamp_ =
       static_cast<uint64_t>(V8::GetCurrentPlatform()->CurrentClockTimeMillis() *
                             base::Time::kMicrosecondsPerMillisecond);

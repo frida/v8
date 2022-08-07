@@ -5,13 +5,11 @@
 #include "src/snapshot/read-only-serializer.h"
 
 #include "src/api/api.h"
-#include "src/diagnostics/code-tracer.h"
 #include "src/execution/v8threads.h"
-#include "src/handles/global-handles.h"
 #include "src/heap/read-only-heap.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
-#include "src/snapshot/startup-serializer.h"
+#include "src/snapshot/serializer-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -25,7 +23,7 @@ ReadOnlySerializer::ReadOnlySerializer(Isolate* isolate,
       did_serialize_not_mapped_symbol_(false)
 #endif
 {
-  STATIC_ASSERT(RootIndex::kFirstReadOnlyRoot == RootIndex::kFirstRoot);
+  static_assert(RootIndex::kFirstReadOnlyRoot == RootIndex::kFirstRoot);
 }
 
 ReadOnlySerializer::~ReadOnlySerializer() {
@@ -40,21 +38,23 @@ void ReadOnlySerializer::SerializeObjectImpl(Handle<HeapObject> obj) {
   // in the root table, so don't try to serialize a reference and rely on the
   // below CHECK(!did_serialize_not_mapped_symbol_) to make sure it doesn't
   // serialize twice.
-  if (*obj != ReadOnlyRoots(isolate()).not_mapped_symbol()) {
-    if (SerializeHotObject(obj)) return;
-    if (IsRootAndHasBeenSerialized(*obj) && SerializeRoot(obj)) {
-      return;
+  {
+    DisallowGarbageCollection no_gc;
+    HeapObject raw = *obj;
+    if (!IsNotMappedSymbol(raw)) {
+      if (SerializeHotObject(raw)) return;
+      if (IsRootAndHasBeenSerialized(raw) && SerializeRoot(raw)) return;
+      if (SerializeBackReference(raw)) return;
     }
-    if (SerializeBackReference(obj)) return;
-  }
 
-  CheckRehashability(*obj);
+    CheckRehashability(raw);
+  }
 
   // Object has not yet been serialized.  Serialize it here.
   ObjectSerializer object_serializer(this, obj, &sink_);
   object_serializer.Serialize();
 #ifdef DEBUG
-  if (*obj == ReadOnlyRoots(isolate()).not_mapped_symbol()) {
+  if (IsNotMappedSymbol(*obj)) {
     CHECK(!did_serialize_not_mapped_symbol_);
     did_serialize_not_mapped_symbol_ = true;
   } else {
@@ -74,6 +74,10 @@ void ReadOnlySerializer::SerializeReadOnlyRoots() {
                 isolate()->handle_scope_implementer()->blocks()->empty());
 
   ReadOnlyRoots(isolate()).Iterate(this);
+
+  if (reconstruct_read_only_and_shared_object_caches_for_testing()) {
+    ReconstructReadOnlyObjectCacheForTesting();
+  }
 }
 
 void ReadOnlySerializer::FinalizeSerialization() {
@@ -92,7 +96,7 @@ void ReadOnlySerializer::FinalizeSerialization() {
   ReadOnlyHeapObjectIterator iterator(isolate()->read_only_heap());
   for (HeapObject object = iterator.Next(); !object.is_null();
        object = iterator.Next()) {
-    if (object == ReadOnlyRoots(isolate()).not_mapped_symbol()) {
+    if (IsNotMappedSymbol(object)) {
       CHECK(did_serialize_not_mapped_symbol_);
     } else {
       CHECK_NOT_NULL(serialized_objects_.Find(object));
@@ -111,7 +115,7 @@ bool ReadOnlySerializer::MustBeDeferred(HeapObject object) {
   }
   // Defer objects with special alignment requirements until the filler roots
   // are serialized.
-  return HeapObject::RequiredAlignment(object.map()) != kWordAligned;
+  return HeapObject::RequiredAlignment(object.map()) != kTaggedAligned;
 }
 
 bool ReadOnlySerializer::SerializeUsingReadOnlyObjectCache(
@@ -127,6 +131,19 @@ bool ReadOnlySerializer::SerializeUsingReadOnlyObjectCache(
   sink->PutInt(cache_index, "read_only_object_cache_index");
 
   return true;
+}
+
+void ReadOnlySerializer::ReconstructReadOnlyObjectCacheForTesting() {
+  ReadOnlyHeap* ro_heap = isolate()->read_only_heap();
+  DCHECK(ro_heap->read_only_object_cache_is_initialized());
+  for (size_t i = 0, size = ro_heap->read_only_object_cache_size(); i < size;
+       i++) {
+    Handle<HeapObject> obj(
+        HeapObject::cast(ro_heap->cached_read_only_object(i)), isolate());
+    int cache_index = SerializeInObjectCache(obj);
+    USE(cache_index);
+    DCHECK_EQ(cache_index, i);
+  }
 }
 
 }  // namespace internal

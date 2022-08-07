@@ -26,18 +26,20 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <stdlib.h>
-#include <iostream>  // NOLINT(readability/streams)
+
+#include <iostream>
 
 #include "src/api/api-inl.h"
 #include "src/base/utils/random-number-generator.h"
+#include "src/codegen/assembler-inl.h"
 #include "src/codegen/macro-assembler.h"
+#include "src/deoptimizer/deoptimizer.h"
 #include "src/execution/simulator.h"
-#include "src/init/v8.h"
-#include "src/objects/heap-number.h"
 #include "src/objects/js-array-inl.h"
 #include "src/objects/objects-inl.h"
 #include "src/utils/ostreams.h"
 #include "test/cctest/cctest.h"
+#include "test/common/assembler-tester.h"
 
 namespace v8 {
 namespace internal {
@@ -125,8 +127,8 @@ static void TestNaN(const char *code) {
   i::FixedDoubleArray a = i::FixedDoubleArray::cast(array1->elements());
   double value = a.get_scalar(0);
   CHECK(std::isnan(value) &&
-        bit_cast<uint64_t>(value) ==
-            bit_cast<uint64_t>(std::numeric_limits<double>::quiet_NaN()));
+        base::bit_cast<uint64_t>(value) ==
+            base::bit_cast<uint64_t>(std::numeric_limits<double>::quiet_NaN()));
 }
 
 
@@ -1151,18 +1153,24 @@ TEST(macro_float_minmax_f32) {
   GeneratedCode<F4> f =
       GenerateMacroFloat32MinMax<FPURegister, Inputs, Results>(masm);
 
-#define CHECK_MINMAX(src1, src2, min, max)                                   \
-  do {                                                                       \
-    Inputs inputs = {src1, src2};                                            \
-    Results results;                                                         \
-    f.Call(&inputs, &results, 0, 0, 0);                                      \
-    CHECK_EQ(bit_cast<uint32_t>(min), bit_cast<uint32_t>(results.min_abc_)); \
-    CHECK_EQ(bit_cast<uint32_t>(min), bit_cast<uint32_t>(results.min_aab_)); \
-    CHECK_EQ(bit_cast<uint32_t>(min), bit_cast<uint32_t>(results.min_aba_)); \
-    CHECK_EQ(bit_cast<uint32_t>(max), bit_cast<uint32_t>(results.max_abc_)); \
-    CHECK_EQ(bit_cast<uint32_t>(max), bit_cast<uint32_t>(results.max_aab_)); \
-    CHECK_EQ(bit_cast<uint32_t>(max), bit_cast<uint32_t>(results.max_aba_)); \
-    /* Use a bit_cast to correctly identify -0.0 and NaNs. */                \
+#define CHECK_MINMAX(src1, src2, min, max)                          \
+  do {                                                              \
+    Inputs inputs = {src1, src2};                                   \
+    Results results;                                                \
+    f.Call(&inputs, &results, 0, 0, 0);                             \
+    CHECK_EQ(base::bit_cast<uint32_t>(min),                         \
+             base::bit_cast<uint32_t>(results.min_abc_));           \
+    CHECK_EQ(base::bit_cast<uint32_t>(min),                         \
+             base::bit_cast<uint32_t>(results.min_aab_));           \
+    CHECK_EQ(base::bit_cast<uint32_t>(min),                         \
+             base::bit_cast<uint32_t>(results.min_aba_));           \
+    CHECK_EQ(base::bit_cast<uint32_t>(max),                         \
+             base::bit_cast<uint32_t>(results.max_abc_));           \
+    CHECK_EQ(base::bit_cast<uint32_t>(max),                         \
+             base::bit_cast<uint32_t>(results.max_aab_));           \
+    CHECK_EQ(base::bit_cast<uint32_t>(max),                         \
+             base::bit_cast<uint32_t>(results.max_aba_));           \
+    /* Use a base::bit_cast to correctly identify -0.0 and NaNs. */ \
   } while (0)
 
   float nan_a = std::numeric_limits<float>::quiet_NaN();
@@ -1293,18 +1301,24 @@ TEST(macro_float_minmax_f64) {
   GeneratedCode<F4> f =
       GenerateMacroFloat64MinMax<DoubleRegister, Inputs, Results>(masm);
 
-#define CHECK_MINMAX(src1, src2, min, max)                                   \
-  do {                                                                       \
-    Inputs inputs = {src1, src2};                                            \
-    Results results;                                                         \
-    f.Call(&inputs, &results, 0, 0, 0);                                      \
-    CHECK_EQ(bit_cast<uint64_t>(min), bit_cast<uint64_t>(results.min_abc_)); \
-    CHECK_EQ(bit_cast<uint64_t>(min), bit_cast<uint64_t>(results.min_aab_)); \
-    CHECK_EQ(bit_cast<uint64_t>(min), bit_cast<uint64_t>(results.min_aba_)); \
-    CHECK_EQ(bit_cast<uint64_t>(max), bit_cast<uint64_t>(results.max_abc_)); \
-    CHECK_EQ(bit_cast<uint64_t>(max), bit_cast<uint64_t>(results.max_aab_)); \
-    CHECK_EQ(bit_cast<uint64_t>(max), bit_cast<uint64_t>(results.max_aba_)); \
-    /* Use a bit_cast to correctly identify -0.0 and NaNs. */                \
+#define CHECK_MINMAX(src1, src2, min, max)                          \
+  do {                                                              \
+    Inputs inputs = {src1, src2};                                   \
+    Results results;                                                \
+    f.Call(&inputs, &results, 0, 0, 0);                             \
+    CHECK_EQ(base::bit_cast<uint64_t>(min),                         \
+             base::bit_cast<uint64_t>(results.min_abc_));           \
+    CHECK_EQ(base::bit_cast<uint64_t>(min),                         \
+             base::bit_cast<uint64_t>(results.min_aab_));           \
+    CHECK_EQ(base::bit_cast<uint64_t>(min),                         \
+             base::bit_cast<uint64_t>(results.min_aba_));           \
+    CHECK_EQ(base::bit_cast<uint64_t>(max),                         \
+             base::bit_cast<uint64_t>(results.max_abc_));           \
+    CHECK_EQ(base::bit_cast<uint64_t>(max),                         \
+             base::bit_cast<uint64_t>(results.max_aab_));           \
+    CHECK_EQ(base::bit_cast<uint64_t>(max),                         \
+             base::bit_cast<uint64_t>(results.max_aba_));           \
+    /* Use a base::bit_cast to correctly identify -0.0 and NaNs. */ \
   } while (0)
 
   double nan_a = std::numeric_limits<double>::quiet_NaN();
@@ -1330,6 +1344,26 @@ TEST(macro_float_minmax_f64) {
   CHECK_MINMAX(nan_b, nan_a, nan_b, nan_b);
 
 #undef CHECK_MINMAX
+}
+
+TEST(DeoptExitSizeIsFixed) {
+  Isolate* isolate = CcTest::i_isolate();
+  HandleScope handles(isolate);
+  auto buffer = AllocateAssemblerBuffer();
+  MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes,
+                      buffer->CreateView());
+  static_assert(static_cast<int>(kFirstDeoptimizeKind) == 0);
+  for (int i = 0; i < kDeoptimizeKindCount; i++) {
+    DeoptimizeKind kind = static_cast<DeoptimizeKind>(i);
+    Label before_exit;
+    masm.bind(&before_exit);
+    Builtin target = Deoptimizer::GetDeoptimizationEntry(kind);
+    masm.CallForDeoptimization(target, 42, &before_exit, kind, &before_exit,
+                               nullptr);
+    CHECK_EQ(masm.SizeOfCodeGeneratedSince(&before_exit),
+             kind == DeoptimizeKind::kLazy ? Deoptimizer::kLazyDeoptExitSize
+                                           : Deoptimizer::kEagerDeoptExitSize);
+  }
 }
 
 #undef __

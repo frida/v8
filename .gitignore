@@ -23,6 +23,7 @@
 *~
 .#*
 .*.sw?
+.cache
 .ccls-cache
 .clangd
 .cpplint-cache
@@ -51,9 +52,9 @@
 /test/benchmarks/data
 /test/fuzzer/wasm_corpus
 /test/fuzzer/wasm_corpus.tar.gz
+!/test/mjsunit/tools/*.log
 /test/mozilla/data
 /test/test262/data
-/test/test262/harness
 /test/wasm-js/data
 /test/wasm-js/tests
 /test/wasm-js/tests.tar.gz
@@ -61,7 +62,6 @@
 /test/wasm-spec-tests/tests.tar.gz
 /third_party/*
 !/third_party/antlr4
-!/third_party/binutils
 !/third_party/inspector_protocol
 !/third_party/jsoncpp
 /third_party/jsoncpp/source
@@ -69,9 +69,11 @@
 /third_party/colorama/src
 !/third_party/googletest
 /third_party/googletest/src
+!/third_party/test262-harness
 !/third_party/v8
 !/third_party/wasm-api
 /tools/clang
+/tools/gcmole/bootstrap
 /tools/gcmole/gcmole-tools
 /tools/gcmole/gcmole-tools.tar.gz
 /tools/jsfunfuzz/jsfunfuzz
@@ -79,7 +81,6 @@
 /tools/luci-go
 /tools/oom_dump/oom_dump
 /tools/oom_dump/oom_dump.o
-/tools/swarming_client
 /tools/turbolizer/build
 /tools/turbolizer/.rpt2_cache
 /tools/turbolizer/deploy
@@ -104,4 +105,7 @@ turbo*.cfg
 turbo*.dot
 turbo*.json
 v8.ignition_dispatches_table.json
-
+bazel-bin
+bazel-out
+bazel-testlogs
+bazel-v8

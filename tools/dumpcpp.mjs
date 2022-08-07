@@ -5,20 +5,20 @@
 import { LogReader, parseString } from "./logreader.mjs";
 import { CodeMap, CodeEntry } from "./codemap.mjs";
 export {
-    ArgumentsProcessor, UnixCppEntriesProvider, 
-    WindowsCppEntriesProvider, MacCppEntriesProvider,
+    ArgumentsProcessor, LinuxCppEntriesProvider,
+    WindowsCppEntriesProvider, MacOSCppEntriesProvider,
   } from  "./tickprocessor.mjs";
-  import { inherits } from  "./tickprocessor.mjs";
 
 
 export class CppProcessor extends LogReader {
   constructor(cppEntriesProvider, timedRange, pairwiseTimedRange) {
-    super({}, timedRange, pairwiseTimedRange);
-    this.dispatchTable_ = {
+    super(timedRange, pairwiseTimedRange);
+    this.setDispatchTable({
+         __proto__: null,
         'shared-library': {
           parsers: [parseString, parseInt, parseInt, parseInt],
           processor: this.processSharedLibrary }
-    };
+    });
     this.cppEntriesProvider_ = cppEntriesProvider;
     this.codeMap_ = new CodeMap();
     this.lastLogFileName_ = null;
@@ -28,41 +28,41 @@ export class CppProcessor extends LogReader {
    * @override
    */
   printError(str) {
-    print(str);
-  };
+    console.log(str);
+  }
 
   processLogFile(fileName) {
     this.lastLogFileName_ = fileName;
-    var line;
+    let line;
     while (line = readline()) {
       this.processLogLine(line);
     }
-  };
+  }
 
   processLogFileInTest(fileName) {
     // Hack file name to avoid dealing with platform specifics.
     this.lastLogFileName_ = 'v8.log';
-    var contents = readFile(fileName);
+    const contents = d8.file.read(fileName);
     this.processLogChunk(contents);
-  };
+  }
 
   processSharedLibrary(name, startAddr, endAddr, aslrSlide) {
-    var self = this;
-    var libFuncs = this.cppEntriesProvider_.parseVmSymbols(
+    const self = this;
+    const libFuncs = this.cppEntriesProvider_.parseVmSymbols(
         name, startAddr, endAddr, aslrSlide, function(fName, fStart, fEnd) {
-      var entry = new CodeEntry(fEnd - fStart, fName, 'CPP');
+      const entry = new CodeEntry(fEnd - fStart, fName, 'CPP');
       self.codeMap_.addStaticCode(fStart, entry);
     });
-  };
+  }
 
   dumpCppSymbols() {
-    var staticEntries = this.codeMap_.getAllStaticEntriesWithAddresses();
-    var total = staticEntries.length;
-    for (var i = 0; i < total; ++i) {
-      var entry = staticEntries[i];
-      var printValues = ['cpp', '0x' + entry[0].toString(16), entry[1].size,
-                        '"' + entry[1].name + '"'];
-      print(printValues.join(','));
+    const staticEntries = this.codeMap_.getAllStaticEntriesWithAddresses();
+    const total = staticEntries.length;
+    for (let i = 0; i < total; ++i) {
+      const entry = staticEntries[i];
+      const printValues = ['cpp', `0x${entry[0].toString(16)}`, entry[1].size,
+                        `"${entry[1].name}"`];
+                        console.log(printValues.join(','));
     }
   }
 }

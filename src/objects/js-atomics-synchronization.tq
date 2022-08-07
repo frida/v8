@@ -1,0 +1,13 @@
+// Copyright 2022 the V8 project authors. All rights reserved.
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+extern class JSAtomicsMutex extends JSObject {
+  @if(TAGGED_SIZE_8_BYTES) state: uintptr;
+  @ifnot(TAGGED_SIZE_8_BYTES) state: uint32;
+
+  owner_thread_id: int32;
+
+  @if(TAGGED_SIZE_8_BYTES) optional_padding: uint32;
+  @ifnot(TAGGED_SIZE_8_BYTES) optional_padding: void;
+}

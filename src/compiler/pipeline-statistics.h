@@ -11,6 +11,8 @@
 #include "src/base/platform/elapsed-timer.h"
 #include "src/compiler/zone-stats.h"
 #include "src/diagnostics/compilation-statistics.h"
+#include "src/objects/code-kind.h"
+#include "src/tracing/trace-event.h"
 
 namespace v8 {
 namespace internal {
@@ -21,13 +23,20 @@ class PhaseScope;
 class PipelineStatistics : public Malloced {
  public:
   PipelineStatistics(OptimizedCompilationInfo* info,
-                     CompilationStatistics* turbo_stats, ZoneStats* zone_stats);
+                     std::shared_ptr<CompilationStatistics> turbo_stats,
+                     ZoneStats* zone_stats);
   ~PipelineStatistics();
   PipelineStatistics(const PipelineStatistics&) = delete;
   PipelineStatistics& operator=(const PipelineStatistics&) = delete;
 
   void BeginPhaseKind(const char* phase_kind_name);
   void EndPhaseKind();
+
+  // We log detailed phase information about the pipeline
+  // in both the v8.turbofan and the v8.wasm.turbofan categories.
+  static constexpr char kTraceCategory[] =
+      TRACE_DISABLED_BY_DEFAULT("v8.turbofan") ","  // --
+      TRACE_DISABLED_BY_DEFAULT("v8.wasm.turbofan");
 
  private:
   size_t OuterZoneSize() {
@@ -59,7 +68,8 @@ class PipelineStatistics : public Malloced {
 
   Zone* outer_zone_;
   ZoneStats* zone_stats_;
-  CompilationStatistics* compilation_stats_;
+  std::shared_ptr<CompilationStatistics> compilation_stats_;
+  CodeKind code_kind_;
   std::string function_name_;
 
   // Stats for the entire compilation.
@@ -74,8 +84,7 @@ class PipelineStatistics : public Malloced {
   CommonStats phase_stats_;
 };
 
-
-class PhaseScope {
+class V8_NODISCARD PhaseScope {
  public:
   PhaseScope(PipelineStatistics* pipeline_stats, const char* name)
       : pipeline_stats_(pipeline_stats) {

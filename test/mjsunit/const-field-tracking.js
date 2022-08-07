@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --opt --no-always-opt
+// Flags: --allow-natives-syntax --turbofan --no-always-turbofan
 
 var global = this;
 var unique_id = 0;
@@ -101,7 +101,8 @@ function TestLoadFromConstantFieldOfAPrototype(the_value, other_value) {
   function warmup() { return new O().v; }
   %EnsureFeedbackVectorForFunction(warmup);
   warmup(); warmup(); warmup();
-  assertTrue(%HasFastProperties(O.prototype));
+  if (!%IsDictPropertyConstTrackingEnabled())
+    assertTrue(%HasFastProperties(O.prototype));
 
   // The parameter object is not constant but all the values have the same
   // map and therefore the compiler knows the prototype object and can

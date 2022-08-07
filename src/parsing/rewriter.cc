@@ -6,6 +6,7 @@
 
 #include "src/ast/ast.h"
 #include "src/ast/scopes.h"
+#include "src/logging/runtime-call-stats-scope.h"
 #include "src/objects/objects-inl.h"
 #include "src/parsing/parse-info.h"
 #include "src/parsing/parser.h"
@@ -69,7 +70,7 @@ class Processor final : public AstVisitor<Processor> {
   // [replacement_].  In many cases this will just be the original node.
   Statement* replacement_;
 
-  class BreakableScope final {
+  class V8_NODISCARD BreakableScope final {
    public:
     explicit BreakableScope(Processor* processor, bool breakable = true)
         : processor_(processor), previous_(processor->breakable_) {
@@ -360,6 +361,11 @@ void Processor::VisitInitializeClassMembersStatement(
   replacement_ = node;
 }
 
+void Processor::VisitInitializeClassStaticElementsStatement(
+    InitializeClassStaticElementsStatement* node) {
+  replacement_ = node;
+}
+
 // Expressions are never visited.
 #define DEF_VISIT(type)                                         \
   void Processor::Visit##type(type* expr) { UNREACHABLE(); }
@@ -377,10 +383,9 @@ DECLARATION_NODE_LIST(DEF_VISIT)
 // Assumes code has been parsed.  Mutates the AST, so the AST should not
 // continue to be used in the case of failure.
 bool Rewriter::Rewrite(ParseInfo* info) {
-  RuntimeCallTimerScope runtimeTimer(
-      info->runtime_call_stats(),
-      RuntimeCallCounterId::kCompileRewriteReturnResult,
-      RuntimeCallStats::kThreadSpecific);
+  RCS_SCOPE(info->runtime_call_stats(),
+            RuntimeCallCounterId::kCompileRewriteReturnResult,
+            RuntimeCallStats::kThreadSpecific);
 
   FunctionLiteral* function = info->literal();
   DCHECK_NOT_NULL(function);
@@ -400,7 +405,7 @@ bool Rewriter::Rewrite(ParseInfo* info) {
 
 base::Optional<VariableProxy*> Rewriter::RewriteBody(
     ParseInfo* info, Scope* scope, ZonePtrList<Statement>* body) {
-  DisallowHeapAllocation no_allocation;
+  DisallowGarbageCollection no_gc;
   DisallowHandleAllocation no_handles;
   DisallowHandleDereference no_deref;
 

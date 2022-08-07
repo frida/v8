@@ -21,6 +21,7 @@
 #include "src/objects/scope-info.h"
 #include "src/objects/slots.h"
 #include "src/objects/string.h"
+#include "src/objects/swiss-name-dictionary.h"
 #include "src/roots/roots.h"
 
 namespace v8 {
@@ -31,8 +32,7 @@ V8_INLINE constexpr bool operator<(RootIndex lhs, RootIndex rhs) {
   return static_cast<type>(lhs) < static_cast<type>(rhs);
 }
 
-V8_INLINE RootIndex
-operator++(RootIndex& index) {  // NOLINT(runtime/references)
+V8_INLINE RootIndex operator++(RootIndex& index) {
   using type = typename std::underlying_type<RootIndex>::type;
   index = static_cast<RootIndex>(static_cast<type>(index) + 1);
   return index;
@@ -94,6 +94,26 @@ Address* ReadOnlyRoots::GetLocation(RootIndex root_index) const {
   size_t index = static_cast<size_t>(root_index);
   DCHECK_LT(index, kEntriesCount);
   return &read_only_roots_[index];
+}
+
+Address ReadOnlyRoots::first_name_for_protector() const {
+  return at(RootIndex::kFirstNameForProtector);
+}
+
+Address ReadOnlyRoots::last_name_for_protector() const {
+  return at(RootIndex::kLastNameForProtector);
+}
+
+bool ReadOnlyRoots::IsNameForProtector(HeapObject object) const {
+  return base::IsInRange(object.ptr(), first_name_for_protector(),
+                         last_name_for_protector());
+}
+
+void ReadOnlyRoots::VerifyNameForProtectorsPages() const {
+  // The symbols and strings that can cause protector invalidation should
+  // reside on the same page so we can do a fast range check.
+  CHECK_EQ(Page::FromAddress(first_name_for_protector()),
+           Page::FromAddress(last_name_for_protector()));
 }
 
 Address ReadOnlyRoots::at(RootIndex root_index) const {

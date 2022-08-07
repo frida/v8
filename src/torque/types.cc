@@ -128,6 +128,15 @@ base::Optional<const StructType*> Type::StructSupertype() const {
   return base::nullopt;
 }
 
+base::Optional<const AggregateType*> Type::AggregateSupertype() const {
+  for (const Type* t = this; t != nullptr; t = t->parent()) {
+    if (auto* aggregate_type = AggregateType::DynamicCast(t)) {
+      return aggregate_type;
+    }
+  }
+  return base::nullopt;
+}
+
 // static
 const Type* Type::CommonSupertype(const Type* a, const Type* b) {
   int diff = a->Depth() - b->Depth();
@@ -173,6 +182,23 @@ std::string Type::GetGeneratedTNodeTypeName() const {
                 "'. Use 'generates' clause in definition.");
   }
   return result;
+}
+
+std::string AbstractType::GetGeneratedTypeNameImpl() const {
+  // A special case that is not very well represented by the "generates"
+  // syntax in the .tq files: Lazy<T> represents a std::function that
+  // produces a TNode of the wrapped type.
+  if (base::Optional<const Type*> type_wrapped_in_lazy =
+          Type::MatchUnaryGeneric(this, TypeOracle::GetLazyGeneric())) {
+    DCHECK(!IsConstexpr());
+    return "std::function<" + (*type_wrapped_in_lazy)->GetGeneratedTypeName() +
+           "()>";
+  }
+
+  if (generated_type_.empty()) {
+    return parent()->GetGeneratedTypeName();
+  }
+  return IsConstexpr() ? generated_type_ : "TNode<" + generated_type_ + ">";
 }
 
 std::string AbstractType::GetGeneratedTNodeTypeNameImpl() const {
@@ -406,8 +432,10 @@ StructType::Classification StructType::ClassifyContents() const {
   Classification result = ClassificationFlag::kEmpty;
   for (const Field& struct_field : fields()) {
     const Type* field_type = struct_field.name_and_type.type;
-    if (field_type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
-      result |= ClassificationFlag::kTagged;
+    if (field_type->IsSubtypeOf(TypeOracle::GetStrongTaggedType())) {
+      result |= ClassificationFlag::kStrongTagged;
+    } else if (field_type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
+      result |= ClassificationFlag::kWeakTagged;
     } else if (auto field_as_struct = field_type->StructSupertype()) {
       result |= (*field_as_struct)->ClassifyContents();
     } else {
@@ -462,6 +490,11 @@ std::vector<Method*> AggregateType::Methods(const std::string& name) const {
   std::vector<Method*> result;
   std::copy_if(methods_.begin(), methods_.end(), std::back_inserter(result),
                [name](Macro* macro) { return macro->ReadableName() == name; });
+  if (result.empty() && parent() != nullptr) {
+    if (auto aggregate_parent = parent()->AggregateSupertype()) {
+      return (*aggregate_parent)->Methods(name);
+    }
+  }
   return result;
 }
 
@@ -511,16 +544,6 @@ void ClassType::Finalize() const {
   TypeVisitor::VisitClassFieldsAndMethods(const_cast<ClassType*>(this),
                                           this->decl_);
   is_finalized_ = true;
-  if (GenerateCppClassDefinitions() || !IsExtern()) {
-    for (const Field& f : fields()) {
-      if (f.is_weak) {
-        Error("Generation of C++ class for Torque class ", name(),
-              " is not supported yet, because field ", f.name_and_type.name,
-              ": ", *f.name_and_type.type, " is a weak field.")
-            .Position(f.pos);
-      }
-    }
-  }
   CheckForDuplicateFields();
 }
 
@@ -597,13 +620,13 @@ void ComputeSlotKindsHelper(std::vector<ObjectSlotKind>* slots,
     } else {
       ObjectSlotKind kind;
       if (type->IsSubtypeOf(TypeOracle::GetObjectType())) {
-        if (field.is_weak) {
+        if (field.custom_weak_marking) {
           kind = ObjectSlotKind::kCustomWeakPointer;
         } else {
           kind = ObjectSlotKind::kStrongPointer;
         }
       } else if (type->IsSubtypeOf(TypeOracle::GetTaggedType())) {
-        DCHECK(!field.is_weak);
+        DCHECK(!field.custom_weak_marking);
         kind = ObjectSlotKind::kMaybeObjectPointer;
       } else {
         kind = ObjectSlotKind::kNoPointer;
@@ -722,12 +745,16 @@ void ClassType::GenerateAccessors() {
       continue;
     }
 
+    // An explicit index is only used for indexed fields not marked as optional.
+    // Optional fields implicitly load or store item zero.
+    bool use_index = field.index && !field.index->optional;
+
     // Load accessor
     std::string load_macro_name = "Load" + this->name() + camel_field_name;
     Signature load_signature;
     load_signature.parameter_names.push_back(MakeNode<Identifier>("o"));
     load_signature.parameter_types.types.push_back(this);
-    if (field.index) {
+    if (use_index) {
       load_signature.parameter_names.push_back(MakeNode<Identifier>("i"));
       load_signature.parameter_types.types.push_back(
           TypeOracle::GetIntPtrType());
@@ -737,7 +764,7 @@ void ClassType::GenerateAccessors() {
 
     Expression* load_expression =
         MakeFieldAccessExpression(parameter, field.name_and_type.name);
-    if (field.index) {
+    if (use_index) {
       load_expression =
           MakeNode<ElementAccessExpression>(load_expression, index);
     }
@@ -752,7 +779,7 @@ void ClassType::GenerateAccessors() {
       Signature store_signature;
       store_signature.parameter_names.push_back(MakeNode<Identifier>("o"));
       store_signature.parameter_types.types.push_back(this);
-      if (field.index) {
+      if (use_index) {
         store_signature.parameter_names.push_back(MakeNode<Identifier>("i"));
         store_signature.parameter_types.types.push_back(
             TypeOracle::GetIntPtrType());
@@ -764,7 +791,7 @@ void ClassType::GenerateAccessors() {
       store_signature.return_type = TypeOracle::GetVoidType();
       Expression* store_expression =
           MakeFieldAccessExpression(parameter, field.name_and_type.name);
-      if (field.index) {
+      if (use_index) {
         store_expression =
             MakeNode<ElementAccessExpression>(store_expression, index);
       }
@@ -785,26 +812,24 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
   //
   // If the field has a known offset (in this example, 16):
   // FieldSliceClassNameFieldName(o: ClassName) {
-  //   return torque_internal::Slice<FieldType> {
-  //     object: o,
-  //     offset: 16,
-  //     length: torque_internal::%IndexedFieldLength<ClassName>(
-  //                 o, "field_name")),
-  //     unsafeMarker: torque_internal::Unsafe {}
-  //   };
+  //   return torque_internal::unsafe::New{Const,Mutable}Slice<FieldType>(
+  //     /*object:*/ o,
+  //     /*offset:*/ 16,
+  //     /*length:*/ torque_internal::%IndexedFieldLength<ClassName>(
+  //                     o, "field_name")
+  //   );
   // }
   //
-  // If the field has an unknown offset, and the previous field is named p, and
-  // an item in the previous field has size 4:
+  // If the field has an unknown offset, and the previous field is named p, is
+  // not const, and is of type PType with size 4:
   // FieldSliceClassNameFieldName(o: ClassName) {
-  //   const previous = &o.p;
-  //   return torque_internal::Slice<FieldType> {
-  //     object: o,
-  //     offset: previous.offset + 4 * previous.length,
-  //     length: torque_internal::%IndexedFieldLength<ClassName>(
-  //                 o, "field_name")),
-  //     unsafeMarker: torque_internal::Unsafe {}
-  //   };
+  //   const previous = %FieldSlice<ClassName, MutableSlice<PType>>(o, "p");
+  //   return torque_internal::unsafe::New{Const,Mutable}Slice<FieldType>(
+  //     /*object:*/ o,
+  //     /*offset:*/ previous.offset + 4 * previous.length,
+  //     /*length:*/ torque_internal::%IndexedFieldLength<ClassName>(
+  //                     o, "field_name")
+  //   );
   // }
   const Field& field = fields_[field_index];
   std::string macro_name = GetSliceMacroName(field);
@@ -813,7 +838,10 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
   signature.parameter_names.push_back(parameter_identifier);
   signature.parameter_types.types.push_back(this);
   signature.parameter_types.var_args = false;
-  signature.return_type = TypeOracle::GetSliceType(field.name_and_type.type);
+  signature.return_type =
+      field.const_qualified
+          ? TypeOracle::GetConstSliceType(field.name_and_type.type)
+          : TypeOracle::GetMutableSliceType(field.name_and_type.type);
 
   std::vector<Statement*> statements;
   Expression* offset_expression = nullptr;
@@ -822,19 +850,26 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
 
   if (field.offset.has_value()) {
     offset_expression =
-        MakeNode<NumberLiteralExpression>(static_cast<double>(*field.offset));
+        MakeNode<IntegerLiteralExpression>(IntegerLiteral(*field.offset));
   } else {
     const Field* previous = GetFieldPreceding(field_index);
     DCHECK_NOT_NULL(previous);
 
-    // o.p
-    Expression* previous_expression =
-        MakeFieldAccessExpression(parameter, previous->name_and_type.name);
+    const Type* previous_slice_type =
+        previous->const_qualified
+            ? TypeOracle::GetConstSliceType(previous->name_and_type.type)
+            : TypeOracle::GetMutableSliceType(previous->name_and_type.type);
 
-    // &o.p
-    previous_expression = MakeCallExpression("&", {previous_expression});
+    // %FieldSlice<ClassName, MutableSlice<PType>>(o, "p")
+    Expression* previous_expression = MakeCallExpression(
+        MakeIdentifierExpression(
+            {"torque_internal"}, "%FieldSlice",
+            {MakeNode<PrecomputedTypeExpression>(this),
+             MakeNode<PrecomputedTypeExpression>(previous_slice_type)}),
+        {parameter, MakeNode<StringLiteralExpression>(
+                        StringLiteralQuote(previous->name_and_type.name))});
 
-    // const previous = &o.p;
+    // const previous = %FieldSlice<ClassName, MutableSlice<PType>>(o, "p");
     Statement* define_previous =
         MakeConstDeclarationStatement("previous", previous_expression);
     statements.push_back(define_previous);
@@ -844,8 +879,8 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
     std::tie(previous_element_size, std::ignore) =
         *SizeOf(previous->name_and_type.type);
     Expression* previous_element_size_expression =
-        MakeNode<NumberLiteralExpression>(
-            static_cast<double>(previous_element_size));
+        MakeNode<IntegerLiteralExpression>(
+            IntegerLiteral(previous_element_size));
 
     // previous.length
     Expression* previous_length_expression = MakeFieldAccessExpression(
@@ -873,25 +908,18 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
       {parameter, MakeNode<StringLiteralExpression>(
                       StringLiteralQuote(field.name_and_type.name))});
 
-  // torque_internal::Unsafe {}
-  Expression* unsafe_expression = MakeStructExpression(
-      MakeBasicTypeExpression({"torque_internal"}, "Unsafe"), {});
-
-  // torque_internal::Slice<FieldType> {
-  //   object: o,
-  //   offset: <<offset_expression>>,
-  //   length: torque_internal::%IndexedFieldLength<ClassName>(
-  //               o, "field_name")),
-  //   unsafeMarker: torque_internal::Unsafe {}
-  // }
-  Expression* slice_expression = MakeStructExpression(
-      MakeBasicTypeExpression(
-          {"torque_internal"}, "Slice",
-          {MakeNode<PrecomputedTypeExpression>(field.name_and_type.type)}),
-      {{MakeNode<Identifier>("object"), parameter},
-       {MakeNode<Identifier>("offset"), offset_expression},
-       {MakeNode<Identifier>("length"), length_expression},
-       {MakeNode<Identifier>("unsafeMarker"), unsafe_expression}});
+  // torque_internal::unsafe::New{Const,Mutable}Slice<FieldType>(
+  //   /*object:*/ o,
+  //   /*offset:*/ <<offset_expression>>,
+  //   /*length:*/ torque_internal::%IndexedFieldLength<ClassName>(
+  //                   o, "field_name")
+  // )
+  IdentifierExpression* new_struct = MakeIdentifierExpression(
+      {"torque_internal", "unsafe"},
+      field.const_qualified ? "NewConstSlice" : "NewMutableSlice",
+      {MakeNode<PrecomputedTypeExpression>(field.name_and_type.type)});
+  Expression* slice_expression = MakeCallExpression(
+      new_struct, {parameter, offset_expression, length_expression});
 
   statements.push_back(MakeNode<ReturnStatement>(slice_expression));
   Statement* block =
@@ -899,13 +927,11 @@ void ClassType::GenerateSliceAccessor(size_t field_index) {
 
   Macro* macro = Declarations::DeclareMacro(macro_name, true, base::nullopt,
                                             signature, block, base::nullopt);
-  GlobalContext::EnsureInCCOutputList(TorqueMacro::cast(macro));
+  GlobalContext::EnsureInCCOutputList(TorqueMacro::cast(macro),
+                                      macro->Position().source);
 }
 
 bool ClassType::HasStaticSize() const {
-  // Abstract classes don't have instances directly, so asking this question
-  // doesn't make sense.
-  DCHECK(!IsAbstract());
   if (IsSubtypeOf(TypeOracle::GetJSObjectType()) && !IsShape()) return false;
   return size().SingleValue().has_value();
 }
@@ -961,8 +987,8 @@ std::ostream& operator<<(std::ostream& os, const NameAndType& name_and_type) {
 
 std::ostream& operator<<(std::ostream& os, const Field& field) {
   os << field.name_and_type;
-  if (field.is_weak) {
-    os << " (weak)";
+  if (field.custom_weak_marking) {
+    os << " (custom weak)";
   }
   return os;
 }
@@ -1113,8 +1139,8 @@ std::tuple<size_t, std::string> Field::GetFieldSizeInformation() const {
     return *optional;
   }
   Error("fields of type ", *name_and_type.type, " are not (yet) supported")
-      .Position(pos);
-  return std::make_tuple(0, "#no size");
+      .Position(pos)
+      .Throw();
 }
 
 size_t Type::AlignmentLog2() const {
@@ -1199,7 +1225,7 @@ base::Optional<std::tuple<size_t, std::string>> SizeOf(const Type* type) {
     size_string = "kSystemPointerSize";
   } else if (type->IsSubtypeOf(TypeOracle::GetExternalPointerType())) {
     size = TargetArchitecture::ExternalPointerSize();
-    size_string = "kExternalPointerSize";
+    size_string = "kExternalPointerSlotSize";
   } else if (type->IsSubtypeOf(TypeOracle::GetVoidType())) {
     size = 0;
     size_string = "0";
@@ -1299,6 +1325,26 @@ std::string Type::GetRuntimeType() const {
       if (!first) result << ", ";
       first = false;
       result << field_type->GetRuntimeType();
+    }
+    result << ">";
+    return result.str();
+  }
+  return ConstexprVersion()->GetGeneratedTypeName();
+}
+
+std::string Type::GetDebugType() const {
+  if (IsSubtypeOf(TypeOracle::GetSmiType())) return "uintptr_t";
+  if (IsSubtypeOf(TypeOracle::GetTaggedType())) {
+    return "uintptr_t";
+  }
+  if (base::Optional<const StructType*> struct_type = StructSupertype()) {
+    std::stringstream result;
+    result << "std::tuple<";
+    bool first = true;
+    for (const Type* field_type : LowerType(*struct_type)) {
+      if (!first) result << ", ";
+      first = false;
+      result << field_type->GetDebugType();
     }
     result << ">";
     return result.str();

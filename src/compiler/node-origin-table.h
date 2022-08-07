@@ -8,8 +8,6 @@
 #include <limits>
 
 #include "src/base/compiler-specific.h"
-#include "src/codegen/source-position.h"
-#include "src/common/globals.h"
 #include "src/compiler/node-aux-data.h"
 
 namespace v8 {
@@ -34,6 +32,7 @@ class NodeOrigin {
         created_from_(created_from) {}
 
   NodeOrigin(const NodeOrigin& other) V8_NOEXCEPT = default;
+  NodeOrigin& operator=(const NodeOrigin& other) V8_NOEXCEPT = default;
   static NodeOrigin Unknown() { return NodeOrigin(); }
 
   bool IsKnown() { return created_from_ >= 0; }
@@ -67,7 +66,7 @@ inline bool operator!=(const NodeOrigin& lhs, const NodeOrigin& rhs) {
 class V8_EXPORT_PRIVATE NodeOriginTable final
     : public NON_EXPORTED_BASE(ZoneObject) {
  public:
-  class Scope final {
+  class V8_NODISCARD Scope final {
    public:
     Scope(NodeOriginTable* origins, const char* reducer_name, Node* node)
         : origins_(origins), prev_origin_(NodeOrigin::Unknown()) {
@@ -90,7 +89,7 @@ class V8_EXPORT_PRIVATE NodeOriginTable final
     NodeOrigin prev_origin_;
   };
 
-  class PhaseScope final {
+  class V8_NODISCARD PhaseScope final {
    public:
     PhaseScope(NodeOriginTable* origins, const char* phase_name)
         : origins_(origins) {
@@ -121,7 +120,9 @@ class V8_EXPORT_PRIVATE NodeOriginTable final
   void RemoveDecorator();
 
   NodeOrigin GetNodeOrigin(Node* node) const;
+  NodeOrigin GetNodeOrigin(NodeId id) const;
   void SetNodeOrigin(Node* node, const NodeOrigin& no);
+  void SetNodeOrigin(NodeId id, NodeId origin);
 
   void SetCurrentPosition(const NodeOrigin& no) { current_origin_ = no; }
 
@@ -135,7 +136,10 @@ class V8_EXPORT_PRIVATE NodeOriginTable final
   NodeOrigin current_origin_;
 
   const char* current_phase_name_;
-  NodeAuxData<NodeOrigin, NodeOrigin::Unknown> table_;
+  static NodeOrigin UnknownNodeOrigin(Zone* zone) {
+    return NodeOrigin::Unknown();
+  }
+  NodeAuxData<NodeOrigin, UnknownNodeOrigin> table_;
 };
 
 }  // namespace compiler

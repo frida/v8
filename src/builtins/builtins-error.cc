@@ -18,9 +18,10 @@ namespace internal {
 // ES6 section 19.5.1.1 Error ( message )
 BUILTIN(ErrorConstructor) {
   HandleScope scope(isolate);
+  Handle<Object> options = args.atOrUndefined(isolate, 2);
   RETURN_RESULT_OR_FAILURE(
       isolate, ErrorUtils::Construct(isolate, args.target(), args.new_target(),
-                                     args.atOrUndefined(isolate, 1)));
+                                     args.atOrUndefined(isolate, 1), options));
 }
 
 // static
@@ -41,10 +42,8 @@ BUILTIN(ErrorCaptureStackTrace) {
 
   // Collect the stack trace.
 
-  RETURN_FAILURE_ON_EXCEPTION(isolate,
-                              isolate->CaptureAndSetDetailedStackTrace(object));
   RETURN_FAILURE_ON_EXCEPTION(
-      isolate, isolate->CaptureAndSetSimpleStackTrace(object, mode, caller));
+      isolate, isolate->CaptureAndSetErrorStack(object, mode, caller));
 
   // Add the stack accessors.
 

@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 //
 // Flags: --mark-shared-functions-for-tier-up --allow-natives-syntax
-// Flags: --opt --no-always-opt --turbo-filter=*
+// Flags: --turbofan --no-always-turbofan --turbo-filter=*
 
 // If we are always or never optimizing it is useless.
 if (isNeverOptimizeLiteMode()) {
@@ -25,7 +25,7 @@ assertFalse(isNeverOptimize());
 
     if (i == 1) {
       // f must be interpreted code.
-      assertTrue(isInterpreted(f));
+      assertTrue(isUnoptimized(f));
 
       // Run twice (i = 0, 1), then tier-up.
       %OptimizeFunctionOnNextCall(f);

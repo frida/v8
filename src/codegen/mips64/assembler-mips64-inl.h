@@ -36,9 +36,9 @@
 #ifndef V8_CODEGEN_MIPS64_ASSEMBLER_MIPS64_INL_H_
 #define V8_CODEGEN_MIPS64_ASSEMBLER_MIPS64_INL_H_
 
-#include "src/codegen/mips64/assembler-mips64.h"
-
 #include "src/codegen/assembler.h"
+#include "src/codegen/flush-instruction-cache.h"
+#include "src/codegen/mips64/assembler-mips64.h"
 #include "src/debug/debug.h"
 #include "src/objects/objects-inl.h"
 
@@ -46,8 +46,6 @@ namespace v8 {
 namespace internal {
 
 bool CpuFeatures::SupportsOptimizer() { return IsSupported(FPU); }
-
-bool CpuFeatures::SupportsWasmSimd128() { return IsSupported(MIPS_SIMD); }
 
 // -----------------------------------------------------------------------------
 // Operand and MemOperand.
@@ -137,28 +135,38 @@ void Assembler::deserialization_set_target_internal_reference_at(
   }
 }
 
-HeapObject RelocInfo::target_object() {
-  DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_));
+HeapObject RelocInfo::target_object(PtrComprCageBase cage_base) {
+  DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_) ||
+         IsDataEmbeddedObject(rmode_));
+  if (IsDataEmbeddedObject(rmode_)) {
+    return HeapObject::cast(Object(ReadUnalignedValue<Address>(pc_)));
+  }
   return HeapObject::cast(
       Object(Assembler::target_address_at(pc_, constant_pool_)));
 }
 
-HeapObject RelocInfo::target_object_no_host(Isolate* isolate) {
-  return target_object();
-}
-
 Handle<HeapObject> RelocInfo::target_object_handle(Assembler* origin) {
-  DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_));
-  return Handle<HeapObject>(reinterpret_cast<Address*>(
-      Assembler::target_address_at(pc_, constant_pool_)));
+  if (IsDataEmbeddedObject(rmode_)) {
+    return Handle<HeapObject>::cast(ReadUnalignedValue<Handle<Object>>(pc_));
+  } else {
+    DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_));
+    return Handle<HeapObject>(reinterpret_cast<Address*>(
+        Assembler::target_address_at(pc_, constant_pool_)));
+  }
 }
 
 void RelocInfo::set_target_object(Heap* heap, HeapObject target,
                                   WriteBarrierMode write_barrier_mode,
                                   ICacheFlushMode icache_flush_mode) {
-  DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_));
-  Assembler::set_target_address_at(pc_, constant_pool_, target.ptr(),
-                                   icache_flush_mode);
+  DCHECK(IsCodeTarget(rmode_) || IsFullEmbeddedObject(rmode_) ||
+         IsDataEmbeddedObject(rmode_));
+  if (IsDataEmbeddedObject(rmode_)) {
+    WriteUnalignedValue(pc_, target.ptr());
+    // No need to flush icache since no instructions were changed.
+  } else {
+    Assembler::set_target_address_at(pc_, constant_pool_, target.ptr(),
+                                     icache_flush_mode);
+  }
   if (write_barrier_mode == UPDATE_WRITE_BARRIER && !host().is_null() &&
       !FLAG_disable_write_barriers) {
     WriteBarrierForCode(host(), this, target);

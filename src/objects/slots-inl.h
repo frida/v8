@@ -10,9 +10,11 @@
 #include "src/common/ptr-compr-inl.h"
 #include "src/objects/compressed-slots.h"
 #include "src/objects/heap-object.h"
+#include "src/objects/map.h"
 #include "src/objects/maybe-object.h"
 #include "src/objects/objects.h"
 #include "src/objects/slots.h"
+#include "src/sandbox/external-pointer-inl.h"
 #include "src/utils/memcopy.h"
 
 namespace v8 {
@@ -29,17 +31,37 @@ bool FullObjectSlot::contains_value(Address raw_value) const {
   return base::AsAtomicPointer::Relaxed_Load(location()) == raw_value;
 }
 
+bool FullObjectSlot::contains_map_value(Address raw_value) const {
+  return load_map().ptr() == raw_value;
+}
+
 Object FullObjectSlot::operator*() const { return Object(*location()); }
 
-Object FullObjectSlot::load(IsolateRoot isolate) const { return **this; }
+Object FullObjectSlot::load(PtrComprCageBase cage_base) const { return **this; }
 
 void FullObjectSlot::store(Object value) const { *location() = value.ptr(); }
+
+void FullObjectSlot::store_map(Map map) const {
+#ifdef V8_MAP_PACKING
+  *location() = MapWord::Pack(map.ptr());
+#else
+  store(map);
+#endif
+}
+
+Map FullObjectSlot::load_map() const {
+#ifdef V8_MAP_PACKING
+  return Map::unchecked_cast(Object(MapWord::Unpack(*location())));
+#else
+  return Map::unchecked_cast(Object(*location()));
+#endif
+}
 
 Object FullObjectSlot::Acquire_Load() const {
   return Object(base::AsAtomicPointer::Acquire_Load(location()));
 }
 
-Object FullObjectSlot::Acquire_Load(IsolateRoot isolate) const {
+Object FullObjectSlot::Acquire_Load(PtrComprCageBase cage_base) const {
   return Acquire_Load();
 }
 
@@ -47,7 +69,7 @@ Object FullObjectSlot::Relaxed_Load() const {
   return Object(base::AsAtomicPointer::Relaxed_Load(location()));
 }
 
-Object FullObjectSlot::Relaxed_Load(IsolateRoot isolate) const {
+Object FullObjectSlot::Relaxed_Load(PtrComprCageBase cage_base) const {
   return Relaxed_Load();
 }
 
@@ -79,7 +101,7 @@ MaybeObject FullMaybeObjectSlot::operator*() const {
   return MaybeObject(*location());
 }
 
-MaybeObject FullMaybeObjectSlot::load(IsolateRoot isolate) const {
+MaybeObject FullMaybeObjectSlot::load(PtrComprCageBase cage_base) const {
   return **this;
 }
 
@@ -91,7 +113,8 @@ MaybeObject FullMaybeObjectSlot::Relaxed_Load() const {
   return MaybeObject(base::AsAtomicPointer::Relaxed_Load(location()));
 }
 
-MaybeObject FullMaybeObjectSlot::Relaxed_Load(IsolateRoot isolate) const {
+MaybeObject FullMaybeObjectSlot::Relaxed_Load(
+    PtrComprCageBase cage_base) const {
   return Relaxed_Load();
 }
 
@@ -113,7 +136,7 @@ HeapObjectReference FullHeapObjectSlot::operator*() const {
   return HeapObjectReference(*location());
 }
 
-HeapObjectReference FullHeapObjectSlot::load(IsolateRoot isolate) const {
+HeapObjectReference FullHeapObjectSlot::load(PtrComprCageBase cage_base) const {
   return **this;
 }
 
@@ -122,13 +145,78 @@ void FullHeapObjectSlot::store(HeapObjectReference value) const {
 }
 
 HeapObject FullHeapObjectSlot::ToHeapObject() const {
-  DCHECK((*location() & kHeapObjectTagMask) == kHeapObjectTag);
-  return HeapObject::cast(Object(*location()));
+  TData value = *location();
+  DCHECK(HAS_STRONG_HEAP_OBJECT_TAG(value));
+  return HeapObject::cast(Object(value));
 }
 
 void FullHeapObjectSlot::StoreHeapObject(HeapObject value) const {
   *location() = value.ptr();
 }
+
+void ExternalPointerSlot::init(Isolate* isolate, Address value,
+                               ExternalPointerTag tag) {
+#ifdef V8_ENABLE_SANDBOX
+  if (IsSandboxedExternalPointerType(tag)) {
+    ExternalPointerTable& table = GetExternalPointerTableForTag(isolate, tag);
+    ExternalPointerHandle handle = table.Allocate();
+    table.Set(handle, value, tag);
+    store_handle(handle);
+    return;
+  }
+#endif  // V8_ENABLE_SANDBOX
+  store(isolate, value, tag);
+}
+
+#ifdef V8_ENABLE_SANDBOX
+ExternalPointerHandle ExternalPointerSlot::load_handle() const {
+  return base::Memory<ExternalPointerHandle>(address());
+}
+
+void ExternalPointerSlot::store_handle(ExternalPointerHandle handle) const {
+  base::Memory<ExternalPointerHandle>(address()) = handle;
+}
+#endif  // V8_ENABLE_SANDBOX
+
+Address ExternalPointerSlot::load(const Isolate* isolate,
+                                  ExternalPointerTag tag) {
+#ifdef V8_ENABLE_SANDBOX
+  if (IsSandboxedExternalPointerType(tag)) {
+    const ExternalPointerTable& table =
+        GetExternalPointerTableForTag(isolate, tag);
+    return table.Get(load_handle(), tag);
+  }
+#endif  // V8_ENABLE_SANDBOX
+  return ReadMaybeUnalignedValue<Address>(address());
+}
+
+void ExternalPointerSlot::store(Isolate* isolate, Address value,
+                                ExternalPointerTag tag) {
+#ifdef V8_ENABLE_SANDBOX
+  if (IsSandboxedExternalPointerType(tag)) {
+    ExternalPointerTable& table = GetExternalPointerTableForTag(isolate, tag);
+    table.Set(load_handle(), value, tag);
+    return;
+  }
+#endif  // V8_ENABLE_SANDBOX
+  WriteMaybeUnalignedValue<Address>(address(), value);
+}
+
+#ifdef V8_ENABLE_SANDBOX
+const ExternalPointerTable& ExternalPointerSlot::GetExternalPointerTableForTag(
+    const Isolate* isolate, ExternalPointerTag tag) {
+  return IsSharedExternalPointerType(tag)
+             ? isolate->shared_external_pointer_table()
+             : isolate->external_pointer_table();
+}
+
+ExternalPointerTable& ExternalPointerSlot::GetExternalPointerTableForTag(
+    Isolate* isolate, ExternalPointerTag tag) {
+  return IsSharedExternalPointerType(tag)
+             ? isolate->shared_external_pointer_table()
+             : isolate->external_pointer_table();
+}
+#endif  // V8_ENABLE_SANDBOX
 
 //
 // Utils.

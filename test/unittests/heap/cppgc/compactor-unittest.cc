@@ -7,6 +7,7 @@
 #include "include/cppgc/allocation.h"
 #include "include/cppgc/custom-space.h"
 #include "include/cppgc/persistent.h"
+#include "src/heap/cppgc/garbage-collector.h"
 #include "src/heap/cppgc/heap-object-header.h"
 #include "src/heap/cppgc/heap-page.h"
 #include "src/heap/cppgc/marker.h"
@@ -30,11 +31,13 @@ struct CompactableGCed : public GarbageCollected<CompactableGCed> {
  public:
   ~CompactableGCed() { ++g_destructor_callcount; }
   void Trace(Visitor* visitor) const {
-    visitor->Trace(other);
-    visitor->RegisterMovableReference(other.GetSlotForTesting());
+    VisitorBase::TraceRawForTesting(visitor,
+                                    const_cast<const CompactableGCed*>(other));
+    visitor->RegisterMovableReference(
+        const_cast<const CompactableGCed**>(&other));
   }
   static size_t g_destructor_callcount;
-  Member<CompactableGCed> other;
+  CompactableGCed* other = nullptr;
   size_t id = 0;
 };
 // static
@@ -51,11 +54,13 @@ struct CompactableHolder
 
   void Trace(Visitor* visitor) const {
     for (int i = 0; i < kNumObjects; ++i) {
-      visitor->Trace(objects[i]);
-      visitor->RegisterMovableReference(objects[i].GetSlotForTesting());
+      VisitorBase::TraceRawForTesting(
+          visitor, const_cast<const CompactableGCed*>(objects[i]));
+      visitor->RegisterMovableReference(
+          const_cast<const CompactableGCed**>(&objects[i]));
     }
   }
-  Member<CompactableGCed> objects[kNumObjects];
+  CompactableGCed* objects[kNumObjects]{};
 };
 
 class CompactorTest : public testing::TestWithPlatform {
@@ -75,13 +80,6 @@ class CompactorTest : public testing::TestWithPlatform {
     EXPECT_TRUE(compactor().IsEnabledForTesting());
   }
 
-  void CancelCompaction() {
-    bool cancelled = compactor().CancelIfShouldNotCompact(
-        GarbageCollector::Config::MarkingType::kAtomic,
-        GarbageCollector::Config::StackState::kMayContainHeapPointers);
-    EXPECT_TRUE(cancelled);
-  }
-
   void FinishCompaction() { compactor().CompactSpacesIfEnabled(); }
 
   void StartGC() {
@@ -94,6 +92,7 @@ class CompactorTest : public testing::TestWithPlatform {
   void EndGC() {
     heap()->marker()->FinishMarking(
         GarbageCollector::Config::StackState::kNoHeapPointers);
+    heap()->GetMarkerRefForTesting().reset();
     FinishCompaction();
     // Sweeping also verifies the object start bitmap.
     const Sweeper::SweepingConfig sweeping_config{
@@ -125,12 +124,14 @@ namespace internal {
 
 TEST_F(CompactorTest, NothingToCompact) {
   StartCompaction();
+  heap()->stats_collector()->NotifyMarkingStarted(
+      GarbageCollector::Config::CollectionType::kMajor,
+      GarbageCollector::Config::MarkingType::kAtomic,
+      GarbageCollector::Config::IsForcedGC::kNotForced);
+  heap()->stats_collector()->NotifyMarkingCompleted(0);
   FinishCompaction();
-}
-
-TEST_F(CompactorTest, CancelledNothingToCompact) {
-  StartCompaction();
-  CancelCompaction();
+  heap()->stats_collector()->NotifySweepingCompleted(
+      GarbageCollector::Config::SweepingType::kAtomic);
 }
 
 TEST_F(CompactorTest, NonEmptySpaceAllLive) {
@@ -200,7 +201,7 @@ TEST_F(CompactorTest, CompactAcrossPages) {
   // Last allocated object should be on a new page.
   EXPECT_NE(reference, holder->objects[0]);
   EXPECT_NE(BasePage::FromInnerAddress(heap(), reference),
-            BasePage::FromInnerAddress(heap(), holder->objects[0].Get()));
+            BasePage::FromInnerAddress(heap(), holder->objects[0]));
   StartGC();
   EndGC();
   // Half of object were destroyed.

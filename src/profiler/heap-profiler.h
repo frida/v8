@@ -28,10 +28,11 @@ class HeapProfiler : public HeapObjectAllocationTracker {
  public:
   explicit HeapProfiler(Heap* heap);
   ~HeapProfiler() override;
+  HeapProfiler(const HeapProfiler&) = delete;
+  HeapProfiler& operator=(const HeapProfiler&) = delete;
 
-  HeapSnapshot* TakeSnapshot(v8::ActivityControl* control,
-                             v8::HeapProfiler::ObjectNameResolver* resolver,
-                             bool treat_global_objects_as_roots);
+  HeapSnapshot* TakeSnapshot(
+      const v8::HeapProfiler::HeapSnapshotOptions options);
 
   bool StartSamplingHeapProfiler(uint64_t sample_interval, int stack_depth,
                                  v8::HeapProfiler::SamplingFlags);
@@ -89,7 +90,7 @@ class HeapProfiler : public HeapObjectAllocationTracker {
 
   void QueryObjects(Handle<Context> context,
                     debug::QueryObjectPredicate* predicate,
-                    v8::PersistentValueVector<v8::Object>* objects);
+                    std::vector<v8::Global<v8::Object>>* objects);
 
  private:
   void MaybeClearStringsStorage();
@@ -109,8 +110,6 @@ class HeapProfiler : public HeapObjectAllocationTracker {
       build_embedder_graph_callbacks_;
   std::pair<v8::HeapProfiler::GetDetachednessCallback, void*>
       get_detachedness_callback_;
-
-  DISALLOW_COPY_AND_ASSIGN(HeapProfiler);
 };
 
 }  // namespace internal

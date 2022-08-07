@@ -27,37 +27,102 @@
 
 import { CodeMap, CodeEntry } from "./codemap.mjs";
 import { ConsArray } from "./consarray.mjs";
+import { WebInspector } from "./sourcemap.mjs";
 
+// Used to associate log entries with source positions in scripts.
 // TODO: move to separate modules
 export class SourcePosition {
+  script = null;
+  line = -1;
+  column = -1;
+  entries = [];
+  isFunction = false;
+  originalPosition = undefined;
+
   constructor(script, line, column) {
     this.script = script;
     this.line = line;
     this.column = column;
-    this.entries = [];
   }
+
   addEntry(entry) {
     this.entries.push(entry);
+  }
+
+  toString() {
+    return `${this.script.name}:${this.line}:${this.column}`;
+  }
+
+  get functionPosition() {
+    // TODO(cbruni)
+    return undefined;
+  }
+
+  get toolTipDict() {
+    return {
+      title: this.toString(),
+      __this__: this,
+      script: this.script,
+      entries: this.entries,
+    }
   }
 }
 
 export class Script {
-  constructor(id, name, source) {
+  url;
+  source = "";
+  name;
+  sourcePosition = undefined;
+  // Map<line, Map<column, SourcePosition>>
+  lineToColumn = new Map();
+  _entries = [];
+  _sourceMapState = "unknown";
+
+  constructor(id) {
     this.id = id;
-    this.name = name;
-    this.source = source;
     this.sourcePositions = [];
-    // Map<line, Map<column, SourcePosition>>
-    this.lineToColumn = new Map();
+  }
+
+  update(url, source) {
+    this.url = url;
+    this.name = Script.getShortestUniqueName(url, this);
+    this.source = source;
+  }
+
+  get length() {
+    return this.source.length;
+  }
+
+  get entries() {
+    return this._entries;
+  }
+
+  get startLine() {
+    return this.sourcePosition?.line ?? 1;
+  }
+
+  get sourceMapState() {
+    return this._sourceMapState;
+  }
+
+  findFunctionSourcePosition(sourcePosition) {
+    // TODO(cbruni): implement
+    return undefined;
   }
 
   addSourcePosition(line, column, entry) {
     let sourcePosition = this.lineToColumn.get(line)?.get(column);
     if (sourcePosition === undefined) {
-      sourcePosition = new SourcePosition(this, line, column, )
+      sourcePosition = new SourcePosition(this, line, column,)
       this._addSourcePosition(line, column, sourcePosition);
     }
+    if (this.sourcePosition === undefined && entry.entry?.type === "Script") {
+      // Mark the source position of scripts, for inline scripts which don't
+      // start at line 1.
+      this.sourcePosition = sourcePosition;
+    }
     sourcePosition.addEntry(entry);
+    this._entries.push(entry);
     return sourcePosition;
   }
 
@@ -72,7 +137,166 @@ export class Script {
     this.sourcePositions.push(sourcePosition);
     columnToSourcePosition.set(column, sourcePosition);
   }
+
+  toString() {
+    return `Script(${this.id}): ${this.name}`;
+  }
+
+  get toolTipDict() {
+    return {
+      title: this.toString(),
+      __this__: this,
+      id: this.id,
+      url: this.url,
+      source: this.source,
+      sourcePositions: this.sourcePositions
+    }
+  }
+
+  static getShortestUniqueName(url, script) {
+    const parts = url.split('/');
+    const filename = parts[parts.length -1];
+    const dict = this._dict ?? (this._dict = new Map());
+    const matchingScripts = dict.get(filename);
+    if (matchingScripts == undefined) {
+      dict.set(filename, [script]);
+      return filename;
+    }
+    // TODO: find shortest unique substring
+    // Update all matching scripts to have a unique filename again.
+    for (let matchingScript of matchingScripts) {
+      matchingScript.name = script.url
+    }
+    matchingScripts.push(script);
+    return url;
+  }
+
+  ensureSourceMapCalculated(sourceMapFetchPrefix=undefined) {
+    if (this._sourceMapState !== "unknown") return;
+
+    const sourceMapURLMatch =
+        this.source.match(/\/\/# sourceMappingURL=(.*)\n/);
+    if (!sourceMapURLMatch) {
+      this._sourceMapState = "none";
+      return;
+    }
+
+    this._sourceMapState = "loading";
+    let sourceMapURL = sourceMapURLMatch[1];
+    (async () => {
+      try {
+        let sourceMapPayload;
+        const options = { timeout: 15 };
+        try {
+          sourceMapPayload = await fetch(sourceMapURL, options);
+        } catch (e) {
+          if (e instanceof TypeError && sourceMapFetchPrefix) {
+            // Try again with fetch prefix.
+            // TODO(leszeks): Remove the retry once the prefix is
+            // configurable.
+            sourceMapPayload =
+                await fetch(sourceMapFetchPrefix + sourceMapURL, options);
+          } else {
+            throw e;
+          }
+        }
+        sourceMapPayload = await sourceMapPayload.text();
+
+        if (sourceMapPayload.startsWith(')]}')) {
+          sourceMapPayload =
+              sourceMapPayload.substring(sourceMapPayload.indexOf('\n'));
+        }
+        sourceMapPayload = JSON.parse(sourceMapPayload);
+        const sourceMap =
+            new WebInspector.SourceMap(sourceMapURL, sourceMapPayload);
+
+        const startLine = this.startLine;
+        for (const sourcePosition of this.sourcePositions) {
+          const line = sourcePosition.line - startLine;
+          const column = sourcePosition.column - 1;
+          const mapping = sourceMap.findEntry(line, column);
+          if (mapping) {
+            sourcePosition.originalPosition = {
+              source: new URL(mapping[2], sourceMapURL).href,
+              line: mapping[3] + 1,
+              column: mapping[4] + 1
+            };
+          } else {
+            sourcePosition.originalPosition = {source: null, line:0, column:0};
+          }
+        }
+        this._sourceMapState = "loaded";
+      } catch (e) {
+        console.error(e);
+        this._sourceMapState = "failed";
+      }
+    })();
+  }
 }
+
+
+const kOffsetPairRegex = /C([0-9]+)O([0-9]+)/g;
+class SourcePositionTable {
+  constructor(encodedTable) {
+    this._offsets = [];
+    while (true) {
+      const regexResult = kOffsetPairRegex.exec(encodedTable);
+      if (!regexResult) break;
+      const codeOffset = parseInt(regexResult[1]);
+      const scriptOffset = parseInt(regexResult[2]);
+      if (isNaN(codeOffset) || isNaN(scriptOffset)) continue;
+      this._offsets.push({code: codeOffset, script: scriptOffset});
+    }
+  }
+
+  getScriptOffset(codeOffset) {
+    if (codeOffset < 0) {
+      throw new Exception(`Invalid codeOffset=${codeOffset}, should be >= 0`);
+    }
+    for (let i = this.offsetTable.length - 1; i >= 0; i--) {
+      const offset = this._offsets[i];
+      if (offset.code <= codeOffset) {
+        return offset.script;
+      }
+    }
+    return this._offsets[0].script;
+  }
+}
+
+
+class SourceInfo {
+  script;
+  start;
+  end;
+  positions;
+  inlined;
+  fns;
+  disassemble;
+
+  setSourcePositionInfo(
+        script, startPos, endPos, sourcePositionTableData, inliningPositions,
+        inlinedFunctions) {
+    this.script = script;
+    this.start = startPos;
+    this.end = endPos;
+    this.positions = sourcePositionTableData;
+    this.inlined = inliningPositions;
+    this.fns = inlinedFunctions;
+    this.sourcePositionTable = new SourcePositionTable(sourcePositionTableData);
+  }
+
+  setDisassemble(code) {
+    this.disassemble = code;
+  }
+
+  getSourceCode() {
+    return this.script.source?.substring(this.start, this.end);
+  }
+}
+
+const kProfileOperationMove = 0;
+const kProfileOperationDelete = 1;
+const kProfileOperationTick = 2;
 
 /**
  * Creates a profile object for processing profiling-related events
@@ -84,14 +308,22 @@ export class Profile {
   codeMap_ = new CodeMap();
   topDownTree_ = new CallTree();
   bottomUpTree_ = new CallTree();
-  c_entries_ = {};
-  ticks_ = [];
+  c_entries_ = {__proto__:null};
   scripts_ = [];
   urlToScript_ = new Map();
+  warnings = new Set();
+
+  serializeVMSymbols() {
+    let result = this.codeMap_.getAllStaticEntriesWithAddresses();
+    result.concat(this.codeMap_.getAllLibraryEntriesWithAddresses())
+    return result.map(([startAddress, codeEntry]) => {
+      return [codeEntry.getName(), startAddress, startAddress + codeEntry.size]
+    });
+  }
 
   /**
    * Returns whether a function with the specified name must be skipped.
-   * Should be overriden by subclasses.
+   * Should be overridden by subclasses.
    *
    * @param {string} name Function name.
    */
@@ -106,9 +338,9 @@ export class Profile {
    * @enum {number}
    */
   static Operation = {
-    MOVE: 0,
-    DELETE: 1,
-    TICK: 2
+    MOVE: kProfileOperationMove,
+    DELETE: kProfileOperationDelete,
+    TICK: kProfileOperationTick
   }
 
   /**
@@ -118,13 +350,88 @@ export class Profile {
    */
   static CodeState = {
     COMPILED: 0,
-    OPTIMIZABLE: 1,
-    OPTIMIZED: 2
+    IGNITION: 1,
+    SPARKPLUG: 2,
+    MAGLEV: 4,
+    TURBOFAN: 5,
+  }
+
+  static VMState = {
+    JS: 0,
+    GC: 1,
+    PARSER: 2,
+    BYTECODE_COMPILER: 3,
+    // TODO(cbruni): add SPARKPLUG_COMPILER
+    COMPILER: 4,
+    OTHER: 5,
+    EXTERNAL: 6,
+    IDLE: 7,
+  }
+
+  static CodeType = {
+    CPP: 0,
+    SHARED_LIB: 1
+  }
+
+  /**
+   * Parser for dynamic code optimization state.
+   */
+  static parseState(s) {
+    switch (s) {
+      case '':
+        return this.CodeState.COMPILED;
+      case '~':
+        return this.CodeState.IGNITION;
+      case '^':
+        return this.CodeState.SPARKPLUG;
+      case '+':
+        return this.CodeState.MAGLEV;
+      case '*':
+        return this.CodeState.TURBOFAN;
+    }
+    throw new Error(`unknown code state: ${s}`);
+  }
+
+  static getKindFromState(state) {
+    if (state === this.CodeState.COMPILED) {
+      return "Builtin";
+    } else if (state === this.CodeState.IGNITION) {
+      return "Unopt";
+    } else if (state === this.CodeState.SPARKPLUG) {
+      return "Sparkplug";
+    } else if (state === this.CodeState.MAGLEV) {
+      return "Maglev";
+    } else if (state === this.CodeState.TURBOFAN) {
+      return "Opt";
+    }
+    throw new Error(`unknown code state: ${state}`);
+  }
+
+  static vmStateString(state) {
+    switch (state) {
+      case this.VMState.JS:
+        return 'JS';
+      case this.VMState.GC:
+        return 'GC';
+      case this.VMState.PARSER:
+        return 'Parse';
+      case this.VMState.BYTECODE_COMPILER:
+        return 'Compile Bytecode';
+      case this.VMState.COMPILER:
+        return 'Compile';
+      case this.VMState.OTHER:
+        return 'Other';
+      case this.VMState.EXTERNAL:
+        return 'External';
+      case this.VMState.IDLE:
+        return 'Idle';
+    }
+    return 'unknown';
   }
 
   /**
    * Called whenever the specified operation has failed finding a function
-   * containing the specified address. Should be overriden by subclasses.
+   * containing the specified address. Should be overridden by subclasses.
    * See the Profile.Operation enum for the list of
    * possible operations.
    *
@@ -134,7 +441,7 @@ export class Profile {
    *     during stack strace processing, specifies a position of the frame
    *     containing the address.
    */
-  handleUnknownCode(operation, addr, opt_stackPos) {}
+  handleUnknownCode(operation, addr, opt_stackPos) { }
 
   /**
    * Registers a library.
@@ -144,7 +451,7 @@ export class Profile {
    * @param {number} endAddr Ending address.
    */
   addLibrary(name, startAddr, endAddr) {
-    var entry = new CodeEntry(endAddr - startAddr, name, 'SHARED_LIB');
+    const entry = new CodeEntry(endAddr - startAddr, name, 'SHARED_LIB');
     this.codeMap_.addLibrary(startAddr, entry);
     return entry;
   }
@@ -157,7 +464,7 @@ export class Profile {
    * @param {number} endAddr Ending address.
    */
   addStaticCode(name, startAddr, endAddr) {
-      var entry = new CodeEntry(endAddr - startAddr, name, 'CPP');
+    const entry = new CodeEntry(endAddr - startAddr, name, 'CPP');
     this.codeMap_.addStaticCode(startAddr, entry);
     return entry;
   }
@@ -171,8 +478,23 @@ export class Profile {
    * @param {number} size Code entry size.
    */
   addCode(type, name, timestamp, start, size) {
-    var entry = new DynamicCodeEntry(size, type, name);
+    const entry = new DynamicCodeEntry(size, type, name);
     this.codeMap_.addCode(start, entry);
+    return entry;
+  }
+
+  /**
+   * Registers dynamic (JIT-compiled) code entry or entries that overlap with
+   * static entries (like builtins).
+   *
+   * @param {string} type Code entry type.
+   * @param {string} name Code entry name.
+   * @param {number} start Starting address.
+   * @param {number} size Code entry size.
+   */
+  addAnyCode(type, name, timestamp, start, size) {
+    const entry = new DynamicCodeEntry(size, type, name);
+    this.codeMap_.addAnyCode(start, entry);
     return entry;
   }
 
@@ -189,16 +511,16 @@ export class Profile {
   addFuncCode(type, name, timestamp, start, size, funcAddr, state) {
     // As code and functions are in the same address space,
     // it is safe to put them in a single code map.
-    var func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
-    if (!func) {
+    let func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
+    if (func === null) {
       func = new FunctionEntry(name);
       this.codeMap_.addCode(funcAddr, func);
     } else if (func.name !== name) {
       // Function object has been overwritten with a new one.
       func.name = name;
     }
-    var entry = this.codeMap_.findDynamicEntryByStartAddress(start);
-    if (entry) {
+    let entry = this.codeMap_.findDynamicEntryByStartAddress(start);
+    if (entry !== null) {
       if (entry.size === size && entry.func === func) {
         // Entry state has changed.
         entry.state = state;
@@ -207,7 +529,7 @@ export class Profile {
         entry = null;
       }
     }
-    if (!entry) {
+    if (entry === null) {
       entry = new DynamicFuncCodeEntry(size, type, func, state);
       this.codeMap_.addCode(start, entry);
     }
@@ -224,11 +546,11 @@ export class Profile {
     try {
       this.codeMap_.moveCode(from, to);
     } catch (e) {
-      this.handleUnknownCode(Profile.Operation.MOVE, from);
+      this.handleUnknownCode(kProfileOperationMove, from);
     }
   }
 
-  deoptCode(  timestamp, code, inliningId, scriptOffset, bailoutType,
+  deoptCode(timestamp, code, inliningId, scriptOffset, bailoutType,
     sourcePositionText, deoptReasonText) {
   }
 
@@ -241,30 +563,68 @@ export class Profile {
     try {
       this.codeMap_.deleteCode(start);
     } catch (e) {
-      this.handleUnknownCode(Profile.Operation.DELETE, start);
+      this.handleUnknownCode(kProfileOperationDelete, start);
     }
   }
 
   /**
    * Adds source positions for given code.
    */
-  addSourcePositions(start, script, startPos, endPos, sourcePositions,
+  addSourcePositions(start, scriptId, startPos, endPos, sourcePositionTable,
         inliningPositions, inlinedFunctions) {
-    // CLI does not need source code => ignore.
+    const script = this.getOrCreateScript(scriptId);
+    const entry = this.codeMap_.findDynamicEntryByStartAddress(start);
+    if (entry === null) return;
+    // Resolve the inlined functions list.
+    if (inlinedFunctions.length > 0) {
+      inlinedFunctions = inlinedFunctions.substring(1).split("S");
+      for (let i = 0; i < inlinedFunctions.length; i++) {
+        const funcAddr = parseInt(inlinedFunctions[i]);
+        const func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
+        if (func === null || func.funcId === undefined) {
+          // TODO: fix
+          this.warnings.add(`Could not find function ${inlinedFunctions[i]}`);
+          inlinedFunctions[i] = null;
+        } else {
+          inlinedFunctions[i] = func.funcId;
+        }
+      }
+    } else {
+      inlinedFunctions = [];
+    }
+
+    this.getOrCreateSourceInfo(entry).setSourcePositionInfo(
+      script, startPos, endPos, sourcePositionTable, inliningPositions,
+      inlinedFunctions);
   }
 
-  /**
-   * Adds script source code.
-   */
+  addDisassemble(start, kind, disassemble) {
+    const entry = this.codeMap_.findDynamicEntryByStartAddress(start);
+    if (entry !== null) {
+      this.getOrCreateSourceInfo(entry).setDisassemble(disassemble);
+    }
+    return entry;
+  }
+
+  getOrCreateSourceInfo(entry) {
+    return entry.source ?? (entry.source = new SourceInfo());
+  }
+
   addScriptSource(id, url, source) {
-    const script = new Script(id, url, source);
-    this.scripts_[id] = script;
+    const script = this.getOrCreateScript(id);
+    script.update(url, source);
     this.urlToScript_.set(url, script);
   }
 
-  /**
-   * Adds script source code.
-   */
+  getOrCreateScript(id) {
+    let script = this.scripts_[id];
+    if (script === undefined) {
+      script = new Script(id);
+      this.scripts_[id] = script;
+    }
+    return script;
+  }
+
   getScript(url) {
     return this.urlToScript_.get(url);
   }
@@ -294,29 +654,33 @@ export class Profile {
    * Records a tick event. Stack must contain a sequence of
    * addresses starting with the program counter value.
    *
-   * @param {Array<number>} stack Stack sample.
+   * @param {number[]} stack Stack sample.
    */
   recordTick(time_ns, vmState, stack) {
-    var processedStack = this.resolveAndFilterFuncs_(stack);
-    this.bottomUpTree_.addPath(processedStack);
-    processedStack.reverse();
-    this.topDownTree_.addPath(processedStack);
+    const {nameStack, entryStack} = this.resolveAndFilterFuncs_(stack);
+    this.bottomUpTree_.addPath(nameStack);
+    nameStack.reverse();
+    this.topDownTree_.addPath(nameStack);
+    return entryStack;
   }
 
   /**
    * Translates addresses into function names and filters unneeded
    * functions.
    *
-   * @param {Array<number>} stack Stack sample.
+   * @param {number[]} stack Stack sample.
    */
   resolveAndFilterFuncs_(stack) {
-    var result = [];
-    var last_seen_c_function = '';
-    var look_for_first_c_function = false;
-    for (var i = 0; i < stack.length; ++i) {
-      var entry = this.codeMap_.findEntry(stack[i]);
-      if (entry) {
-        var name = entry.getName();
+    const nameStack = [];
+    const entryStack = [];
+    let last_seen_c_function = '';
+    let look_for_first_c_function = false;
+    for (let i = 0; i < stack.length; ++i) {
+      const pc = stack[i];
+      const entry = this.codeMap_.findEntry(pc);
+      if (entry !== null) {
+        entryStack.push(entry);
+        const name = entry.getName();
         if (i === 0 && (entry.type === 'CPP' || entry.type === 'SHARED_LIB')) {
           look_for_first_c_function = true;
         }
@@ -324,16 +688,16 @@ export class Profile {
           last_seen_c_function = name;
         }
         if (!this.skipThisFunction(name)) {
-          result.push(name);
+          nameStack.push(name);
         }
       } else {
-        this.handleUnknownCode(Profile.Operation.TICK, stack[i], i);
-        if (i === 0) result.push("UNKNOWN");
+        this.handleUnknownCode(kProfileOperationTick, pc, i);
+        if (i === 0) nameStack.push("UNKNOWN");
+        entryStack.push(pc);
       }
-      if (look_for_first_c_function &&
-        i > 0 &&
-        (!entry || entry.type !== 'CPP') &&
-        last_seen_c_function !== '') {
+      if (look_for_first_c_function && i > 0 &&
+          (entry === null || entry.type !== 'CPP')
+          && last_seen_c_function !== '') {
         if (this.c_entries_[last_seen_c_function] === undefined) {
           this.c_entries_[last_seen_c_function] = 0;
         }
@@ -341,7 +705,7 @@ export class Profile {
         look_for_first_c_function = false;  // Found it, we're done.
       }
     }
-    return result;
+    return {nameStack, entryStack};
   }
 
   /**
@@ -393,7 +757,7 @@ export class Profile {
       tree.computeTotalWeights();
       return tree;
     } else {
-      var subTree = tree.cloneSubtree(opt_label);
+      const subTree = tree.cloneSubtree(opt_label);
       subTree.computeTotalWeights();
       return subTree;
     }
@@ -406,11 +770,11 @@ export class Profile {
    * @param {string} opt_label Starting node label.
    */
   getFlatProfile(opt_label) {
-    var counters = new CallTree();
-    var rootLabel = opt_label || CallTree.ROOT_NODE_LABEL;
-    var precs = {};
+    const counters = new CallTree();
+    const rootLabel = opt_label || CallTree.ROOT_NODE_LABEL;
+    const precs = {__proto__:null};
     precs[rootLabel] = 0;
-    var root = counters.findOrAddChild(rootLabel);
+    const root = counters.findOrAddChild(rootLabel);
 
     this.topDownTree_.computeTotalWeights();
     this.topDownTree_.traverseInDepth(
@@ -418,13 +782,13 @@ export class Profile {
         if (!(node.label in precs)) {
           precs[node.label] = 0;
         }
-        var nodeLabelIsRootLabel = node.label == rootLabel;
+        const nodeLabelIsRootLabel = node.label == rootLabel;
         if (nodeLabelIsRootLabel || precs[rootLabel] > 0) {
           if (precs[rootLabel] == 0) {
             root.selfWeight += node.selfWeight;
             root.totalWeight += node.totalWeight;
           } else {
-            var rec = root.findOrAddChild(node.label);
+            const rec = root.findOrAddChild(node.label);
             rec.selfWeight += node.selfWeight;
             if (nodeLabelIsRootLabel || precs[node.label] == 0) {
               rec.totalWeight += node.totalWeight;
@@ -454,17 +818,15 @@ export class Profile {
   }
 
   getCEntryProfile() {
-    var result = [new CEntryNode("TOTAL", 0)];
-    var total_ticks = 0;
-    for (var f in this.c_entries_) {
-      var ticks = this.c_entries_[f];
+    const result = [new CEntryNode("TOTAL", 0)];
+    let total_ticks = 0;
+    for (let f in this.c_entries_) {
+      const ticks = this.c_entries_[f];
       total_ticks += ticks;
       result.push(new CEntryNode(f, ticks));
     }
     result[0].ticks = total_ticks;  // Sorting will keep this at index 0.
-    result.sort(function (n1, n2) {
-      return n2.ticks - n1.ticks || (n2.name < n1.name ? -1 : 1)
-    });
+    result.sort((n1, n2) => n2.ticks - n1.ticks || (n2.name < n1.name ? -1 : 1));
     return result;
   }
 
@@ -473,19 +835,19 @@ export class Profile {
    * Cleans up function entries that are not referenced by code entries.
    */
   cleanUpFuncEntries() {
-    var referencedFuncEntries = [];
-    var entries = this.codeMap_.getAllDynamicEntriesWithAddresses();
-    for (var i = 0, l = entries.length; i < l; ++i) {
+    const referencedFuncEntries = [];
+    const entries = this.codeMap_.getAllDynamicEntriesWithAddresses();
+    for (let i = 0, l = entries.length; i < l; ++i) {
       if (entries[i][1].constructor === FunctionEntry) {
         entries[i][1].used = false;
       }
     }
-    for (var i = 0, l = entries.length; i < l; ++i) {
+    for (let i = 0, l = entries.length; i < l; ++i) {
       if ("func" in entries[i][1]) {
         entries[i][1].func.used = true;
       }
     }
-    for (var i = 0, l = entries.length; i < l; ++i) {
+    for (let i = 0, l = entries.length; i < l; ++i) {
       if (entries[i][1].constructor === FunctionEntry &&
         !entries[i][1].used) {
         this.codeMap_.deleteCode(entries[i][0]);
@@ -514,7 +876,7 @@ class DynamicCodeEntry extends CodeEntry {
   constructor(size, type, name) {
     super(size, name, type);
   }
-  
+
   getName() {
     return this.type + ': ' + this.name;
   }
@@ -549,16 +911,25 @@ class DynamicFuncCodeEntry extends CodeEntry {
   constructor(size, type, func, state) {
     super(size, '', type);
     this.func = func;
+    func.addDynamicCode(this);
     this.state = state;
   }
 
-  static STATE_PREFIX = ["", "~", "*"];
+  get functionName() {
+    return this.func.functionName;
+  }
+
+  getSourceCode() {
+    return this.source?.getSourceCode();
+  }
+
+  static STATE_PREFIX = ["", "~", "^", "-", "+", "*"];
   getState() {
     return DynamicFuncCodeEntry.STATE_PREFIX[this.state];
   }
-  
+
   getName() {
-    var name = this.func.getName();
+    const name = this.func.getName();
     return this.type + ': ' + this.getState() + name;
   }
 
@@ -585,20 +956,43 @@ class DynamicFuncCodeEntry extends CodeEntry {
  * @constructor
  */
 class FunctionEntry extends CodeEntry {
+
+  // Contains the list of generated code for this function.
+  /** @type {Set<DynamicCodeEntry>} */
+  _codeEntries = new Set();
+
   constructor(name) {
     super(0, name);
+    const index = name.lastIndexOf(' ');
+    this.functionName = 1 <= index ? name.substring(0, index) : '<anonymous>';
+  }
+
+  addDynamicCode(code) {
+    if (code.func != this) {
+      throw new Error("Adding dynamic code to wrong function");
+    }
+    this._codeEntries.add(code);
+  }
+
+  getSourceCode() {
+    // All code entries should map to the same source positions.
+    return this._codeEntries.values().next().value.getSourceCode();
+  }
+
+  get codeEntries() {
+    return this._codeEntries;
   }
 
   /**
    * Returns node name.
    */
   getName() {
-    var name = this.name;
+    let name = this.name;
     if (name.length == 0) {
-      name = '<anonymous>';
+      return '<anonymous>';
     } else if (name.charAt(0) == ' ') {
       // An anonymous function with location: " aaa.js:10".
-      name = '<anonymous>' + name;
+      return `<anonymous>${name}`;
     }
     return name;
   }
@@ -628,14 +1022,12 @@ class CallTree {
   /**
    * Adds the specified call path, constructing nodes as necessary.
    *
-   * @param {Array<string>} path Call path.
+   * @param {string[]} path Call path.
    */
   addPath(path) {
-    if (path.length == 0) {
-      return;
-    }
-    var curr = this.root_;
-    for (var i = 0; i < path.length; ++i) {
+    if (path.length == 0) return;
+    let curr = this.root_;
+    for (let i = 0; i < path.length; ++i) {
       curr = curr.findOrAddChild(path[i]);
     }
     curr.selfWeight++;
@@ -670,12 +1062,12 @@ class CallTree {
    * @param {string} label The label of the new root node.
    */
   cloneSubtree(label) {
-    var subTree = new CallTree();
+    const subTree = new CallTree();
     this.traverse((node, parent) => {
       if (!parent && node.label != label) {
         return null;
       }
-      var child = (parent ? parent : subTree).findOrAddChild(node.label);
+      const child = (parent ? parent : subTree).findOrAddChild(node.label);
       child.selfWeight += node.selfWeight;
       return child;
     });
@@ -707,13 +1099,13 @@ class CallTree {
    *    The second parameter is the result of calling 'f' on the parent node.
    */
   traverse(f) {
-    var pairsToProcess = new ConsArray();
+    const pairsToProcess = new ConsArray();
     pairsToProcess.concat([{ node: this.root_, param: null }]);
     while (!pairsToProcess.atEnd()) {
-      var pair = pairsToProcess.next();
-      var node = pair.node;
-      var newParam = f(node, pair.param);
-      var morePairsToProcess = [];
+      const pair = pairsToProcess.next();
+      const node = pair.node;
+      const newParam = f(node, pair.param);
+      const morePairsToProcess = [];
       node.forEachChild((child) => {
         morePairsToProcess.push({ node: child, param: newParam });
       });
@@ -729,7 +1121,7 @@ class CallTree {
    * @param {function(CallTreeNode)} exit A function called
    *     after visiting node's children.
    */
-    traverseInDepth(enter, exit) {
+  traverseInDepth(enter, exit) {
     function traverse(node) {
       enter(node);
       node.forEachChild(traverse);
@@ -746,22 +1138,15 @@ class CallTree {
  * @param {string} label Node label.
  * @param {CallTreeNode} opt_parent Node parent.
  */
- class CallTreeNode {
-  /**
-   * Node self weight (how many times this node was the last node in
-   * a call path).
-   * @type {number}
-   */
-  selfWeight = 0;
-
-  /**
-   * Node total weight (includes weights of all children).
-   * @type {number}
-   */
-  totalWeight = 0;
-  children = {};
+class CallTreeNode {
 
   constructor(label, opt_parent) {
+    // Node self weight (how many times this node was the last node in
+    // a call path).
+    this.selfWeight = 0;
+    // Node total weight (includes weights of all children).
+    this.totalWeight = 0;
+    this. children = { __proto__:null };
     this.label = label;
     this.parent = opt_parent;
   }
@@ -773,7 +1158,7 @@ class CallTree {
    * @param {string} label Child node label.
    */
   addChild(label) {
-    var child = new CallTreeNode(label, this);
+    const child = new CallTreeNode(label, this);
     this.children[label] = child;
     return child;
   }
@@ -782,7 +1167,7 @@ class CallTree {
    * Computes node's total weight.
    */
   computeTotalWeight() {
-    var totalWeight = this.selfWeight;
+    let totalWeight = this.selfWeight;
     this.forEachChild(function (child) {
       totalWeight += child.computeTotalWeight();
     });
@@ -793,7 +1178,7 @@ class CallTree {
    * Returns all node's children as an array.
    */
   exportChildren() {
-    var result = [];
+    const result = [];
     this.forEachChild(function (node) { result.push(node); });
     return result;
   }
@@ -804,7 +1189,8 @@ class CallTree {
    * @param {string} label Child node label.
    */
   findChild(label) {
-    return this.children[label] || null;
+    const found = this.children[label];
+    return found === undefined ? null : found;
   }
 
   /**
@@ -814,7 +1200,9 @@ class CallTree {
    * @param {string} label Child node label.
    */
   findOrAddChild(label) {
-    return this.findChild(label) || this.addChild(label);
+    const found = this.findChild(label)
+    if (found === null) return this.addChild(label);
+    return found;
   }
 
   /**
@@ -823,7 +1211,7 @@ class CallTree {
    * @param {function(CallTreeNode)} f Visitor function.
    */
   forEachChild(f) {
-    for (var c in this.children) {
+    for (let c in this.children) {
       f(this.children[c]);
     }
   }
@@ -834,7 +1222,7 @@ class CallTree {
    * @param {function(CallTreeNode)} f Visitor function.
    */
   walkUpToRoot(f) {
-    for (var curr = this; curr != null; curr = curr.parent) {
+    for (let curr = this; curr !== null; curr = curr.parent) {
       f(curr);
     }
   }
@@ -842,12 +1230,13 @@ class CallTree {
   /**
    * Tries to find a node with the specified path.
    *
-   * @param {Array<string>} labels The path.
+   * @param {string[]} labels The path.
    * @param {function(CallTreeNode)} opt_f Visitor function.
    */
   descendToChild(labels, opt_f) {
-    for (var pos = 0, curr = this; pos < labels.length && curr != null; pos++) {
-      var child = curr.findChild(labels[pos]);
+    let curr = this;
+    for (let pos = 0; pos < labels.length && curr != null; pos++) {
+      const child = curr.findChild(labels[pos]);
       if (opt_f) {
         opt_f(child, pos);
       }
@@ -867,7 +1256,7 @@ export function JsonProfile() {
 
 JsonProfile.prototype.addLibrary = function (
   name, startAddr, endAddr) {
-  var entry = new CodeEntry(
+  const entry = new CodeEntry(
     endAddr - startAddr, name, 'SHARED_LIB');
   this.codeMap_.addLibrary(startAddr, entry);
 
@@ -878,7 +1267,7 @@ JsonProfile.prototype.addLibrary = function (
 
 JsonProfile.prototype.addStaticCode = function (
   name, startAddr, endAddr) {
-  var entry = new CodeEntry(
+  const entry = new CodeEntry(
     endAddr - startAddr, name, 'CPP');
   this.codeMap_.addStaticCode(startAddr, entry);
 
@@ -897,7 +1286,7 @@ JsonProfile.prototype.addCode = function (
     codeId = staticEntry.entry.codeId;
   }
 
-  var entry = new CodeEntry(size, name, 'CODE');
+  const entry = new CodeEntry(size, name, 'CODE');
   this.codeMap_.addCode(start, entry);
 
   entry.codeId = codeId;
@@ -905,7 +1294,7 @@ JsonProfile.prototype.addCode = function (
     name: entry.name,
     timestamp: timestamp,
     type: entry.type,
-    kind: kind
+    kind: kind,
   };
 
   return entry;
@@ -915,22 +1304,22 @@ JsonProfile.prototype.addFuncCode = function (
   kind, name, timestamp, start, size, funcAddr, state) {
   // As code and functions are in the same address space,
   // it is safe to put them in a single code map.
-  var func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
+  let func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
   if (!func) {
-    var func = new CodeEntry(0, name, 'SFI');
+    func = new CodeEntry(0, name, 'SFI');
     this.codeMap_.addCode(funcAddr, func);
 
     func.funcId = this.functionEntries_.length;
-    this.functionEntries_.push({ name: name, codes: [] });
+    this.functionEntries_.push({ name, codes: [] });
   } else if (func.name !== name) {
     // Function object has been overwritten with a new one.
     func.name = name;
 
     func.funcId = this.functionEntries_.length;
-    this.functionEntries_.push({ name: name, codes: [] });
+    this.functionEntries_.push({ name, codes: [] });
   }
   // TODO(jarin): Insert the code object into the SFI's code list.
-  var entry = this.codeMap_.findDynamicEntryByStartAddress(start);
+  let entry = this.codeMap_.findDynamicEntryByStartAddress(start);
   if (entry) {
     if (entry.size === size && entry.func === func) {
       // Entry state has changed.
@@ -948,20 +1337,14 @@ JsonProfile.prototype.addFuncCode = function (
 
     this.functionEntries_[func.funcId].codes.push(entry.codeId);
 
-    if (state === 0) {
-      kind = "Builtin";
-    } else if (state === 1) {
-      kind = "Unopt";
-    } else if (state === 2) {
-      kind = "Opt";
-    }
+    kind = Profile.getKindFromState(state);
 
     this.codeEntries_.push({
       name: entry.name,
       type: entry.type,
       kind: kind,
       func: func.funcId,
-      tm: timestamp
+      tm: timestamp,
     });
   }
   return entry;
@@ -971,25 +1354,25 @@ JsonProfile.prototype.moveCode = function (from, to) {
   try {
     this.codeMap_.moveCode(from, to);
   } catch (e) {
-    printErr("Move: unknown source " + from);
+    printErr(`Move: unknown source ${from}`);
   }
 };
 
 JsonProfile.prototype.addSourcePositions = function (
   start, script, startPos, endPos, sourcePositions, inliningPositions,
   inlinedFunctions) {
-  var entry = this.codeMap_.findDynamicEntryByStartAddress(start);
+  const entry = this.codeMap_.findDynamicEntryByStartAddress(start);
   if (!entry) return;
-  var codeId = entry.codeId;
+  const codeId = entry.codeId;
 
   // Resolve the inlined functions list.
   if (inlinedFunctions.length > 0) {
     inlinedFunctions = inlinedFunctions.substring(1).split("S");
-    for (var i = 0; i < inlinedFunctions.length; i++) {
-      var funcAddr = parseInt(inlinedFunctions[i]);
-      var func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
+    for (let i = 0; i < inlinedFunctions.length; i++) {
+      const funcAddr = parseInt(inlinedFunctions[i]);
+      const func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
       if (!func || func.funcId === undefined) {
-        printErr("Could not find function " + inlinedFunctions[i]);
+        printErr(`Could not find function ${inlinedFunctions[i]}`);
         inlinedFunctions[i] = null;
       } else {
         inlinedFunctions[i] = func.funcId;
@@ -1010,7 +1393,9 @@ JsonProfile.prototype.addSourcePositions = function (
 };
 
 JsonProfile.prototype.addScriptSource = function (id, url, source) {
-  this.scripts_[id] = new Script(id, url, source);
+  const script = new Script(id);
+  script.update(url, source);
+  this.scripts_[id] = script;
 };
 
 JsonProfile.prototype.deoptCode = function (
@@ -1029,7 +1414,7 @@ JsonProfile.prototype.deoptCode = function (
         scriptOffset: scriptOffset,
         posText: sourcePositionText,
         reason: deoptReasonText,
-        bailoutType: bailoutType
+        bailoutType: bailoutType,
       };
     }
   }
@@ -1039,7 +1424,7 @@ JsonProfile.prototype.deleteCode = function (start) {
   try {
     this.codeMap_.deleteCode(start);
   } catch (e) {
-    printErr("Delete: unknown address " + start);
+    printErr(`Delete: unknown address ${start}`);
   }
 };
 
@@ -1056,9 +1441,9 @@ JsonProfile.prototype.findEntry = function (addr) {
 JsonProfile.prototype.recordTick = function (time_ns, vmState, stack) {
   // TODO(jarin) Resolve the frame-less case (when top of stack is
   // known code).
-  var processedStack = [];
-  for (var i = 0; i < stack.length; i++) {
-    var resolved = this.codeMap_.findAddress(stack[i]);
+  const processedStack = [];
+  for (let i = 0; i < stack.length; i++) {
+    const resolved = this.codeMap_.findAddress(stack[i]);
     if (resolved) {
       processedStack.push(resolved.entry.codeId, resolved.offset);
     } else {
@@ -1086,7 +1471,7 @@ JsonProfile.prototype.writeJson = function () {
   write(',\n');
 
   write('  "ticks": [\n');
-  for (var i = 0; i < this.ticks_.length; i++) {
+  for (let i = 0; i < this.ticks_.length; i++) {
     write('    ');
     writeJson(this.ticks_[i]);
     if (i < this.ticks_.length - 1) {

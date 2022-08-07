@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --opt --noalways-opt
+// Flags: --allow-natives-syntax --turbofan --noalways-turbofan
 
 // Test that NumberDivide with Number feedback works if only in the
 // end SimplifiedLowering figures out that the inputs to this operation
@@ -10,6 +10,7 @@
 (function() {
   // We need a separately polluted % with NumberOrOddball feedback.
   function bar(x) { return x / 2; }
+  %EnsureFeedbackVectorForFunction(bar);
   bar(undefined);  // The % feedback is now NumberOrOddball.
 
   // Now just use the gadget above in a way that only after RETYPE
@@ -40,6 +41,7 @@
 (function() {
   // We need a separately polluted % with NumberOrOddball feedback.
   function bar(x) { return x / 2; }
+  %EnsureFeedbackVectorForFunction(bar);
   bar(undefined);  // The % feedback is now NumberOrOddball.
 
   // Now just use the gadget above in a way that only after RETYPE

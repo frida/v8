@@ -5,12 +5,13 @@
 #ifndef V8_TEST_CCTEST_COMPILER_CODE_ASSEMBLER_TESTER_H_
 #define V8_TEST_CCTEST_COMPILER_CODE_ASSEMBLER_TESTER_H_
 
+#include "src/codegen/assembler.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/compiler/code-assembler.h"
 #include "src/compiler/raw-machine-assembler.h"
 #include "src/execution/isolate.h"
 #include "src/handles/handles.h"
-#include "test/cctest/compiler/function-tester.h"
+#include "test/cctest/cctest.h"
 
 namespace v8 {
 namespace internal {
@@ -24,7 +25,7 @@ class CodeAssemblerTester {
       : zone_(isolate->allocator(), ZONE_NAME, kCompressGraphZone),
         scope_(isolate),
         state_(isolate, &zone_, descriptor, CodeKind::FOR_TESTING, name,
-               PoisoningMitigationLevel::kDontPoison, Builtins::kNoBuiltinId) {}
+               Builtin::kNoBuiltinId) {}
 
   // Test generating code for a stub. Assumes VoidDescriptor call interface.
   explicit CodeAssemblerTester(Isolate* isolate, const char* name = "test")
@@ -36,8 +37,7 @@ class CodeAssemblerTester {
                       const char* name = "test")
       : zone_(isolate->allocator(), ZONE_NAME, kCompressGraphZone),
         scope_(isolate),
-        state_(isolate, &zone_, parameter_count, kind, name,
-               PoisoningMitigationLevel::kDontPoison) {}
+        state_(isolate, &zone_, parameter_count, kind, name) {}
 
   CodeAssemblerTester(Isolate* isolate, CodeKind kind,
                       const char* name = "test")
@@ -48,7 +48,7 @@ class CodeAssemblerTester {
       : zone_(isolate->allocator(), ZONE_NAME, kCompressGraphZone),
         scope_(isolate),
         state_(isolate, &zone_, call_descriptor, CodeKind::FOR_TESTING, name,
-               PoisoningMitigationLevel::kDontPoison, Builtins::kNoBuiltinId) {}
+               Builtin::kNoBuiltinId) {}
 
   CodeAssemblerState* state() { return &state_; }
 

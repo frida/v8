@@ -56,6 +56,7 @@ void IncrementalMarkingJob::ScheduleTask(Heap* heap, TaskType task_type) {
     SetTaskPending(task_type, true);
     auto taskrunner =
         V8::GetCurrentPlatform()->GetForegroundTaskRunner(isolate);
+
     const EmbedderHeapTracer::EmbedderStackState stack_state =
         taskrunner->NonNestableTasksEnabled()
             ? EmbedderHeapTracer::EmbedderStackState::kNoHeapPointers
@@ -85,7 +86,7 @@ StepResult IncrementalMarkingJob::Task::Step(Heap* heap) {
   double deadline =
       heap->MonotonicallyIncreasingTimeInMs() + kIncrementalMarkingDelayMs;
   StepResult result = heap->incremental_marking()->AdvanceWithDeadline(
-      deadline, i::IncrementalMarking::NO_GC_VIA_STACK_GUARD,
+      deadline, i::IncrementalMarking::CompletionAction::kGCViaTask,
       i::StepOrigin::kTask);
   heap->FinalizeIncrementalMarkingIfComplete(
       GarbageCollectionReason::kFinalizeMarkingViaTask);
@@ -97,8 +98,8 @@ void IncrementalMarkingJob::Task::RunInternal() {
   TRACE_EVENT_CALL_STATS_SCOPED(isolate(), "v8", "V8.Task");
 
   Heap* heap = isolate()->heap();
-  EmbedderStackStateScope scope(heap->local_embedder_heap_tracer(),
-                                stack_state_);
+  EmbedderStackStateScope scope(
+      heap, EmbedderStackStateScope::kImplicitThroughTask, stack_state_);
   if (task_type_ == TaskType::kNormal) {
     heap->tracer()->RecordTimeToIncrementalMarkingTask(
         heap->MonotonicallyIncreasingTimeInMs() - job_->scheduled_time_);
@@ -128,7 +129,7 @@ void IncrementalMarkingJob::Task::RunInternal() {
     StepResult step_result = Step(heap);
     if (!incremental_marking->IsStopped()) {
       const TaskType task_type =
-          incremental_marking->finalize_marking_completed() ||
+          incremental_marking->IsComplete() ||
                   step_result != StepResult::kNoImmediateWork
               ? TaskType::kNormal
               : TaskType::kDelayed;

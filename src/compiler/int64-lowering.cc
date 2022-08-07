@@ -4,6 +4,7 @@
 
 #include "src/compiler/int64-lowering.h"
 
+#include "src/base/v8-fallthrough.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/diamond.h"
 #include "src/compiler/graph.h"
@@ -15,6 +16,7 @@
 #include "src/compiler/wasm-compiler.h"
 // TODO(wasm): Remove this include.
 #include "src/wasm/wasm-linkage.h"
+#include "src/wasm/wasm-subtyping.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -23,20 +25,23 @@ namespace compiler {
 
 Int64Lowering::Int64Lowering(
     Graph* graph, MachineOperatorBuilder* machine,
-    CommonOperatorBuilder* common, Zone* zone,
+    CommonOperatorBuilder* common, SimplifiedOperatorBuilder* simplified,
+    Zone* zone, const wasm::WasmModule* module,
     Signature<MachineRepresentation>* signature,
     std::unique_ptr<Int64LoweringSpecialCase> special_case)
-    : zone_(zone),
-      graph_(graph),
+    : graph_(graph),
       machine_(machine),
       common_(common),
-      state_(graph, 3),
+      simplified_(simplified),
+      zone_(zone),
+      signature_(signature),
+      special_case_(std::move(special_case)),
+      state_(graph->NodeCount(), State::kUnvisited),
       stack_(zone),
       replacements_(nullptr),
-      signature_(signature),
-      placeholder_(
-          graph->NewNode(common->Parameter(-2, "placeholder"), graph->start())),
-      special_case_(std::move(special_case)) {
+      placeholder_(graph->NewNode(common->Dead())),
+      int32_type_(Type::Wasm({wasm::kWasmI32, module}, graph->zone())),
+      float64_type_(Type::Wasm({wasm::kWasmF64, module}, graph->zone())) {
   DCHECK_NOT_NULL(graph);
   DCHECK_NOT_NULL(graph->end());
   replacements_ = zone->NewArray<Replacement>(graph->NodeCount());
@@ -48,19 +53,19 @@ void Int64Lowering::LowerGraph() {
     return;
   }
   stack_.push_back({graph()->end(), 0});
-  state_.Set(graph()->end(), State::kOnStack);
+  state_[graph()->end()->id()] = State::kOnStack;
 
   while (!stack_.empty()) {
     NodeState& top = stack_.back();
     if (top.input_index == top.node->InputCount()) {
       // All inputs of top have already been lowered, now lower top.
       stack_.pop_back();
-      state_.Set(top.node, State::kVisited);
+      state_[top.node->id()] = State::kVisited;
       LowerNode(top.node);
     } else {
       // Push the next input onto the stack.
       Node* input = top.node->InputAt(top.input_index++);
-      if (state_.Get(input) == State::kUnvisited) {
+      if (state_[input->id()] == State::kUnvisited) {
         if (input->opcode() == IrOpcode::kPhi) {
           // To break cycles with phi nodes we push phis on a separate stack so
           // that they are processed after all other nodes.
@@ -72,7 +77,7 @@ void Int64Lowering::LowerGraph() {
         } else {
           stack_.push_back({input, 0});
         }
-        state_.Set(input, State::kOnStack);
+        state_[input->id()] = State::kOnStack;
       }
     }
   }
@@ -123,6 +128,16 @@ int GetReturnCountAfterLowering(Signature<MachineRepresentation>* signature) {
 
 }  // namespace
 
+Node* Int64Lowering::SetInt32Type(Node* node) {
+  NodeProperties::SetType(node, int32_type_);
+  return node;
+}
+
+Node* Int64Lowering::SetFloat64Type(Node* node) {
+  NodeProperties::SetType(node, float64_type_);
+  return node;
+}
+
 void Int64Lowering::LowerWord64AtomicBinop(Node* node, const Operator* op) {
   DCHECK_EQ(5, node->InputCount());
   LowerMemoryBaseAndIndex(node);
@@ -136,6 +151,7 @@ void Int64Lowering::LowerWord64AtomicBinop(Node* node, const Operator* op) {
 void Int64Lowering::LowerWord64AtomicNarrowOp(Node* node, const Operator* op) {
   DefaultLowering(node, true);
   NodeProperties::ChangeOp(node, op);
+  SetInt32Type(node);
   ReplaceNode(node, node, graph()->NewNode(common()->Int32Constant(0)));
 }
 
@@ -150,15 +166,90 @@ int Int64Lowering::GetParameterCountAfterLowering(
 
 void Int64Lowering::GetIndexNodes(Node* index, Node** index_low,
                                   Node** index_high) {
+  // We want to transform constant indices into constant indices, because
+  // wasm-typer depends on them.
+  Int32Matcher m(index);
+  Node* index_second =
+      m.HasResolvedValue()
+          ? graph()->NewNode(common()->Int32Constant(m.ResolvedValue() + 4))
+          : graph()->NewNode(machine()->Int32Add(), index,
+                             graph()->NewNode(common()->Int32Constant(4)));
 #if defined(V8_TARGET_LITTLE_ENDIAN)
   *index_low = index;
-  *index_high = graph()->NewNode(machine()->Int32Add(), index,
-                                 graph()->NewNode(common()->Int32Constant(4)));
+  *index_high = index_second;
 #elif defined(V8_TARGET_BIG_ENDIAN)
-  *index_low = graph()->NewNode(machine()->Int32Add(), index,
-                                graph()->NewNode(common()->Int32Constant(4)));
+  *index_low = index_second;
   *index_high = index;
 #endif
+}
+
+void Int64Lowering::LowerLoadOperator(Node* node, MachineRepresentation rep,
+                                      const Operator* load_op) {
+  if (rep == MachineRepresentation::kWord64) {
+    LowerMemoryBaseAndIndex(node);
+    Node* base = node->InputAt(0);
+    Node* index = node->InputAt(1);
+    Node* index_low;
+    Node* index_high;
+    GetIndexNodes(index, &index_low, &index_high);
+    Node* high_node;
+    if (node->InputCount() > 2) {
+      Node* effect_high = node->InputAt(2);
+      Node* control_high = node->InputAt(3);
+      high_node = graph()->NewNode(load_op, base, index_high, effect_high,
+                                   control_high);
+      // change the effect change from old_node --> old_effect to
+      // old_node --> high_node --> old_effect.
+      node->ReplaceInput(2, high_node);
+    } else {
+      high_node = graph()->NewNode(load_op, base, index_high);
+    }
+    node->ReplaceInput(1, index_low);
+    NodeProperties::ChangeOp(node, load_op);
+    ReplaceNode(node, SetInt32Type(node), SetInt32Type(high_node));
+  } else {
+    DefaultLowering(node);
+  }
+}
+
+void Int64Lowering::LowerStoreOperator(Node* node, MachineRepresentation rep,
+                                       const Operator* store_op) {
+  if (rep == MachineRepresentation::kWord64) {
+    // We change the original store node to store the low word, and create
+    // a new store node to store the high word. The effect and control edges
+    // are copied from the original store to the new store node, the effect
+    // edge of the original store is redirected to the new store.
+    LowerMemoryBaseAndIndex(node);
+    Node* base = node->InputAt(0);
+    Node* index = node->InputAt(1);
+    Node* index_low;
+    Node* index_high;
+    GetIndexNodes(index, &index_low, &index_high);
+    Node* value = node->InputAt(2);
+    DCHECK(HasReplacementLow(value));
+    DCHECK(HasReplacementHigh(value));
+
+    Node* high_node;
+    if (node->InputCount() > 3) {
+      Node* effect_high = node->InputAt(3);
+      Node* control_high = node->InputAt(4);
+      high_node = graph()->NewNode(store_op, base, index_high,
+                                   GetReplacementHigh(value), effect_high,
+                                   control_high);
+      node->ReplaceInput(3, high_node);
+
+    } else {
+      high_node = graph()->NewNode(store_op, base, index_high,
+                                   GetReplacementHigh(value));
+    }
+
+    node->ReplaceInput(1, index_low);
+    node->ReplaceInput(2, GetReplacementLow(value));
+    NodeProperties::ChangeOp(node, store_op);
+    ReplaceNode(node, node, high_node);
+  } else {
+    DefaultLowering(node, true);
+  }
 }
 
 void Int64Lowering::LowerNode(Node* node) {
@@ -172,109 +263,68 @@ void Int64Lowering::LowerNode(Node* node) {
       ReplaceNode(node, low_node, high_node);
       break;
     }
-    case IrOpcode::kLoad:
-    case IrOpcode::kUnalignedLoad: {
-      MachineRepresentation rep;
-      if (node->opcode() == IrOpcode::kLoad) {
-        rep = LoadRepresentationOf(node->op()).representation();
-      } else {
-        DCHECK_EQ(IrOpcode::kUnalignedLoad, node->opcode());
-        rep = LoadRepresentationOf(node->op()).representation();
-      }
-
-      if (rep == MachineRepresentation::kWord64) {
-        LowerMemoryBaseAndIndex(node);
-        Node* base = node->InputAt(0);
-        Node* index = node->InputAt(1);
-        Node* index_low;
-        Node* index_high;
-        GetIndexNodes(index, &index_low, &index_high);
-        const Operator* load_op;
-
-        if (node->opcode() == IrOpcode::kLoad) {
-          load_op = machine()->Load(MachineType::Int32());
-        } else {
-          DCHECK_EQ(IrOpcode::kUnalignedLoad, node->opcode());
-          load_op = machine()->UnalignedLoad(MachineType::Int32());
-        }
-
-        Node* high_node;
-        if (node->InputCount() > 2) {
-          Node* effect_high = node->InputAt(2);
-          Node* control_high = node->InputAt(3);
-          high_node = graph()->NewNode(load_op, base, index_high, effect_high,
-                                       control_high);
-          // change the effect change from old_node --> old_effect to
-          // old_node --> high_node --> old_effect.
-          node->ReplaceInput(2, high_node);
-        } else {
-          high_node = graph()->NewNode(load_op, base, index_high);
-        }
-        node->ReplaceInput(1, index_low);
-        NodeProperties::ChangeOp(node, load_op);
-        ReplaceNode(node, node, high_node);
-      } else {
-        DefaultLowering(node);
-      }
+    case IrOpcode::kLoad: {
+      MachineRepresentation rep =
+          LoadRepresentationOf(node->op()).representation();
+      LowerLoadOperator(node, rep, machine()->Load(MachineType::Int32()));
       break;
     }
-    case IrOpcode::kStore:
+    case IrOpcode::kUnalignedLoad: {
+      MachineRepresentation rep =
+          LoadRepresentationOf(node->op()).representation();
+      LowerLoadOperator(node, rep,
+                        machine()->UnalignedLoad(MachineType::Int32()));
+      break;
+    }
+    case IrOpcode::kLoadImmutable: {
+      MachineRepresentation rep =
+          LoadRepresentationOf(node->op()).representation();
+      LowerLoadOperator(node, rep,
+                        machine()->LoadImmutable(MachineType::Int32()));
+      break;
+    }
+    case IrOpcode::kLoadFromObject: {
+      ObjectAccess access = ObjectAccessOf(node->op());
+      LowerLoadOperator(node, access.machine_type.representation(),
+                        simplified()->LoadFromObject(ObjectAccess(
+                            MachineType::Int32(), access.write_barrier_kind)));
+      break;
+    }
+    case IrOpcode::kLoadImmutableFromObject: {
+      ObjectAccess access = ObjectAccessOf(node->op());
+      LowerLoadOperator(node, access.machine_type.representation(),
+                        simplified()->LoadImmutableFromObject(ObjectAccess(
+                            MachineType::Int32(), access.write_barrier_kind)));
+      break;
+    }
+    case IrOpcode::kStore: {
+      StoreRepresentation store_rep = StoreRepresentationOf(node->op());
+      LowerStoreOperator(
+          node, store_rep.representation(),
+          machine()->Store(StoreRepresentation(
+              MachineRepresentation::kWord32, store_rep.write_barrier_kind())));
+      break;
+    }
     case IrOpcode::kUnalignedStore: {
-      MachineRepresentation rep;
-      if (node->opcode() == IrOpcode::kStore) {
-        rep = StoreRepresentationOf(node->op()).representation();
-      } else {
-        DCHECK_EQ(IrOpcode::kUnalignedStore, node->opcode());
-        rep = UnalignedStoreRepresentationOf(node->op());
-      }
-
-      if (rep == MachineRepresentation::kWord64) {
-        // We change the original store node to store the low word, and create
-        // a new store node to store the high word. The effect and control edges
-        // are copied from the original store to the new store node, the effect
-        // edge of the original store is redirected to the new store.
-        LowerMemoryBaseAndIndex(node);
-        Node* base = node->InputAt(0);
-        Node* index = node->InputAt(1);
-        Node* index_low;
-        Node* index_high;
-        GetIndexNodes(index, &index_low, &index_high);
-        Node* value = node->InputAt(2);
-        DCHECK(HasReplacementLow(value));
-        DCHECK(HasReplacementHigh(value));
-
-        const Operator* store_op;
-        if (node->opcode() == IrOpcode::kStore) {
-          WriteBarrierKind write_barrier_kind =
-              StoreRepresentationOf(node->op()).write_barrier_kind();
-          store_op = machine()->Store(StoreRepresentation(
-              MachineRepresentation::kWord32, write_barrier_kind));
-        } else {
-          DCHECK_EQ(IrOpcode::kUnalignedStore, node->opcode());
-          store_op = machine()->UnalignedStore(MachineRepresentation::kWord32);
-        }
-
-        Node* high_node;
-        if (node->InputCount() > 3) {
-          Node* effect_high = node->InputAt(3);
-          Node* control_high = node->InputAt(4);
-          high_node = graph()->NewNode(store_op, base, index_high,
-                                       GetReplacementHigh(value), effect_high,
-                                       control_high);
-          node->ReplaceInput(3, high_node);
-
-        } else {
-          high_node = graph()->NewNode(store_op, base, index_high,
-                                       GetReplacementHigh(value));
-        }
-
-        node->ReplaceInput(1, index_low);
-        node->ReplaceInput(2, GetReplacementLow(value));
-        NodeProperties::ChangeOp(node, store_op);
-        ReplaceNode(node, node, high_node);
-      } else {
-        DefaultLowering(node, true);
-      }
+      UnalignedStoreRepresentation store_rep =
+          UnalignedStoreRepresentationOf(node->op());
+      LowerStoreOperator(
+          node, store_rep,
+          machine()->UnalignedStore(MachineRepresentation::kWord32));
+      break;
+    }
+    case IrOpcode::kStoreToObject: {
+      ObjectAccess access = ObjectAccessOf(node->op());
+      LowerStoreOperator(node, access.machine_type.representation(),
+                         simplified()->StoreToObject(ObjectAccess(
+                             MachineType::Int32(), access.write_barrier_kind)));
+      break;
+    }
+    case IrOpcode::kInitializeImmutableInObject: {
+      ObjectAccess access = ObjectAccessOf(node->op());
+      LowerStoreOperator(node, access.machine_type.representation(),
+                         simplified()->InitializeImmutableInObject(ObjectAccess(
+                             MachineType::Int32(), access.write_barrier_kind)));
       break;
     }
     case IrOpcode::kStart: {
@@ -312,8 +362,9 @@ void Int64Lowering::LowerNode(Node* node) {
 
         if (signature()->GetParam(old_index) ==
             MachineRepresentation::kWord64) {
-          Node* high_node = graph()->NewNode(common()->Parameter(new_index + 1),
-                                             graph()->start());
+          SetInt32Type(node);
+          Node* high_node = SetInt32Type(graph()->NewNode(
+              common()->Parameter(new_index + 1), graph()->start()));
           ReplaceNode(node, node, high_node);
         }
       }
@@ -377,10 +428,9 @@ void Int64Lowering::LowerNode(Node* node) {
             }
             if (call_descriptor->GetReturnType(old_index).representation() ==
                 MachineRepresentation::kWord64) {
-              Node* high_node = graph()->NewNode(
-                  common()->Projection(new_index + 1), node,
-                  graph()->start());
-              ReplaceNode(use_node, use_node, high_node);
+              Node* high_node = SetInt32Type(graph()->NewNode(
+                  common()->Projection(new_index + 1), node, graph()->start()));
+              ReplaceNode(use_node, SetInt32Type(use_node), high_node);
               ++new_index;
             }
           }
@@ -393,12 +443,12 @@ void Int64Lowering::LowerNode(Node* node) {
       Node* left = node->InputAt(0);
       Node* right = node->InputAt(1);
 
-      Node* low_node =
-          graph()->NewNode(machine()->Word32And(), GetReplacementLow(left),
-                           GetReplacementLow(right));
-      Node* high_node =
+      Node* low_node = SetInt32Type(graph()->NewNode(machine()->Word32And(),
+                                                     GetReplacementLow(left),
+                                                     GetReplacementLow(right)));
+      Node* high_node = SetInt32Type(
           graph()->NewNode(machine()->Word32And(), GetReplacementHigh(left),
-                           GetReplacementHigh(right));
+                           GetReplacementHigh(right)));
       ReplaceNode(node, low_node, high_node);
       break;
     }
@@ -462,12 +512,12 @@ void Int64Lowering::LowerNode(Node* node) {
       Node* left = node->InputAt(0);
       Node* right = node->InputAt(1);
 
-      Node* low_node =
-          graph()->NewNode(machine()->Word32Or(), GetReplacementLow(left),
-                           GetReplacementLow(right));
-      Node* high_node =
+      Node* low_node = SetInt32Type(graph()->NewNode(machine()->Word32Or(),
+                                                     GetReplacementLow(left),
+                                                     GetReplacementLow(right)));
+      Node* high_node = SetInt32Type(
           graph()->NewNode(machine()->Word32Or(), GetReplacementHigh(left),
-                           GetReplacementHigh(right));
+                           GetReplacementHigh(right)));
       ReplaceNode(node, low_node, high_node);
       break;
     }
@@ -476,12 +526,12 @@ void Int64Lowering::LowerNode(Node* node) {
       Node* left = node->InputAt(0);
       Node* right = node->InputAt(1);
 
-      Node* low_node =
-          graph()->NewNode(machine()->Word32Xor(), GetReplacementLow(left),
-                           GetReplacementLow(right));
-      Node* high_node =
+      Node* low_node = SetInt32Type(graph()->NewNode(machine()->Word32Xor(),
+                                                     GetReplacementLow(left),
+                                                     GetReplacementLow(right)));
+      Node* high_node = SetInt32Type(
           graph()->NewNode(machine()->Word32Xor(), GetReplacementHigh(left),
-                           GetReplacementHigh(right));
+                           GetReplacementHigh(right)));
       ReplaceNode(node, low_node, high_node);
       break;
     }
@@ -560,8 +610,7 @@ void Int64Lowering::LowerNode(Node* node) {
               graph()->NewNode(machine()->Word32Xor(), GetReplacementHigh(left),
                                GetReplacementHigh(right))),
           graph()->NewNode(common()->Int32Constant(0)));
-
-      ReplaceNode(node, replacement, nullptr);
+      ReplaceNode(node, SetInt32Type(replacement), nullptr);
       break;
     }
     case IrOpcode::kInt64LessThan: {
@@ -592,10 +641,10 @@ void Int64Lowering::LowerNode(Node* node) {
         input = GetReplacementLow(input);
       }
       // We use SAR to preserve the sign in the high word.
-      ReplaceNode(
-          node, input,
+      Node* high_node = SetInt32Type(
           graph()->NewNode(machine()->Word32Sar(), input,
                            graph()->NewNode(common()->Int32Constant(31))));
+      ReplaceNode(node, input, high_node);
       node->NullAllInputs();
       break;
     }
@@ -612,33 +661,15 @@ void Int64Lowering::LowerNode(Node* node) {
     case IrOpcode::kBitcastInt64ToFloat64: {
       DCHECK_EQ(1, node->InputCount());
       Node* input = node->InputAt(0);
-      Node* stack_slot = graph()->NewNode(
-          machine()->StackSlot(MachineRepresentation::kWord64));
 
-      Node* store_high_word = graph()->NewNode(
-          machine()->Store(
-              StoreRepresentation(MachineRepresentation::kWord32,
-                                  WriteBarrierKind::kNoWriteBarrier)),
-          stack_slot,
-          graph()->NewNode(
-              common()->Int32Constant(kInt64UpperHalfMemoryOffset)),
-          GetReplacementHigh(input), graph()->start(), graph()->start());
-
-      Node* store_low_word = graph()->NewNode(
-          machine()->Store(
-              StoreRepresentation(MachineRepresentation::kWord32,
-                                  WriteBarrierKind::kNoWriteBarrier)),
-          stack_slot,
-          graph()->NewNode(
-              common()->Int32Constant(kInt64LowerHalfMemoryOffset)),
-          GetReplacementLow(input), store_high_word, graph()->start());
-
-      Node* load =
-          graph()->NewNode(machine()->Load(MachineType::Float64()), stack_slot,
-                           graph()->NewNode(common()->Int32Constant(0)),
-                           store_low_word, graph()->start());
-
-      ReplaceNode(node, load, nullptr);
+      Node* high_half =
+          graph()->NewNode(machine()->Float64InsertHighWord32(),
+                           graph()->NewNode(common()->Float64Constant(0.0)),
+                           GetReplacementHigh(input));
+      Node* result = graph()->NewNode(machine()->Float64InsertLowWord32(),
+                                      high_half, GetReplacementLow(input));
+      SetFloat64Type(node);
+      ReplaceNode(node, result, nullptr);
       break;
     }
     case IrOpcode::kBitcastFloat64ToInt64: {
@@ -647,34 +678,19 @@ void Int64Lowering::LowerNode(Node* node) {
       if (HasReplacementLow(input)) {
         input = GetReplacementLow(input);
       }
-      Node* stack_slot = graph()->NewNode(
-          machine()->StackSlot(MachineRepresentation::kWord64));
-      Node* store = graph()->NewNode(
-          machine()->Store(
-              StoreRepresentation(MachineRepresentation::kFloat64,
-                                  WriteBarrierKind::kNoWriteBarrier)),
-          stack_slot, graph()->NewNode(common()->Int32Constant(0)), input,
-          graph()->start(), graph()->start());
 
-      Node* high_node = graph()->NewNode(
-          machine()->Load(MachineType::Int32()), stack_slot,
-          graph()->NewNode(
-              common()->Int32Constant(kInt64UpperHalfMemoryOffset)),
-          store, graph()->start());
-
-      Node* low_node = graph()->NewNode(
-          machine()->Load(MachineType::Int32()), stack_slot,
-          graph()->NewNode(
-              common()->Int32Constant(kInt64LowerHalfMemoryOffset)),
-          store, graph()->start());
+      Node* low_node = SetInt32Type(
+          graph()->NewNode(machine()->Float64ExtractLowWord32(), input));
+      Node* high_node = SetInt32Type(
+          graph()->NewNode(machine()->Float64ExtractHighWord32(), input));
       ReplaceNode(node, low_node, high_node);
       break;
     }
-    case IrOpcode::kWord64Rol:
+    case IrOpcode::kWord64RolLowerable:
       DCHECK(machine()->Word32Rol().IsSupported());
       V8_FALLTHROUGH;
-    case IrOpcode::kWord64Ror: {
-      DCHECK_EQ(2, node->InputCount());
+    case IrOpcode::kWord64RorLowerable: {
+      DCHECK_EQ(3, node->InputCount());
       Node* input = node->InputAt(0);
       Node* shift = HasReplacementLow(node->InputAt(1))
                         ? GetReplacementLow(node->InputAt(1))
@@ -707,17 +723,17 @@ void Int64Lowering::LowerNode(Node* node) {
 
           auto* op1 = machine()->Word32Shr();
           auto* op2 = machine()->Word32Shl();
-          bool is_ror = node->opcode() == IrOpcode::kWord64Ror;
+          bool is_ror = node->opcode() == IrOpcode::kWord64RorLowerable;
           if (!is_ror) std::swap(op1, op2);
 
-          Node* low_node =
+          Node* low_node = SetInt32Type(
               graph()->NewNode(machine()->Word32Or(),
                                graph()->NewNode(op1, low_input, masked_shift),
-                               graph()->NewNode(op2, high_input, inv_shift));
-          Node* high_node =
+                               graph()->NewNode(op2, high_input, inv_shift)));
+          Node* high_node = SetInt32Type(
               graph()->NewNode(machine()->Word32Or(),
                                graph()->NewNode(op1, high_input, masked_shift),
-                               graph()->NewNode(op2, low_input, inv_shift));
+                               graph()->NewNode(op2, low_input, inv_shift)));
           ReplaceNode(node, low_node, high_node);
         }
       } else {
@@ -728,7 +744,7 @@ void Int64Lowering::LowerNode(Node* node) {
                                graph()->NewNode(common()->Int32Constant(0x1F)));
         }
 
-        bool is_ror = node->opcode() == IrOpcode::kWord64Ror;
+        bool is_ror = node->opcode() == IrOpcode::kWord64RorLowerable;
         Node* inv_mask =
             is_ror ? graph()->NewNode(
                          machine()->Word32Xor(),
@@ -760,6 +776,7 @@ void Int64Lowering::LowerNode(Node* node) {
             graph(), common(),
             graph()->NewNode(machine()->Int32LessThan(), masked_shift6,
                              graph()->NewNode(common()->Int32Constant(32))));
+        lt32.Chain(NodeProperties::GetControlInput(node));
 
         // The low word and the high word can be swapped either at the input or
         // at the output. We swap the inputs so that shift does not have to be
@@ -781,25 +798,26 @@ void Int64Lowering::LowerNode(Node* node) {
         auto* mask2 = inv_mask;
         if (!is_ror) std::swap(mask1, mask2);
 
-        Node* low_node = graph()->NewNode(
+        Node* low_node = SetInt32Type(graph()->NewNode(
             machine()->Word32Or(),
             graph()->NewNode(machine()->Word32And(), rotate_low, mask1),
-            graph()->NewNode(machine()->Word32And(), rotate_high, mask2));
-        Node* high_node = graph()->NewNode(
+            graph()->NewNode(machine()->Word32And(), rotate_high, mask2)));
+        Node* high_node = SetInt32Type(graph()->NewNode(
             machine()->Word32Or(),
             graph()->NewNode(machine()->Word32And(), rotate_high, mask1),
-            graph()->NewNode(machine()->Word32And(), rotate_low, mask2));
+            graph()->NewNode(machine()->Word32And(), rotate_low, mask2)));
         ReplaceNode(node, low_node, high_node);
       }
       break;
     }
-    case IrOpcode::kWord64Clz: {
-      DCHECK_EQ(1, node->InputCount());
+    case IrOpcode::kWord64ClzLowerable: {
+      DCHECK_EQ(2, node->InputCount());
       Node* input = node->InputAt(0);
       Diamond d(
           graph(), common(),
           graph()->NewNode(machine()->Word32Equal(), GetReplacementHigh(input),
                            graph()->NewNode(common()->Int32Constant(0))));
+      d.Chain(NodeProperties::GetControlInput(node));
 
       Node* low_node = d.Phi(
           MachineRepresentation::kWord32,
@@ -808,17 +826,20 @@ void Int64Lowering::LowerNode(Node* node) {
                                             GetReplacementLow(input)),
                            graph()->NewNode(common()->Int32Constant(32))),
           graph()->NewNode(machine()->Word32Clz(), GetReplacementHigh(input)));
-      ReplaceNode(node, low_node, graph()->NewNode(common()->Int32Constant(0)));
+      ReplaceNode(node, SetInt32Type(low_node),
+                  SetInt32Type(graph()->NewNode(common()->Int32Constant(0))));
       break;
     }
-    case IrOpcode::kWord64Ctz: {
-      DCHECK_EQ(1, node->InputCount());
+    case IrOpcode::kWord64CtzLowerable: {
+      DCHECK_EQ(2, node->InputCount());
       DCHECK(machine()->Word32Ctz().IsSupported());
       Node* input = node->InputAt(0);
       Diamond d(
           graph(), common(),
           graph()->NewNode(machine()->Word32Equal(), GetReplacementLow(input),
                            graph()->NewNode(common()->Int32Constant(0))));
+      d.Chain(NodeProperties::GetControlInput(node));
+
       Node* low_node =
           d.Phi(MachineRepresentation::kWord32,
                 graph()->NewNode(machine()->Int32Add(),
@@ -827,22 +848,30 @@ void Int64Lowering::LowerNode(Node* node) {
                                  graph()->NewNode(common()->Int32Constant(32))),
                 graph()->NewNode(machine()->Word32Ctz().op(),
                                  GetReplacementLow(input)));
-      ReplaceNode(node, low_node, graph()->NewNode(common()->Int32Constant(0)));
+      ReplaceNode(node, SetInt32Type(low_node),
+                  SetInt32Type(graph()->NewNode(common()->Int32Constant(0))));
       break;
     }
+    case IrOpcode::kWord64Ror:
+    case IrOpcode::kWord64Rol:
+    case IrOpcode::kWord64Ctz:
+    case IrOpcode::kWord64Clz:
+      FATAL("%s operator should not be used in 32-bit systems",
+            node->op()->mnemonic());
     case IrOpcode::kWord64Popcnt: {
       DCHECK_EQ(1, node->InputCount());
       Node* input = node->InputAt(0);
       // We assume that a Word64Popcnt node only has been created if
       // Word32Popcnt is actually supported.
       DCHECK(machine()->Word32Popcnt().IsSupported());
-      ReplaceNode(node, graph()->NewNode(
-                            machine()->Int32Add(),
-                            graph()->NewNode(machine()->Word32Popcnt().op(),
-                                             GetReplacementLow(input)),
-                            graph()->NewNode(machine()->Word32Popcnt().op(),
-                                             GetReplacementHigh(input))),
-                  graph()->NewNode(common()->Int32Constant(0)));
+      Node* low_node =
+          graph()->NewNode(machine()->Int32Add(),
+                           graph()->NewNode(machine()->Word32Popcnt().op(),
+                                            GetReplacementLow(input)),
+                           graph()->NewNode(machine()->Word32Popcnt().op(),
+                                            GetReplacementHigh(input)));
+      ReplaceNode(node, SetInt32Type(low_node),
+                  SetInt32Type(graph()->NewNode(common()->Int32Constant(0))));
       break;
     }
     case IrOpcode::kPhi: {
@@ -861,13 +890,28 @@ void Int64Lowering::LowerNode(Node* node) {
       }
       break;
     }
+    case IrOpcode::kLoopExitValue: {
+      MachineRepresentation rep = LoopExitValueRepresentationOf(node->op());
+      if (rep == MachineRepresentation::kWord64) {
+        Node* low_node = SetInt32Type(graph()->NewNode(
+            common()->LoopExitValue(MachineRepresentation::kWord32),
+            GetReplacementLow(node->InputAt(0)), node->InputAt(1)));
+        Node* high_node = SetInt32Type(graph()->NewNode(
+            common()->LoopExitValue(MachineRepresentation::kWord32),
+            GetReplacementHigh(node->InputAt(0)), node->InputAt(1)));
+        ReplaceNode(node, low_node, high_node);
+      } else {
+        DefaultLowering(node);
+      }
+      break;
+    }
     case IrOpcode::kWord64ReverseBytes: {
       Node* input = node->InputAt(0);
-      ReplaceNode(node,
-                  graph()->NewNode(machine()->Word32ReverseBytes(),
-                                   GetReplacementHigh(input)),
-                  graph()->NewNode(machine()->Word32ReverseBytes(),
-                                   GetReplacementLow(input)));
+      Node* low_node = SetInt32Type(graph()->NewNode(
+          machine()->Word32ReverseBytes(), GetReplacementHigh(input)));
+      Node* high_node = SetInt32Type(graph()->NewNode(
+          machine()->Word32ReverseBytes(), GetReplacementLow(input)));
+      ReplaceNode(node, low_node, high_node);
       break;
     }
     case IrOpcode::kSignExtendWord8ToInt64: {
@@ -877,13 +921,13 @@ void Int64Lowering::LowerNode(Node* node) {
         input = GetReplacementLow(input);
       }
       // Sign extend low node to Int32
-      input = graph()->NewNode(machine()->SignExtendWord8ToInt32(), input);
-
+      Node* low_node = SetInt32Type(
+          graph()->NewNode(machine()->SignExtendWord8ToInt32(), input));
       // We use SAR to preserve the sign in the high word.
-      ReplaceNode(
-          node, input,
-          graph()->NewNode(machine()->Word32Sar(), input,
+      Node* high_node = SetInt32Type(
+          graph()->NewNode(machine()->Word32Sar(), low_node,
                            graph()->NewNode(common()->Int32Constant(31))));
+      ReplaceNode(node, low_node, high_node);
       node->NullAllInputs();
       break;
     }
@@ -894,41 +938,44 @@ void Int64Lowering::LowerNode(Node* node) {
         input = GetReplacementLow(input);
       }
       // Sign extend low node to Int32
-      input = graph()->NewNode(machine()->SignExtendWord16ToInt32(), input);
-
+      Node* low_node = SetInt32Type(
+          graph()->NewNode(machine()->SignExtendWord16ToInt32(), input));
       // We use SAR to preserve the sign in the high word.
-      ReplaceNode(
-          node, input,
-          graph()->NewNode(machine()->Word32Sar(), input,
+      Node* high_node = SetInt32Type(
+          graph()->NewNode(machine()->Word32Sar(), low_node,
                            graph()->NewNode(common()->Int32Constant(31))));
+      ReplaceNode(node, low_node, high_node);
       node->NullAllInputs();
       break;
     }
     case IrOpcode::kWord64AtomicLoad: {
       DCHECK_EQ(4, node->InputCount());
-      MachineType type = AtomicOpType(node->op());
+      AtomicLoadParameters params = AtomicLoadParametersOf(node->op());
       DefaultLowering(node, true);
-      if (type == MachineType::Uint64()) {
-        NodeProperties::ChangeOp(node, machine()->Word32AtomicPairLoad());
+      if (params.representation() == MachineType::Uint64()) {
+        NodeProperties::ChangeOp(
+            node, machine()->Word32AtomicPairLoad(params.order()));
         ReplaceNodeWithProjections(node);
       } else {
-        NodeProperties::ChangeOp(node, machine()->Word32AtomicLoad(type));
-        ReplaceNode(node, node, graph()->NewNode(common()->Int32Constant(0)));
+        NodeProperties::ChangeOp(node, machine()->Word32AtomicLoad(params));
+        ReplaceNode(node, SetInt32Type(node),
+                    SetInt32Type(graph()->NewNode(common()->Int32Constant(0))));
       }
       break;
     }
     case IrOpcode::kWord64AtomicStore: {
       DCHECK_EQ(5, node->InputCount());
-      MachineRepresentation rep = AtomicStoreRepresentationOf(node->op());
-      if (rep == MachineRepresentation::kWord64) {
+      AtomicStoreParameters params = AtomicStoreParametersOf(node->op());
+      if (params.representation() == MachineRepresentation::kWord64) {
         LowerMemoryBaseAndIndex(node);
         Node* value = node->InputAt(2);
         node->ReplaceInput(2, GetReplacementLow(value));
         node->InsertInput(zone(), 3, GetReplacementHigh(value));
-        NodeProperties::ChangeOp(node, machine()->Word32AtomicPairStore());
+        NodeProperties::ChangeOp(
+            node, machine()->Word32AtomicPairStore(params.order()));
       } else {
         DefaultLowering(node, true);
-        NodeProperties::ChangeOp(node, machine()->Word32AtomicStore(rep));
+        NodeProperties::ChangeOp(node, machine()->Word32AtomicStore(params));
       }
       break;
     }
@@ -968,7 +1015,8 @@ void Int64Lowering::LowerNode(Node* node) {
         DefaultLowering(node, true);
         NodeProperties::ChangeOp(node,
                                  machine()->Word32AtomicCompareExchange(type));
-        ReplaceNode(node, node, graph()->NewNode(common()->Int32Constant(0)));
+        ReplaceNode(node, SetInt32Type(node),
+                    SetInt32Type(graph()->NewNode(common()->Int32Constant(0))));
       }
       break;
     }
@@ -984,9 +1032,11 @@ void Int64Lowering::LowerNode(Node* node) {
       DCHECK_EQ(1, node->InputCount());
       Node* input = node->InputAt(0);
       int32_t lane = OpParameter<int32_t>(node->op());
-      ReplaceNode(
-          node, graph()->NewNode(machine()->I32x4ExtractLane(lane * 2), input),
+      Node* low_node = SetInt32Type(
+          graph()->NewNode(machine()->I32x4ExtractLane(lane * 2), input));
+      Node* high_node = SetInt32Type(
           graph()->NewNode(machine()->I32x4ExtractLane(lane * 2 + 1), input));
+      ReplaceNode(node, low_node, high_node);
       break;
     }
     case IrOpcode::kI64x2ReplaceLane: {
@@ -1001,7 +1051,7 @@ void Int64Lowering::LowerNode(Node* node) {
 
     default: { DefaultLowering(node); }
   }
-}  // NOLINT(readability/fn_size)
+}
 
 void Int64Lowering::LowerComparison(Node* node, const Operator* high_word_op,
                                     const Operator* low_word_op) {
@@ -1018,8 +1068,7 @@ void Int64Lowering::LowerComparison(Node* node, const Operator* high_word_op,
                            GetReplacementHigh(right)),
           graph()->NewNode(low_word_op, GetReplacementLow(left),
                            GetReplacementLow(right))));
-
-  ReplaceNode(node, replacement, nullptr);
+  ReplaceNode(node, SetInt32Type(replacement), nullptr);
 }
 
 bool Int64Lowering::DefaultLowering(Node* node, bool low_word_only) {
@@ -1108,7 +1157,7 @@ void Int64Lowering::ReplaceNodeWithProjections(Node* node) {
       graph()->NewNode(common()->Projection(0), node, graph()->start());
   Node* high_node =
       graph()->NewNode(common()->Projection(1), node, graph()->start());
-  ReplaceNode(node, low_node, high_node);
+  ReplaceNode(node, SetInt32Type(low_node), SetInt32Type(high_node));
 }
 
 void Int64Lowering::LowerMemoryBaseAndIndex(Node* node) {

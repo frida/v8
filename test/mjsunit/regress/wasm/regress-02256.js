@@ -4,7 +4,7 @@
 //
 // Flags: --expose-gc --allow-natives-syntax
 // Flags: --gc-interval=207 --stress-compaction --validate-asm
-// Flags: --opt --no-always-opt
+// Flags: --turbofan --no-always-turbofan
 //
 // /v8/test/mjsunit/wasm/grow-memory.js
 // /v8/test/mjsunit/regress/regress-540.js
@@ -264,7 +264,7 @@ var __v_11 = this;
 var __v_12 = {};
 var __v_13 = {};
 try {
-    load("test/mjsunit/wasm/wasm-module-__v_1.js");
+    d8.file.execute("test/mjsunit/wasm/wasm-module-__v_1.js");
     __v_2 = 0x10000;
 } catch (e) {
     print("Caught: " + e);

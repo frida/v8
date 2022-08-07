@@ -146,6 +146,7 @@ class ValueHelper {
       797056.0f,
       1.77219e+09f,
       2147483648.0f,  // INT32_MAX + 1
+      2147483904.0f,  // INT32_MAX + 1 and significand = 1.
       4294967296.0f,  // UINT32_MAX + 1
       1.51116e+11f,
       4.18193e+13f,
@@ -170,8 +171,8 @@ class ValueHelper {
       std::numeric_limits<float>::quiet_NaN(),
       -std::numeric_limits<float>::quiet_NaN()};
 
-  static constexpr Vector<const float> float32_vector() {
-    return ArrayVector(float32_array);
+  static constexpr base::Vector<const float> float32_vector() {
+    return base::ArrayVector(float32_array);
   }
 
   static constexpr double float64_array[] = {
@@ -225,31 +226,31 @@ class ValueHelper {
       std::numeric_limits<double>::quiet_NaN(),
       -std::numeric_limits<double>::quiet_NaN()};
 
-  static constexpr Vector<const double> float64_vector() {
-    return ArrayVector(float64_array);
+  static constexpr base::Vector<const double> float64_vector() {
+    return base::ArrayVector(float64_array);
   }
 
   static constexpr uint32_t uint32_array[] = {
-      0x00000000, 0x00000001, 0xFFFFFFFF, 0x1B09788B, 0x04C5FCE8, 0xCC0DE5BF,
-      // This row is useful for testing lea optimizations on intel.
-      0x00000002, 0x00000003, 0x00000004, 0x00000005, 0x00000008, 0x00000009,
-      0x273A798E, 0x187937A3, 0xECE3AF83, 0x5495A16B, 0x0B668ECC, 0x11223344,
-      0x0000009E, 0x00000043, 0x0000AF73, 0x0000116B, 0x00658ECC, 0x002B3B4C,
-      0x88776655, 0x70000000, 0x07200000, 0x7FFFFFFF, 0x56123761, 0x7FFFFF00,
-      0x761C4761, 0x80000000, 0x88888888, 0xA0000000, 0xDDDDDDDD, 0xE0000000,
-      0xEEEEEEEE, 0xFFFFFFFD, 0xF0000000, 0x007FFFFF, 0x003FFFFF, 0x001FFFFF,
-      0x000FFFFF, 0x0007FFFF, 0x0003FFFF, 0x0001FFFF, 0x0000FFFF, 0x00007FFF,
-      0x00003FFF, 0x00001FFF, 0x00000FFF, 0x000007FF, 0x000003FF, 0x000001FF,
+      // 0x00000000, 0x00000001, 0xFFFFFFFF, 0x1B09788B, 0x04C5FCE8, 0xCC0DE5BF,
+      // // This row is useful for testing lea optimizations on intel.
+      // 0x00000002, 0x00000003, 0x00000004, 0x00000005, 0x00000008, 0x00000009,
+      // 0x273A798E, 0x187937A3, 0xECE3AF83, 0x5495A16B, 0x0B668ECC, 0x11223344,
+      // 0x0000009E, 0x00000043, 0x0000AF73, 0x0000116B, 0x00658ECC, 0x002B3B4C,
+      // 0x88776655, 0x70000000, 0x07200000, 0x7FFFFFFF, 0x56123761, 0x7FFFFF00,
+      // 0x761C4761, 0x80000000, 0x88888888, 0xA0000000, 0xDDDDDDDD, 0xE0000000,
+      // 0xEEEEEEEE, 0xFFFFFFFD, 0xF0000000, 0x007FFFFF, 0x003FFFFF, 0x001FFFFF,
+      // 0x000FFFFF, 0x0007FFFF, 0x0003FFFF, 0x0001FFFF, 0x0000FFFF, 0x00007FFF,
+      // 0x00003FFF, 0x00001FFF, 0x00000FFF, 0x000007FF, 0x000003FF, 0x000001FF,
       // Bit pattern of a quiet NaN and signaling NaN, with or without
       // additional payload.
-      0x7FC00000, 0x7F800000, 0x7FFFFFFF, 0x7F876543};
+      0x7F876543};
 
-  static constexpr Vector<const uint32_t> uint32_vector() {
-    return ArrayVector(uint32_array);
+  static constexpr base::Vector<const uint32_t> uint32_vector() {
+    return base::ArrayVector(uint32_array);
   }
 
-  static Vector<const int32_t> int32_vector() {
-    return Vector<const int32_t>::cast(uint32_vector());
+  static base::Vector<const int32_t> int32_vector() {
+    return base::Vector<const int32_t>::cast(uint32_vector());
   }
 
   static constexpr uint64_t uint64_array[] = {
@@ -280,81 +281,91 @@ class ValueHelper {
       0x7FF8000000000000, 0x7FF0000000000000, 0x7FF8123456789ABC,
       0x7FF7654321FEDCBA};
 
-  static constexpr Vector<const uint64_t> uint64_vector() {
-    return ArrayVector(uint64_array);
+  static constexpr base::Vector<const uint64_t> uint64_vector() {
+    return base::ArrayVector(uint64_array);
   }
 
-  static Vector<const int64_t> int64_vector() {
-    return Vector<const int64_t>::cast(uint64_vector());
+  static base::Vector<const int64_t> int64_vector() {
+    return base::Vector<const int64_t>::cast(uint64_vector());
   }
 
   static constexpr int16_t int16_array[] = {
       0, 1, 2, INT16_MAX - 1, INT16_MAX, INT16_MIN, INT16_MIN + 1, -2, -1};
 
-  static constexpr Vector<const int16_t> int16_vector() {
-    return ArrayVector(int16_array);
+  static constexpr base::Vector<const int16_t> int16_vector() {
+    return base::ArrayVector(int16_array);
   }
 
-  static Vector<const uint16_t> uint16_vector() {
-    return Vector<const uint16_t>::cast(int16_vector());
+  static base::Vector<const uint16_t> uint16_vector() {
+    return base::Vector<const uint16_t>::cast(int16_vector());
   }
 
   static constexpr int8_t int8_array[] = {
       0, 1, 2, INT8_MAX - 1, INT8_MAX, INT8_MIN, INT8_MIN + 1, -2, -1};
 
-  static constexpr Vector<const int8_t> int8_vector() {
-    return ArrayVector(int8_array);
+  static constexpr base::Vector<const int8_t> int8_vector() {
+    return base::ArrayVector(int8_array);
   }
 
-  static Vector<const uint8_t> uint8_vector() {
-    return Vector<const uint8_t>::cast(ArrayVector(int8_array));
+  static base::Vector<const uint8_t> uint8_vector() {
+    return base::Vector<const uint8_t>::cast(base::ArrayVector(int8_array));
   }
 
   static constexpr uint32_t ror_array[31] = {
       1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16,
       17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31};
 
-  static constexpr Vector<const uint32_t> ror_vector() {
-    return ArrayVector(ror_array);
+  static constexpr base::Vector<const uint32_t> ror_vector() {
+    return base::ArrayVector(ror_array);
   }
 
   template <typename T>
-  static inline Vector<const T> GetVector();
+  static inline base::Vector<const T> GetVector();
 };
 
 template <>
-inline Vector<const int8_t> ValueHelper::GetVector() {
+inline base::Vector<const int8_t> ValueHelper::GetVector() {
   return int8_vector();
 }
 
 template <>
-inline Vector<const uint8_t> ValueHelper::GetVector() {
+inline base::Vector<const uint8_t> ValueHelper::GetVector() {
   return uint8_vector();
 }
 
 template <>
-inline Vector<const int16_t> ValueHelper::GetVector() {
+inline base::Vector<const int16_t> ValueHelper::GetVector() {
   return int16_vector();
 }
 
 template <>
-inline Vector<const uint16_t> ValueHelper::GetVector() {
+inline base::Vector<const uint16_t> ValueHelper::GetVector() {
   return uint16_vector();
 }
 
 template <>
-inline Vector<const int32_t> ValueHelper::GetVector() {
+inline base::Vector<const int32_t> ValueHelper::GetVector() {
   return int32_vector();
 }
 
 template <>
-inline Vector<const uint32_t> ValueHelper::GetVector() {
+inline base::Vector<const uint32_t> ValueHelper::GetVector() {
   return uint32_vector();
 }
 
 template <>
-inline Vector<const int64_t> ValueHelper::GetVector() {
+inline base::Vector<const int64_t> ValueHelper::GetVector() {
   return int64_vector();
+}
+
+template <>
+inline base::Vector<const float> ValueHelper::GetVector() {
+  return float32_vector();
+}
+
+template <>
+inline base::Vector<const double> ValueHelper::GetVector() {
+  return float64_vector();
 }
 
 // Helper macros that can be used in FOR_INT32_INPUTS(i) { ... i ... }

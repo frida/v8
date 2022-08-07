@@ -7,6 +7,7 @@
 
 #include "src/base/memory.h"
 #include "src/common/globals.h"
+#include "src/sandbox/external-pointer-table.h"
 
 namespace v8 {
 namespace internal {
@@ -108,15 +109,19 @@ class FullObjectSlot : public SlotBase<FullObjectSlot, Address> {
   // Compares memory representation of a value stored in the slot with given
   // raw value.
   inline bool contains_value(Address raw_value) const;
+  inline bool contains_map_value(Address raw_value) const;
 
   inline Object operator*() const;
-  inline Object load(IsolateRoot isolate) const;
+  inline Object load(PtrComprCageBase cage_base) const;
   inline void store(Object value) const;
+  inline void store_map(Map map) const;
+
+  inline Map load_map() const;
 
   inline Object Acquire_Load() const;
-  inline Object Acquire_Load(IsolateRoot isolate) const;
+  inline Object Acquire_Load(PtrComprCageBase cage_base) const;
   inline Object Relaxed_Load() const;
-  inline Object Relaxed_Load(IsolateRoot isolate) const;
+  inline Object Relaxed_Load(PtrComprCageBase cage_base) const;
   inline void Relaxed_Store(Object value) const;
   inline void Release_Store(Object value) const;
   inline Object Relaxed_CompareAndSwap(Object old, Object target) const;
@@ -147,11 +152,11 @@ class FullMaybeObjectSlot
       : SlotBase(slot.address()) {}
 
   inline MaybeObject operator*() const;
-  inline MaybeObject load(IsolateRoot isolate) const;
+  inline MaybeObject load(PtrComprCageBase cage_base) const;
   inline void store(MaybeObject value) const;
 
   inline MaybeObject Relaxed_Load() const;
-  inline MaybeObject Relaxed_Load(IsolateRoot isolate) const;
+  inline MaybeObject Relaxed_Load(PtrComprCageBase cage_base) const;
   inline void Relaxed_Store(MaybeObject value) const;
   inline void Release_CompareAndSwap(MaybeObject old, MaybeObject target) const;
 };
@@ -174,7 +179,7 @@ class FullHeapObjectSlot : public SlotBase<FullHeapObjectSlot, Address> {
       : SlotBase(slot.address()) {}
 
   inline HeapObjectReference operator*() const;
-  inline HeapObjectReference load(IsolateRoot isolate) const;
+  inline HeapObjectReference load(PtrComprCageBase cage_base) const;
   inline void store(HeapObjectReference value) const;
 
   inline HeapObject ToHeapObject() const;
@@ -265,12 +270,49 @@ class UnalignedSlot : public SlotBase<UnalignedSlot<T>, T, 1> {
 class OffHeapFullObjectSlot : public FullObjectSlot {
  public:
   OffHeapFullObjectSlot() : FullObjectSlot() {}
+  explicit OffHeapFullObjectSlot(Address ptr) : FullObjectSlot(ptr) {}
   explicit OffHeapFullObjectSlot(const Address* ptr) : FullObjectSlot(ptr) {}
 
   inline Object operator*() const = delete;
 
   using FullObjectSlot::Relaxed_Load;
   inline Object Relaxed_Load() const = delete;
+};
+
+// An ExternalPointerSlot instance describes a kExternalPointerSlotSize-sized
+// field ("slot") holding a pointer to objects located outside the V8 heap and
+// V8 sandbox (think: ExternalPointer_t).
+// It's basically an ExternalPointer_t* but abstracting away the fact that the
+// pointer might not be kExternalPointerSlotSize-aligned in certain
+// configurations. Its address() is the address of the slot.
+class ExternalPointerSlot
+    : public SlotBase<ExternalPointerSlot, ExternalPointer_t,
+                      kTaggedSize /* slot alignment */> {
+ public:
+  ExternalPointerSlot() : SlotBase(kNullAddress) {}
+  explicit ExternalPointerSlot(Address ptr) : SlotBase(ptr) {}
+
+  inline void init(Isolate* isolate, Address value, ExternalPointerTag tag);
+
+#ifdef V8_ENABLE_SANDBOX
+  // When the external pointer is sandboxed, its slot stores a handle to an
+  // entry in an ExternalPointerTable. These methods allow access to the
+  // underlying handle while the load/store methods below resolve the handle to
+  // the real pointer.
+  inline ExternalPointerHandle load_handle() const;
+  inline void store_handle(ExternalPointerHandle handle) const;
+#endif  // V8_ENABLE_SANDBOX
+
+  inline Address load(const Isolate* isolate, ExternalPointerTag tag);
+  inline void store(Isolate* isolate, Address value, ExternalPointerTag tag);
+
+ private:
+#ifdef V8_ENABLE_SANDBOX
+  inline const ExternalPointerTable& GetExternalPointerTableForTag(
+      const Isolate* isolate, ExternalPointerTag tag);
+  inline ExternalPointerTable& GetExternalPointerTableForTag(
+      Isolate* isolate, ExternalPointerTag tag);
+#endif  // V8_ENABLE_SANDBOX
 };
 
 }  // namespace internal

@@ -5,30 +5,39 @@
 #ifndef V8_FLAGS_FLAGS_H_
 #define V8_FLAGS_FLAGS_H_
 
-#include <vector>
-
+#include "src/base/optional.h"
 #include "src/common/globals.h"
-#include "src/wasm/wasm-limits.h"
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
+
+// The value of a single flag (this is the type of all FLAG_* globals).
+template <typename T>
+class FlagValue {
+ public:
+  constexpr FlagValue(T value) : value_(value) {}
+
+  // Implicitly convert to a {T}. Not marked {constexpr} so we do not compiler
+  // warnings about dead code (when checking readonly flags).
+  operator T() const { return value_; }
+
+  // Explicitly convert to a {T} via {value()}. This is {constexpr} so we can
+  // use it for computing other constants.
+  constexpr T value() const { return value_; }
+
+  // Assign a new value (defined below).
+  inline FlagValue<T>& operator=(T new_value);
+
+ private:
+  T value_;
+};
 
 // Declare all of our flags.
 #define FLAG_MODE_DECLARE
-#include "src/flags/flag-definitions.h"  // NOLINT
+#include "src/flags/flag-definitions.h"
 
 // The global list of all flags.
 class V8_EXPORT_PRIVATE FlagList {
  public:
-  // The list of all flags with a value different from the default
-  // and their values. The format of the list is like the format of the
-  // argv array passed to the main function, e.g.
-  // ("--prof", "--log-file", "v8.prof", "--nolazy").
-  //
-  // The caller is responsible for disposing the list, as well
-  // as every element of it.
-  static std::vector<const char*>* argv();
-
   class HelpOptions {
    public:
     enum ExitBehavior : bool { kExit = true, kDontExit = false };
@@ -73,11 +82,21 @@ class V8_EXPORT_PRIVATE FlagList {
   // and then calls SetFlagsFromCommandLine() and returns its result.
   static int SetFlagsFromString(const char* str, size_t len);
 
-  // Reset all flags to their default value.
-  static void ResetAllFlags();
+  // Freeze the current flag values (disallow changes via the API).
+  // TODO(12887): Actually write-protect the flags.
+  static void FreezeFlags();
+
+  // Returns true if the flags are currently frozen.
+  static bool IsFrozen();
+
+  // Free dynamically allocated memory of strings. This is called during
+  // teardown; flag values cannot be used afterwards any more.
+  static void ReleaseDynamicAllocations();
 
   // Print help to stdout with flags, types, and default values.
   static void PrintHelp();
+
+  static void PrintValues();
 
   // Set flags as consequence of being implied by another flag.
   static void EnforceFlagImplications();
@@ -85,9 +104,27 @@ class V8_EXPORT_PRIVATE FlagList {
   // Hash of flags (to quickly determine mismatching flag expectations).
   // This hash is calculated during V8::Initialize and cached.
   static uint32_t Hash();
+
+ private:
+  // Reset the flag hash on flag changes. This is a private method called from
+  // {FlagValue<T>::operator=}; there should be no need to call it from any
+  // other place.
+  static void ResetFlagHash();
+
+  // Make {FlagValue<T>} a friend, so it can call {ResetFlagHash()}.
+  template <typename T>
+  friend class FlagValue;
 };
 
-}  // namespace internal
-}  // namespace v8
+template <typename T>
+FlagValue<T>& FlagValue<T>::operator=(T new_value) {
+  if (new_value != value_) {
+    FlagList::ResetFlagHash();
+    value_ = new_value;
+  }
+  return *this;
+}
+
+}  // namespace v8::internal
 
 #endif  // V8_FLAGS_FLAGS_H_

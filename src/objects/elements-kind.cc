@@ -17,19 +17,30 @@ int ElementsKindToShiftSize(ElementsKind elements_kind) {
     case UINT8_ELEMENTS:
     case INT8_ELEMENTS:
     case UINT8_CLAMPED_ELEMENTS:
+    case RAB_GSAB_UINT8_ELEMENTS:
+    case RAB_GSAB_INT8_ELEMENTS:
+    case RAB_GSAB_UINT8_CLAMPED_ELEMENTS:
       return 0;
     case UINT16_ELEMENTS:
     case INT16_ELEMENTS:
+    case RAB_GSAB_UINT16_ELEMENTS:
+    case RAB_GSAB_INT16_ELEMENTS:
       return 1;
     case UINT32_ELEMENTS:
     case INT32_ELEMENTS:
     case FLOAT32_ELEMENTS:
+    case RAB_GSAB_UINT32_ELEMENTS:
+    case RAB_GSAB_INT32_ELEMENTS:
+    case RAB_GSAB_FLOAT32_ELEMENTS:
       return 2;
     case PACKED_DOUBLE_ELEMENTS:
     case HOLEY_DOUBLE_ELEMENTS:
     case FLOAT64_ELEMENTS:
     case BIGINT64_ELEMENTS:
     case BIGUINT64_ELEMENTS:
+    case RAB_GSAB_FLOAT64_ELEMENTS:
+    case RAB_GSAB_BIGINT64_ELEMENTS:
+    case RAB_GSAB_BIGUINT64_ELEMENTS:
       return 3;
     case PACKED_SMI_ELEMENTS:
     case PACKED_ELEMENTS:
@@ -46,7 +57,9 @@ int ElementsKindToShiftSize(ElementsKind elements_kind) {
     case SLOW_SLOPPY_ARGUMENTS_ELEMENTS:
     case FAST_STRING_WRAPPER_ELEMENTS:
     case SLOW_STRING_WRAPPER_ELEMENTS:
+    case SHARED_ARRAY_ELEMENTS:
       return kTaggedSizeLog2;
+    case WASM_ARRAY_ELEMENTS:
     case NO_ELEMENTS:
       UNREACHABLE();
   }
@@ -58,7 +71,7 @@ int ElementsKindToByteSize(ElementsKind elements_kind) {
 }
 
 int GetDefaultHeaderSizeForElementsKind(ElementsKind elements_kind) {
-  STATIC_ASSERT(FixedArray::kHeaderSize == FixedDoubleArray::kHeaderSize);
+  static_assert(FixedArray::kHeaderSize == FixedDoubleArray::kHeaderSize);
 
   if (IsTypedArrayElementsKind(elements_kind)) {
     return 0;
@@ -109,17 +122,15 @@ const char* ElementsKindToString(ElementsKind kind) {
     return #TYPE "ELEMENTS";
 
       TYPED_ARRAYS(PRINT_NAME);
+      RAB_GSAB_TYPED_ARRAYS(PRINT_NAME);
 #undef PRINT_NAME
+    case WASM_ARRAY_ELEMENTS:
+      return "WASM_ARRAY_ELEMENTS";
+    case SHARED_ARRAY_ELEMENTS:
+      return "SHARED_ARRAY_ELEMENTS";
     case NO_ELEMENTS:
       return "NO_ELEMENTS";
   }
-}
-
-const char* CompactElementsKindToString(CompactElementsKind kind) {
-  if (kind == CompactElementsKind::NON_COMPACT_ELEMENTS_KIND) {
-    return "NON_COMPACT_ELEMENTS_KIND";
-  }
-  return ElementsKindToString(static_cast<ElementsKind>(kind));
 }
 
 const ElementsKind kFastElementsKindSequence[kFastElementsKindCount] = {
@@ -130,13 +141,13 @@ const ElementsKind kFastElementsKindSequence[kFastElementsKindCount] = {
     PACKED_ELEMENTS,         // 4
     HOLEY_ELEMENTS           // 5
 };
-STATIC_ASSERT(PACKED_SMI_ELEMENTS == FIRST_FAST_ELEMENTS_KIND);
+static_assert(PACKED_SMI_ELEMENTS == FIRST_FAST_ELEMENTS_KIND);
 // Verify that kFastElementsKindPackedToHoley is correct.
-STATIC_ASSERT(PACKED_SMI_ELEMENTS + kFastElementsKindPackedToHoley ==
+static_assert(PACKED_SMI_ELEMENTS + kFastElementsKindPackedToHoley ==
               HOLEY_SMI_ELEMENTS);
-STATIC_ASSERT(PACKED_DOUBLE_ELEMENTS + kFastElementsKindPackedToHoley ==
+static_assert(PACKED_DOUBLE_ELEMENTS + kFastElementsKindPackedToHoley ==
               HOLEY_DOUBLE_ELEMENTS);
-STATIC_ASSERT(PACKED_ELEMENTS + kFastElementsKindPackedToHoley ==
+static_assert(PACKED_ELEMENTS + kFastElementsKindPackedToHoley ==
               HOLEY_ELEMENTS);
 
 ElementsKind GetFastElementsKindFromSequenceIndex(int sequence_number) {
@@ -248,7 +259,6 @@ bool UnionElementsKindUptoSize(ElementsKind* a_out, ElementsKind b) {
         default:
           return false;
       }
-      break;
     case PACKED_DOUBLE_ELEMENTS:
       switch (b) {
         case PACKED_DOUBLE_ELEMENTS:
@@ -267,8 +277,6 @@ bool UnionElementsKindUptoSize(ElementsKind* a_out, ElementsKind b) {
         default:
           return false;
       }
-
-      break;
     default:
       break;
   }

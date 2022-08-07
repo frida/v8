@@ -8,21 +8,20 @@
 #include <map>
 #include <memory>
 
-#include "include/v8-inspector.h"
-#include "include/v8-platform.h"
-#include "include/v8.h"
-#include "src/base/macros.h"
 #include "src/base/platform/platform.h"
-#include "src/utils/locked-queue-inl.h"
-#include "src/utils/vector.h"
+#include "src/utils/locked-queue.h"
 #include "test/inspector/isolate-data.h"
 
 namespace v8 {
+
+class StartupData;
+
 namespace internal {
 
-enum CatchExceptions : bool {
-  kDoCatchExceptions = true,
-  kDontCatchExceptions = false
+enum CatchExceptions {
+  kFailOnUncaughtExceptions,
+  kStandardPropagateUncaughtExceptions,
+  kSuppressUncaughtExceptions
 };
 
 class TaskRunner : public v8::base::Thread {
@@ -31,17 +30,17 @@ class TaskRunner : public v8::base::Thread {
    public:
     virtual ~Task() = default;
     virtual bool is_priority_task() = 0;
-    virtual void Run(IsolateData* data) = 0;
+    virtual void Run(InspectorIsolateData* data) = 0;
   };
 
-  TaskRunner(IsolateData::SetupGlobalTasks setup_global_tasks,
+  TaskRunner(InspectorIsolateData::SetupGlobalTasks setup_global_tasks,
              CatchExceptions catch_exceptions,
              v8::base::Semaphore* ready_semaphore,
              v8::StartupData* startup_data, WithInspector with_inspector);
   ~TaskRunner() override;
   TaskRunner(const TaskRunner&) = delete;
   TaskRunner& operator=(const TaskRunner&) = delete;
-  IsolateData* data() const { return data_.get(); }
+  InspectorIsolateData* data() const { return data_.get(); }
 
   // Thread implementation.
   void Run() override;
@@ -51,19 +50,19 @@ class TaskRunner : public v8::base::Thread {
   void QuitMessageLoop();
 
   void Append(std::unique_ptr<Task>);
-
+  void InterruptForMessages();
   void Terminate();
 
  private:
   std::unique_ptr<Task> GetNext(bool only_protocol);
   v8::Isolate* isolate() const { return data_->isolate(); }
 
-  IsolateData::SetupGlobalTasks setup_global_tasks_;
+  InspectorIsolateData::SetupGlobalTasks setup_global_tasks_;
   v8::StartupData* startup_data_;
   WithInspector with_inspector_;
   CatchExceptions catch_exceptions_;
   v8::base::Semaphore* ready_semaphore_;
-  std::unique_ptr<IsolateData> data_;
+  std::unique_ptr<InspectorIsolateData> data_;
 
   // deferred_queue_ combined with queue_ (in this order) have all tasks in the
   // correct order. Sometimes we skip non-protocol tasks by moving them from
@@ -73,7 +72,6 @@ class TaskRunner : public v8::base::Thread {
   v8::base::Semaphore process_queue_semaphore_;
 
   int nested_loop_count_;
-
   std::atomic<int> is_terminated_;
 };
 

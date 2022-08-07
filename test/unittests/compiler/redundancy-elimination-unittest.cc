@@ -3,13 +3,12 @@
 // found in the LICENSE file.
 
 #include "src/compiler/redundancy-elimination.h"
+
 #include "src/codegen/tick-counter.h"
-#include "src/compiler/common-operator.h"
 #include "src/compiler/feedback-source.h"
 #include "test/unittests/compiler/graph-reducer-unittest.h"
 #include "test/unittests/compiler/graph-unittest.h"
 #include "test/unittests/compiler/node-test-utils.h"
-#include "testing/gmock-support.h"
 
 using testing::_;
 using testing::NiceMock;
@@ -35,7 +34,7 @@ class RedundancyEliminationTest : public GraphTest {
     Handle<FeedbackMetadata> metadata = FeedbackMetadata::New(isolate(), &spec);
     Handle<SharedFunctionInfo> shared =
         isolate()->factory()->NewSharedFunctionInfoForBuiltin(
-            isolate()->factory()->empty_string(), Builtins::kIllegal);
+            isolate()->factory()->empty_string(), Builtin::kIllegal);
     shared->set_raw_outer_scope_info_or_feedback_metadata(*metadata);
     Handle<ClosureFeedbackCellArray> closure_feedback_cell_array =
         ClosureFeedbackCellArray::New(isolate(), shared);
@@ -77,7 +76,6 @@ const CheckTaggedInputMode kCheckTaggedInputModes[] = {
 const NumberOperationHint kNumberOperationHints[] = {
     NumberOperationHint::kSignedSmall,
     NumberOperationHint::kSignedSmallInputs,
-    NumberOperationHint::kSigned32,
     NumberOperationHint::kNumber,
     NumberOperationHint::kNumberOrOddball,
 };

@@ -2,20 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include <stdlib.h>
-#include <utility>
+#include "test/cctest/test-transitions.h"
 
-#include "src/init/v8.h"
+#include <stdlib.h>
+
+#include <utility>
 
 #include "src/codegen/compilation-cache.h"
 #include "src/execution/execution.h"
-#include "src/handles/global-handles.h"
 #include "src/heap/factory.h"
 #include "src/objects/field-type.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/transitions-inl.h"
 #include "test/cctest/cctest.h"
-#include "test/cctest/test-transitions.h"
 
 namespace v8 {
 namespace internal {
@@ -45,25 +44,31 @@ TEST(TransitionArray_SimpleFieldTransitions) {
   CHECK(map0->raw_transitions()->IsSmi());
 
   {
-    TestTransitionsAccessor transitions(isolate, map0);
-    transitions.Insert(name1, map1, SIMPLE_PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name1, map1,
+                                SIMPLE_PROPERTY_TRANSITION);
   }
   {
-    TestTransitionsAccessor transitions(isolate, map0);
-    CHECK(transitions.IsWeakRefEncoding());
-    CHECK_EQ(*map1, transitions.SearchTransition(*name1, kData, attributes));
-    CHECK_EQ(1, transitions.NumberOfTransitions());
-    CHECK_EQ(*name1, transitions.GetKey(0));
-    CHECK_EQ(*map1, transitions.GetTarget(0));
+    {
+      TestTransitionsAccessor transitions(isolate, map0);
+      CHECK(transitions.IsWeakRefEncoding());
+      CHECK_EQ(*map1, transitions.SearchTransition(*name1, PropertyKind::kData,
+                                                   attributes));
+      CHECK_EQ(1, transitions.NumberOfTransitions());
+      CHECK_EQ(*name1, transitions.GetKey(0));
+      CHECK_EQ(*map1, transitions.GetTarget(0));
+    }
 
-    transitions.Insert(name2, map2, SIMPLE_PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name2, map2,
+                                SIMPLE_PROPERTY_TRANSITION);
   }
   {
     TestTransitionsAccessor transitions(isolate, map0);
     CHECK(transitions.IsFullTransitionArrayEncoding());
 
-    CHECK_EQ(*map1, transitions.SearchTransition(*name1, kData, attributes));
-    CHECK_EQ(*map2, transitions.SearchTransition(*name2, kData, attributes));
+    CHECK_EQ(*map1, transitions.SearchTransition(*name1, PropertyKind::kData,
+                                                 attributes));
+    CHECK_EQ(*map2, transitions.SearchTransition(*name2, PropertyKind::kData,
+                                                 attributes));
     CHECK_EQ(2, transitions.NumberOfTransitions());
     for (int i = 0; i < 2; i++) {
       Name key = transitions.GetKey(i);
@@ -102,25 +107,31 @@ TEST(TransitionArray_FullFieldTransitions) {
   CHECK(map0->raw_transitions()->IsSmi());
 
   {
-    TestTransitionsAccessor transitions(isolate, map0);
-    transitions.Insert(name1, map1, PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name1, map1,
+                                PROPERTY_TRANSITION);
+  }
+  {
+    {
+      TestTransitionsAccessor transitions(isolate, map0);
+      CHECK(transitions.IsFullTransitionArrayEncoding());
+      CHECK_EQ(*map1, transitions.SearchTransition(*name1, PropertyKind::kData,
+                                                   attributes));
+      CHECK_EQ(1, transitions.NumberOfTransitions());
+      CHECK_EQ(*name1, transitions.GetKey(0));
+      CHECK_EQ(*map1, transitions.GetTarget(0));
+    }
+
+    TransitionsAccessor::Insert(isolate, map0, name2, map2,
+                                PROPERTY_TRANSITION);
   }
   {
     TestTransitionsAccessor transitions(isolate, map0);
     CHECK(transitions.IsFullTransitionArrayEncoding());
-    CHECK_EQ(*map1, transitions.SearchTransition(*name1, kData, attributes));
-    CHECK_EQ(1, transitions.NumberOfTransitions());
-    CHECK_EQ(*name1, transitions.GetKey(0));
-    CHECK_EQ(*map1, transitions.GetTarget(0));
 
-    transitions.Insert(name2, map2, PROPERTY_TRANSITION);
-  }
-  {
-    TestTransitionsAccessor transitions(isolate, map0);
-    CHECK(transitions.IsFullTransitionArrayEncoding());
-
-    CHECK_EQ(*map1, transitions.SearchTransition(*name1, kData, attributes));
-    CHECK_EQ(*map2, transitions.SearchTransition(*name2, kData, attributes));
+    CHECK_EQ(*map1, transitions.SearchTransition(*name1, PropertyKind::kData,
+                                                 attributes));
+    CHECK_EQ(*map2, transitions.SearchTransition(*name2, PropertyKind::kData,
+                                                 attributes));
     CHECK_EQ(2, transitions.NumberOfTransitions());
     for (int i = 0; i < 2; i++) {
       Name key = transitions.GetKey(i);
@@ -149,7 +160,7 @@ TEST(TransitionArray_DifferentFieldNames) {
   CHECK(map0->raw_transitions()->IsSmi());
 
   for (int i = 0; i < PROPS_COUNT; i++) {
-    EmbeddedVector<char, 64> buffer;
+    base::EmbeddedVector<char, 64> buffer;
     SNPrintF(buffer, "prop%d", i);
     Handle<String> name = factory->InternalizeUtf8String(buffer.begin());
     Handle<Map> map =
@@ -160,13 +171,13 @@ TEST(TransitionArray_DifferentFieldNames) {
     names[i] = name;
     maps[i] = map;
 
-    TransitionsAccessor(isolate, map0).Insert(name, map, PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name, map, PROPERTY_TRANSITION);
   }
 
-  TransitionsAccessor transitions(isolate, map0);
+  TransitionsAccessor transitions(isolate, *map0);
   for (int i = 0; i < PROPS_COUNT; i++) {
-    CHECK_EQ(*maps[i],
-             transitions.SearchTransition(*names[i], kData, attributes));
+    CHECK_EQ(*maps[i], transitions.SearchTransition(
+                           *names[i], PropertyKind::kData, attributes));
   }
   for (int i = 0; i < PROPS_COUNT; i++) {
     Name key = transitions.GetKey(i);
@@ -193,13 +204,13 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributesSimple) {
   CHECK(map0->raw_transitions()->IsSmi());
 
   const int ATTRS_COUNT = (READ_ONLY | DONT_ENUM | DONT_DELETE) + 1;
-  STATIC_ASSERT(ATTRS_COUNT == 8);
+  static_assert(ATTRS_COUNT == 8);
   Handle<Map> attr_maps[ATTRS_COUNT];
   Handle<String> name = factory->InternalizeUtf8String("foo");
 
   // Add transitions for same field name but different attributes.
   for (int i = 0; i < ATTRS_COUNT; i++) {
-    PropertyAttributes attributes = static_cast<PropertyAttributes>(i);
+    auto attributes = PropertyAttributesFromInt(i);
 
     Handle<Map> map =
         Map::CopyWithField(isolate, map0, name, FieldType::Any(isolate),
@@ -208,15 +219,15 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributesSimple) {
             .ToHandleChecked();
     attr_maps[i] = map;
 
-    TransitionsAccessor(isolate, map0).Insert(name, map, PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name, map, PROPERTY_TRANSITION);
   }
 
   // Ensure that transitions for |name| field are valid.
-  TransitionsAccessor transitions(isolate, map0);
+  TransitionsAccessor transitions(isolate, *map0);
   for (int i = 0; i < ATTRS_COUNT; i++) {
-    PropertyAttributes attributes = static_cast<PropertyAttributes>(i);
-    CHECK_EQ(*attr_maps[i],
-             transitions.SearchTransition(*name, kData, attributes));
+    auto attributes = PropertyAttributesFromInt(i);
+    CHECK_EQ(*attr_maps[i], transitions.SearchTransition(
+                                *name, PropertyKind::kData, attributes));
     // All transitions use the same key, so this check doesn't need to
     // care about ordering.
     CHECK_EQ(*name, transitions.GetKey(i));
@@ -241,7 +252,7 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributes) {
 
   // Some number of fields.
   for (int i = 0; i < PROPS_COUNT; i++) {
-    EmbeddedVector<char, 64> buffer;
+    base::EmbeddedVector<char, 64> buffer;
     SNPrintF(buffer, "prop%d", i);
     Handle<String> name = factory->InternalizeUtf8String(buffer.begin());
     Handle<Map> map =
@@ -252,17 +263,17 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributes) {
     names[i] = name;
     maps[i] = map;
 
-    TransitionsAccessor(isolate, map0).Insert(name, map, PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name, map, PROPERTY_TRANSITION);
   }
 
   const int ATTRS_COUNT = (READ_ONLY | DONT_ENUM | DONT_DELETE) + 1;
-  STATIC_ASSERT(ATTRS_COUNT == 8);
+  static_assert(ATTRS_COUNT == 8);
   Handle<Map> attr_maps[ATTRS_COUNT];
   Handle<String> name = factory->InternalizeUtf8String("foo");
 
   // Add transitions for same field name but different attributes.
   for (int i = 0; i < ATTRS_COUNT; i++) {
-    PropertyAttributes attributes = static_cast<PropertyAttributes>(i);
+    auto attributes = PropertyAttributesFromInt(i);
 
     Handle<Map> map =
         Map::CopyWithField(isolate, map0, name, FieldType::Any(isolate),
@@ -271,14 +282,15 @@ TEST(TransitionArray_SameFieldNamesDifferentAttributes) {
             .ToHandleChecked();
     attr_maps[i] = map;
 
-    TransitionsAccessor(isolate, map0).Insert(name, map, PROPERTY_TRANSITION);
+    TransitionsAccessor::Insert(isolate, map0, name, map, PROPERTY_TRANSITION);
   }
 
   // Ensure that transitions for |name| field are valid.
-  TransitionsAccessor transitions(isolate, map0);
+  TransitionsAccessor transitions(isolate, *map0);
   for (int i = 0; i < ATTRS_COUNT; i++) {
-    PropertyAttributes attr = static_cast<PropertyAttributes>(i);
-    CHECK_EQ(*attr_maps[i], transitions.SearchTransition(*name, kData, attr));
+    auto attr = PropertyAttributesFromInt(i);
+    CHECK_EQ(*attr_maps[i],
+             transitions.SearchTransition(*name, PropertyKind::kData, attr));
   }
 
   // Ensure that info about the other fields still valid.

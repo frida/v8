@@ -1,10 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Copyright 2014 the V8 project authors. All rights reserved.
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
-
-# for py2/py3 compatibility
-from __future__ import print_function
 
 import argparse
 import os
@@ -15,8 +12,7 @@ from common_includes import *
 ROLL_SUMMARY = ("Summary of changes available at:\n"
                 "https://chromium.googlesource.com/v8/v8/+log/%s..%s")
 
-ISSUE_MSG = (
-"""Please follow these instructions for assigning/CC'ing issues:
+ISSUE_MSG = ("""Please follow these instructions for assigning/CC'ing issues:
 https://v8.dev/docs/triage-issues
 
 Please close rolling in case of a roll revert:
@@ -24,6 +20,7 @@ https://v8-roll.appspot.com/
 This only works with a Google account.
 
 CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux-blink-rel
+CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux_chromium_chromeos_msan_rel_ng
 CQ_INCLUDE_TRYBOTS=luci.chromium.try:linux_optional_gpu_tests_rel
 CQ_INCLUDE_TRYBOTS=luci.chromium.try:mac_optional_gpu_tests_rel
 CQ_INCLUDE_TRYBOTS=luci.chromium.try:win_optional_gpu_tests_rel
@@ -80,7 +77,7 @@ class DetectRevisionToRoll(Step):
       version = self.GetVersionTag(revision)
       assert version, "Internal error. All recent releases should have a tag"
 
-      if SortingKey(self["last_version"]) < SortingKey(version):
+      if LooseVersion(self["last_version"]) < LooseVersion(version):
         self["roll"] = revision
         break
     else:
@@ -126,7 +123,7 @@ class UpdateChromiumCheckout(Step):
   def RunStep(self):
     self['json_output']['monitoring_state'] = 'update_chromium'
     cwd = self._options.chromium
-    self.GitCheckout("master", cwd=cwd)
+    self.GitCheckout("main", cwd=cwd)
     self.DeleteBranch("work-branch", cwd=cwd)
     self.GitPull(cwd=cwd)
 
@@ -155,19 +152,20 @@ class UploadCL(Step):
 
     message.append(ISSUE_MSG)
 
-    message.append("TBR=%s" % self._options.reviewer)
+    message.append("R=%s" % self._options.reviewer)
     self.GitCommit("\n\n".join(message),  author=self._options.author, cwd=cwd)
     if not self._options.dry_run:
       self.GitUpload(force=True,
                      bypass_hooks=True,
                      cq=self._options.use_commit_queue,
                      cq_dry_run=self._options.use_dry_run,
+                     set_bot_commit=True,
                      cwd=cwd)
       print("CL uploaded.")
     else:
       print("Dry run - don't upload.")
 
-    self.GitCheckout("master", cwd=cwd)
+    self.GitCheckout("main", cwd=cwd)
     self.GitDeleteBranch("work-branch", cwd=cwd)
 
 class CleanUp(Step):

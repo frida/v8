@@ -8,10 +8,12 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+
 #include <algorithm>
 
 #include "src/base/logging.h"
 #include "src/base/macros.h"
+#include "src/base/platform/wrappers.h"
 
 namespace v8 {
 namespace internal {
@@ -182,7 +184,7 @@ inline void CopyWords(Address dst, const Address src, size_t num_words) {
 // Copies data from |src| to |dst|.  The data spans must not overlap.
 template <typename T>
 inline void CopyBytes(T* dst, const T* src, size_t num_bytes) {
-  STATIC_ASSERT(sizeof(T) == 1);
+  static_assert(sizeof(T) == 1);
   if (num_bytes == 0) return;
   CopyImpl<kMinComplexMemCopy>(dst, src, num_bytes);
 }
@@ -253,6 +255,11 @@ inline void MemsetPointer(T** dest, U* value, size_t counter) {
                 reinterpret_cast<Address>(value), counter);
 }
 
+template <typename T>
+inline void MemsetPointer(T** dest, std::nullptr_t, size_t counter) {
+  MemsetPointer(reinterpret_cast<Address*>(dest), Address{0}, counter);
+}
+
 // Copy from 8bit/16bit chars to 8bit/16bit chars. Values are zero-extended if
 // needed. Ranges are not allowed to overlap.
 // The separate declaration is needed for the V8_NONNULL, which is not allowed
@@ -262,8 +269,8 @@ void CopyChars(DstType* dst, const SrcType* src, size_t count) V8_NONNULL(1, 2);
 
 template <typename SrcType, typename DstType>
 void CopyChars(DstType* dst, const SrcType* src, size_t count) {
-  STATIC_ASSERT(std::is_integral<SrcType>::value);
-  STATIC_ASSERT(std::is_integral<DstType>::value);
+  static_assert(std::is_integral<SrcType>::value);
+  static_assert(std::is_integral<DstType>::value);
   using SrcTypeUnsigned = typename std::make_unsigned<SrcType>::type;
   using DstTypeUnsigned = typename std::make_unsigned<DstType>::type;
 

@@ -5,6 +5,7 @@
 #ifndef V8_TEST_FEEDBACK_VECTOR_H_
 #define V8_TEST_FEEDBACK_VECTOR_H_
 
+#include "src/execution/isolate.h"
 #include "src/objects/feedback-vector.h"
 #include "src/objects/objects.h"
 #include "src/objects/shared-function-info.h"
@@ -45,7 +46,7 @@ Handle<FeedbackVector> NewFeedbackVector(Isolate* isolate, Spec* spec) {
   Handle<FeedbackMetadata> metadata = FeedbackMetadata::New(isolate, spec);
   Handle<SharedFunctionInfo> shared =
       isolate->factory()->NewSharedFunctionInfoForBuiltin(
-          isolate->factory()->empty_string(), Builtins::kIllegal);
+          isolate->factory()->empty_string(), Builtin::kIllegal);
   // Set the raw feedback metadata to circumvent checks that we are not
   // overwriting existing metadata.
   shared->set_raw_outer_scope_info_or_feedback_metadata(*metadata);

@@ -10,7 +10,6 @@
 #include "src/wasm/wasm-module.h"
 #include "src/wasm/wasm-objects.h"
 #include "src/wasm/wasm-result.h"
-#include "src/zone/zone.h"
 
 namespace v8 {
 namespace internal {
@@ -101,15 +100,15 @@ WasmInterpretationResult InterpretWasmModule(
 
 // Generate an array of default arguments for the given signature, to be used in
 // the interpreter.
-OwnedVector<WasmValue> MakeDefaultInterpreterArguments(Isolate* isolate,
-                                                       const FunctionSig* sig);
+base::OwnedVector<WasmValue> MakeDefaultInterpreterArguments(
+    Isolate* isolate, const FunctionSig* sig);
 
 // Generate an array of default arguments for the given signature, to be used
 // when calling compiled code. Make sure that the arguments match the ones
 // returned by {MakeDefaultInterpreterArguments}, otherwise fuzzers will report
 // differences between interpreter and compiled code.
-OwnedVector<Handle<Object>> MakeDefaultArguments(Isolate* isolate,
-                                                 const FunctionSig* sig);
+base::OwnedVector<Handle<Object>> MakeDefaultArguments(Isolate* isolate,
+                                                       const FunctionSig* sig);
 
 // Install function map, module symbol for testing
 void SetupIsolateForWasmModule(Isolate* isolate);

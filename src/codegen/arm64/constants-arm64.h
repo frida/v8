@@ -9,15 +9,15 @@
 #include "src/common/globals.h"
 
 // Assert that this is an LP64 system, or LLP64 on Windows.
-STATIC_ASSERT(sizeof(int) == sizeof(int32_t));
+static_assert(sizeof(int) == sizeof(int32_t));
 #if defined(V8_OS_WIN)
-STATIC_ASSERT(sizeof(1L) == sizeof(int32_t));
+static_assert(sizeof(1L) == sizeof(int32_t));
 #else
-STATIC_ASSERT(sizeof(long) == sizeof(int64_t));  // NOLINT(runtime/int)
-STATIC_ASSERT(sizeof(1L) == sizeof(int64_t));
+static_assert(sizeof(long) == sizeof(int64_t));  // NOLINT(runtime/int)
+static_assert(sizeof(1L) == sizeof(int64_t));
 #endif
-STATIC_ASSERT(sizeof(void*) == sizeof(int64_t));
-STATIC_ASSERT(sizeof(1) == sizeof(int32_t));
+static_assert(sizeof(void*) == sizeof(int64_t));
+static_assert(sizeof(1) == sizeof(int32_t));
 
 // Get the standard printf format macros for C99 stdint types.
 #ifndef __STDC_FORMAT_MACROS
@@ -468,53 +468,48 @@ enum SystemRegister {
 const uint32_t kUnallocatedInstruction = 0xffffffff;
 
 // Generic fields.
-enum GenericInstrField : uint32_t {
-  SixtyFourBits = 0x80000000,
-  ThirtyTwoBits = 0x00000000,
-  FP32 = 0x00000000,
-  FP64 = 0x00400000
-};
+using GenericInstrField = uint32_t;
+constexpr GenericInstrField SixtyFourBits = 0x80000000;
+constexpr GenericInstrField ThirtyTwoBits = 0x00000000;
+constexpr GenericInstrField FP32 = 0x00000000;
+constexpr GenericInstrField FP64 = 0x00400000;
 
-enum NEONFormatField : uint32_t {
-  NEONFormatFieldMask = 0x40C00000,
-  NEON_Q = 0x40000000,
-  NEON_8B = 0x00000000,
-  NEON_16B = NEON_8B | NEON_Q,
-  NEON_4H = 0x00400000,
-  NEON_8H = NEON_4H | NEON_Q,
-  NEON_2S = 0x00800000,
-  NEON_4S = NEON_2S | NEON_Q,
-  NEON_1D = 0x00C00000,
-  NEON_2D = 0x00C00000 | NEON_Q
-};
+using NEONFormatField = uint32_t;
+constexpr NEONFormatField NEONFormatFieldMask = 0x40C00000;
+constexpr NEONFormatField NEON_Q = 0x40000000;
+constexpr NEONFormatField NEON_8B = 0x00000000;
+constexpr NEONFormatField NEON_16B = NEON_8B | NEON_Q;
+constexpr NEONFormatField NEON_4H = 0x00400000;
+constexpr NEONFormatField NEON_8H = NEON_4H | NEON_Q;
+constexpr NEONFormatField NEON_2S = 0x00800000;
+constexpr NEONFormatField NEON_4S = NEON_2S | NEON_Q;
+constexpr NEONFormatField NEON_1D = 0x00C00000;
+constexpr NEONFormatField NEON_2D = 0x00C00000 | NEON_Q;
 
-enum NEONFPFormatField : uint32_t {
-  NEONFPFormatFieldMask = 0x40400000,
-  NEON_FP_2S = FP32,
-  NEON_FP_4S = FP32 | NEON_Q,
-  NEON_FP_2D = FP64 | NEON_Q
-};
+using NEONFPFormatField = uint32_t;
+constexpr NEONFPFormatField NEONFPFormatFieldMask = 0x40400000;
+constexpr NEONFPFormatField NEON_FP_2S = FP32;
+constexpr NEONFPFormatField NEON_FP_4S = FP32 | NEON_Q;
+constexpr NEONFPFormatField NEON_FP_2D = FP64 | NEON_Q;
 
-enum NEONLSFormatField : uint32_t {
-  NEONLSFormatFieldMask = 0x40000C00,
-  LS_NEON_8B = 0x00000000,
-  LS_NEON_16B = LS_NEON_8B | NEON_Q,
-  LS_NEON_4H = 0x00000400,
-  LS_NEON_8H = LS_NEON_4H | NEON_Q,
-  LS_NEON_2S = 0x00000800,
-  LS_NEON_4S = LS_NEON_2S | NEON_Q,
-  LS_NEON_1D = 0x00000C00,
-  LS_NEON_2D = LS_NEON_1D | NEON_Q
-};
+using NEONLSFormatField = uint32_t;
+constexpr NEONLSFormatField NEONLSFormatFieldMask = 0x40000C00;
+constexpr NEONLSFormatField LS_NEON_8B = 0x00000000;
+constexpr NEONLSFormatField LS_NEON_16B = LS_NEON_8B | NEON_Q;
+constexpr NEONLSFormatField LS_NEON_4H = 0x00000400;
+constexpr NEONLSFormatField LS_NEON_8H = LS_NEON_4H | NEON_Q;
+constexpr NEONLSFormatField LS_NEON_2S = 0x00000800;
+constexpr NEONLSFormatField LS_NEON_4S = LS_NEON_2S | NEON_Q;
+constexpr NEONLSFormatField LS_NEON_1D = 0x00000C00;
+constexpr NEONLSFormatField LS_NEON_2D = LS_NEON_1D | NEON_Q;
 
-enum NEONScalarFormatField : uint32_t {
-  NEONScalarFormatFieldMask = 0x00C00000,
-  NEONScalar = 0x10000000,
-  NEON_B = 0x00000000,
-  NEON_H = 0x00400000,
-  NEON_S = 0x00800000,
-  NEON_D = 0x00C00000
-};
+using NEONScalarFormatField = uint32_t;
+constexpr NEONScalarFormatField NEONScalarFormatFieldMask = 0x00C00000;
+constexpr NEONScalarFormatField NEONScalar = 0x10000000;
+constexpr NEONScalarFormatField NEON_B = 0x00000000;
+constexpr NEONScalarFormatField NEON_H = 0x00400000;
+constexpr NEONScalarFormatField NEON_S = 0x00800000;
+constexpr NEONScalarFormatField NEON_D = 0x00C00000;
 
 // PC relative addressing.
 enum PCRelAddressingOp : uint32_t {
@@ -797,15 +792,6 @@ enum SystemPAuthOp : uint32_t {
   AUTIB1716 = SystemPAuthFixed | 0x000001C0,
   PACIBSP = SystemPAuthFixed | 0x00000360,
   AUTIBSP = SystemPAuthFixed | 0x000003E0
-};
-
-enum PointerAuthenticationOp : uint32_t {
-  PointerAuthenticationFixed = 0xDAC143E0,
-  PointerAuthenticationFMask = 0xFFFFFBE0,
-  PointerAuthenticationMask  = 0xFFFFFFE0,
-  XPACI                      = PointerAuthenticationFixed | 0x00000000,
-  XPACD                      = PointerAuthenticationFixed | 0x00000400,
-  XPACLRI                    = PointerAuthenticationFixed | 0x0000041f
 };
 
 // Any load or store (including pair).

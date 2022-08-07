@@ -28,9 +28,16 @@
 import { SplayTree } from "./splaytree.mjs";
 
 /**
+* The number of alignment bits in a page address.
+*/
+const kPageAlignment = 12;
+/**
+* Page size in bytes.
+*/
+const kPageSize =  1 << kPageAlignment;
+
+/**
  * Constructs a mapper that maps addresses into code entries.
- *
- * @constructor
  */
 export class CodeMap {
   /**
@@ -56,26 +63,36 @@ export class CodeMap {
   /**
    * Map of memory pages occupied with static code.
    */
-  pages_ = [];
+  pages_ = new Set();
 
 
   /**
-   * The number of alignment bits in a page address.
+   * Adds a code entry that might overlap with static code (e.g. for builtins).
+   *
+   * @param {number} start The starting address.
+   * @param {CodeEntry} codeEntry Code entry object.
    */
-  static PAGE_ALIGNMENT = 12;
+  addAnyCode(start, codeEntry) {
+    const pageAddr = (start / kPageSize) | 0;
+    if (!this.pages_.has(pageAddr)) return this.addCode(start, codeEntry);
+    // We might have loaded static code (builtins, bytecode handlers)
+    // and we get more information later in v8.log with code-creation events.
+    // Overwrite the existing entries in this case.
+    let result = this.findInTree_(this.statics_, start);
+    if (result === null) return this.addCode(start, codeEntry);
 
-
-  /**
-   * Page size in bytes.
-   */
-  static PAGE_SIZE =  1 << CodeMap.PAGE_ALIGNMENT;
+    const removedNode = this.statics_.remove(start);
+    this.deleteAllCoveredNodes_(
+        this.statics_, start, start + removedNode.value.size);
+    this.statics_.insert(start, codeEntry);
+  }
 
 
   /**
    * Adds a dynamic (i.e. moveable and discardable) code entry.
    *
    * @param {number} start The starting address.
-   * @param {CodeMap.CodeEntry} codeEntry Code entry object.
+   * @param {CodeEntry} codeEntry Code entry object.
    */
   addCode(start, codeEntry) {
     this.deleteAllCoveredNodes_(this.dynamics_, start, start + codeEntry.size);
@@ -90,7 +107,7 @@ export class CodeMap {
    * @param {number} to The destination address.
    */
   moveCode(from, to) {
-    var removedNode = this.dynamics_.remove(from);
+    const removedNode = this.dynamics_.remove(from);
     this.deleteAllCoveredNodes_(this.dynamics_, to, to + removedNode.value.size);
     this.dynamics_.insert(to, removedNode.value);
   }
@@ -102,14 +119,14 @@ export class CodeMap {
    * @param {number} start The starting address of the entry being deleted.
    */
   deleteCode(start) {
-    var removedNode = this.dynamics_.remove(start);
+    const removedNode = this.dynamics_.remove(start);
   }
 
   /**
    * Adds a library entry.
    *
    * @param {number} start The starting address.
-   * @param {CodeMap.CodeEntry} codeEntry Code entry object.
+   * @param {CodeEntry} codeEntry Code entry object.
    */
   addLibrary(start, codeEntry) {
     this.markPages_(start, start + codeEntry.size);
@@ -120,7 +137,7 @@ export class CodeMap {
    * Adds a static code entry.
    *
    * @param {number} start The starting address.
-   * @param {CodeMap.CodeEntry} codeEntry Code entry object.
+   * @param {CodeEntry} codeEntry Code entry object.
    */
   addStaticCode(start, codeEntry) {
     this.statics_.insert(start, codeEntry);
@@ -130,9 +147,8 @@ export class CodeMap {
    * @private
    */
   markPages_(start, end) {
-    for (var addr = start; addr <= end;
-        addr += CodeMap.PAGE_SIZE) {
-      this.pages_[(addr / CodeMap.PAGE_SIZE)|0] = 1;
+    for (let addr = start; addr <= end; addr += kPageSize) {
+      this.pages_.add((addr / kPageSize) | 0);
     }
   }
 
@@ -140,16 +156,16 @@ export class CodeMap {
    * @private
    */
   deleteAllCoveredNodes_(tree, start, end) {
-    var to_delete = [];
-    var addr = end - 1;
+    const to_delete = [];
+    let addr = end - 1;
     while (addr >= start) {
-      var node = tree.findGreatestLessThan(addr);
-      if (!node) break;
-      var start2 = node.key, end2 = start2 + node.value.size;
+      const node = tree.findGreatestLessThan(addr);
+      if (node === null) break;
+      const start2 = node.key, end2 = start2 + node.value.size;
       if (start2 < end && start < end2) to_delete.push(start2);
       addr = start2 - 1;
     }
-    for (var i = 0, l = to_delete.length; i < l; ++i) tree.remove(to_delete[i]);
+    for (let i = 0, l = to_delete.length; i < l; ++i) tree.remove(to_delete[i]);
   }
 
   /**
@@ -163,8 +179,8 @@ export class CodeMap {
    * @private
    */
   findInTree_(tree, addr) {
-    var node = tree.findGreatestLessThan(addr);
-    return node && this.isAddressBelongsTo_(addr, node) ? node : null;
+    const node = tree.findGreatestLessThan(addr);
+    return node !== null && this.isAddressBelongsTo_(addr, node) ? node : null;
   }
 
   /**
@@ -175,29 +191,30 @@ export class CodeMap {
    * @param {number} addr Address.
    */
   findAddress(addr) {
-    var pageAddr = (addr / CodeMap.PAGE_SIZE)|0;
-    if (pageAddr in this.pages_) {
+    const pageAddr = (addr / kPageSize) | 0;
+    if (this.pages_.has(pageAddr)) {
       // Static code entries can contain "holes" of unnamed code.
       // In this case, the whole library is assigned to this address.
-      var result = this.findInTree_(this.statics_, addr);
-      if (!result) {
+      let result = this.findInTree_(this.statics_, addr);
+      if (result === null) {
         result = this.findInTree_(this.libraries_, addr);
-        if (!result) return null;
+        if (result === null) return null;
       }
-      return { entry : result.value, offset : addr - result.key };
+      return {entry: result.value, offset: addr - result.key};
     }
-    var min = this.dynamics_.findMin();
-    var max = this.dynamics_.findMax();
-    if (max != null && addr < (max.key + max.value.size) && addr >= min.key) {
-      var dynaEntry = this.findInTree_(this.dynamics_, addr);
-      if (dynaEntry == null) return null;
+    const max = this.dynamics_.findMax();
+    if (max === null) return null;
+    const min = this.dynamics_.findMin();
+    if (addr >= min.key && addr < (max.key + max.value.size)) {
+      const dynaEntry = this.findInTree_(this.dynamics_, addr);
+      if (dynaEntry === null) return null;
       // Dedupe entry name.
-      var entry = dynaEntry.value;
+      const entry = dynaEntry.value;
       if (!entry.nameUpdated_) {
         entry.name = this.dynamicsNameGen_.getName(entry.name);
         entry.nameUpdated_ = true;
       }
-      return { entry : entry, offset : addr - dynaEntry.key };
+      return {entry, offset: addr - dynaEntry.key};
     }
     return null;
   }
@@ -209,8 +226,8 @@ export class CodeMap {
    * @param {number} addr Address.
    */
   findEntry(addr) {
-    var result = this.findAddress(addr);
-    return result ? result.entry : null;
+    const result = this.findAddress(addr);
+    return result !== null ? result.entry : null;
   }
 
   /**
@@ -219,8 +236,8 @@ export class CodeMap {
    * @param {number} addr Address.
    */
   findDynamicEntryByStartAddress(addr) {
-    var node = this.dynamics_.find(addr);
-    return node ? node.value : null;
+    const node = this.dynamics_.find(addr);
+    return node !== null ? node.value : null;
   }
 
   /**
@@ -252,28 +269,32 @@ export class CodeMap {
   }
 
   /**
-   * Returns an array of all libraries entries.
+   * Returns an array of all library entries.
    */
-  getAllLibrariesEntries() {
+  getAllLibraryEntries() {
     return this.libraries_.exportValues();
+  }
+
+  /**
+   * Returns an array of pairs of all library entries and their addresses.
+   */
+  getAllLibraryEntriesWithAddresses() {
+    return this.libraries_.exportKeysAndValues();
   }
 }
 
 
-/**
- * Creates a code entry object.
- *
- * @param {number} size Code entry size in bytes.
- * @param {string} opt_name Code entry name.
- * @param {string} opt_type Code entry type, e.g. SHARED_LIB, CPP.
- * @constructor
- */
 export class CodeEntry {
   constructor(size, opt_name, opt_type) {
+    /** @type {number} */
     this.size = size;
+    /** @type {string} */
     this.name = opt_name || '';
+    /** @type {string} */
     this.type = opt_type || '';
     this.nameUpdated_ = false;
+    /** @type {?string} */
+    this.source = undefined;
   }
 
   getName() {
@@ -282,6 +303,14 @@ export class CodeEntry {
 
   toString() {
     return this.name + ': ' + this.size.toString(16);
+  }
+
+  getSourceCode() {
+    return '';
+  }
+
+  get sourcePosition() {
+    return this.logEntry.sourcePosition;
   }
 }
 
@@ -292,7 +321,7 @@ class NameGenerator {
       this.knownNames_[name] = 0;
       return name;
     }
-    var count = ++this.knownNames_[name];
+    const count = ++this.knownNames_[name];
     return name + ' {' + count + '}';
   };
 }

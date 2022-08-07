@@ -10,6 +10,7 @@
 #include "src/base/memory.h"
 #include "src/codegen/arm64/assembler-arm64.h"
 #include "src/codegen/assembler.h"
+#include "src/codegen/flush-instruction-cache.h"
 #include "src/debug/debug.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
@@ -18,8 +19,6 @@ namespace v8 {
 namespace internal {
 
 bool CpuFeatures::SupportsOptimizer() { return true; }
-
-bool CpuFeatures::SupportsWasmSimd128() { return true; }
 
 void RelocInfo::apply(intptr_t delta) {
   // On arm64 only internal references and immediate branches need extra work.
@@ -56,12 +55,12 @@ inline bool CPURegister::IsSP() const {
 inline void CPURegList::Combine(const CPURegList& other) {
   DCHECK(other.type() == type_);
   DCHECK(other.RegisterSizeInBits() == size_);
-  list_ |= other.list();
+  list_ |= other.list_;
 }
 
 inline void CPURegList::Remove(const CPURegList& other) {
   if (other.type() == type_) {
-    list_ &= ~other.list();
+    list_ &= ~other.list_;
   }
 }
 
@@ -194,17 +193,17 @@ inline VRegister CPURegister::Q() const {
 // Default initializer is for int types
 template <typename T>
 struct ImmediateInitializer {
-  static inline RelocInfo::Mode rmode_for(T) { return RelocInfo::NONE; }
+  static inline RelocInfo::Mode rmode_for(T) { return RelocInfo::NO_INFO; }
   static inline int64_t immediate_for(T t) {
-    STATIC_ASSERT(sizeof(T) <= 8);
-    STATIC_ASSERT(std::is_integral<T>::value || std::is_enum<T>::value);
+    static_assert(sizeof(T) <= 8);
+    static_assert(std::is_integral<T>::value || std::is_enum<T>::value);
     return t;
   }
 };
 
 template <>
 struct ImmediateInitializer<Smi> {
-  static inline RelocInfo::Mode rmode_for(Smi t) { return RelocInfo::NONE; }
+  static inline RelocInfo::Mode rmode_for(Smi t) { return RelocInfo::NO_INFO; }
   static inline int64_t immediate_for(Smi t) {
     return static_cast<int64_t>(t.ptr());
   }
@@ -234,7 +233,7 @@ Immediate::Immediate(T t)
 template <typename T>
 Immediate::Immediate(T t, RelocInfo::Mode rmode)
     : value_(ImmediateInitializer<T>::immediate_for(t)), rmode_(rmode) {
-  STATIC_ASSERT(std::is_integral<T>::value);
+  static_assert(std::is_integral<T>::value);
 }
 
 template <typename T>
@@ -489,15 +488,15 @@ Tagged_t Assembler::target_compressed_address_at(Address pc,
   return Memory<Tagged_t>(target_pointer_address_at(pc));
 }
 
-Handle<Code> Assembler::code_target_object_handle_at(Address pc) {
+Handle<CodeT> Assembler::code_target_object_handle_at(Address pc) {
   Instruction* instr = reinterpret_cast<Instruction*>(pc);
   if (instr->IsLdrLiteralX()) {
-    return Handle<Code>(reinterpret_cast<Address*>(
+    return Handle<CodeT>(reinterpret_cast<Address*>(
         Assembler::target_address_at(pc, 0 /* unused */)));
   } else {
     DCHECK(instr->IsBranchAndLink() || instr->IsUnconditionalBranch());
     DCHECK_EQ(instr->ImmPCOffset() % kInstrSize, 0);
-    return Handle<Code>::cast(
+    return Handle<CodeT>::cast(
         GetEmbeddedObject(instr->ImmPCOffset() >> kInstrSizeLog2));
   }
 }
@@ -506,7 +505,7 @@ AssemblerBase::EmbeddedObjectIndex
 Assembler::embedded_object_index_referenced_from(Address pc) {
   Instruction* instr = reinterpret_cast<Instruction*>(pc);
   if (instr->IsLdrLiteralX()) {
-    STATIC_ASSERT(sizeof(EmbeddedObjectIndex) == sizeof(intptr_t));
+    static_assert(sizeof(EmbeddedObjectIndex) == sizeof(intptr_t));
     return Memory<EmbeddedObjectIndex>(target_pointer_address_at(pc));
   } else {
     DCHECK(instr->IsLdrLiteralW());
@@ -538,7 +537,7 @@ Address Assembler::runtime_entry_at(Address pc) {
     return Assembler::target_address_at(pc, 0 /* unused */);
   } else {
     DCHECK(instr->IsBranchAndLink() || instr->IsUnconditionalBranch());
-    return instr->ImmPCOffset() + options().code_range_start;
+    return instr->ImmPCOffset() + options().code_range_base;
   }
 }
 
@@ -657,31 +656,30 @@ Address RelocInfo::constant_pool_entry_address() {
   return Assembler::target_pointer_address_at(pc_);
 }
 
-HeapObject RelocInfo::target_object() {
+HeapObject RelocInfo::target_object(PtrComprCageBase cage_base) {
   DCHECK(IsCodeTarget(rmode_) || IsEmbeddedObjectMode(rmode_));
-  if (IsCompressedEmbeddedObject(rmode_)) {
-    CHECK(!host_.is_null());
-    return HeapObject::cast(Object(DecompressTaggedAny(
-        host_.address(),
-        Assembler::target_compressed_address_at(pc_, constant_pool_))));
+  if (IsDataEmbeddedObject(rmode_)) {
+    return HeapObject::cast(Object(ReadUnalignedValue<Address>(pc_)));
+  } else if (IsCompressedEmbeddedObject(rmode_)) {
+    Tagged_t compressed =
+        Assembler::target_compressed_address_at(pc_, constant_pool_);
+    DCHECK(!HAS_SMI_TAG(compressed));
+    Object obj(DecompressTaggedPointer(cage_base, compressed));
+    // Embedding of compressed Code objects must not happen when external code
+    // space is enabled, because CodeDataContainers must be used instead.
+    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL,
+                   !IsCodeSpaceObject(HeapObject::cast(obj)));
+    return HeapObject::cast(obj);
   } else {
     return HeapObject::cast(
         Object(Assembler::target_address_at(pc_, constant_pool_)));
   }
 }
 
-HeapObject RelocInfo::target_object_no_host(Isolate* isolate) {
-  if (IsCompressedEmbeddedObject(rmode_)) {
-    return HeapObject::cast(Object(DecompressTaggedAny(
-        isolate,
-        Assembler::target_compressed_address_at(pc_, constant_pool_))));
-  } else {
-    return target_object();
-  }
-}
-
 Handle<HeapObject> RelocInfo::target_object_handle(Assembler* origin) {
-  if (IsEmbeddedObjectMode(rmode_)) {
+  if (IsDataEmbeddedObject(rmode_)) {
+    return Handle<HeapObject>::cast(ReadUnalignedValue<Handle<Object>>(pc_));
+  } else if (IsEmbeddedObjectMode(rmode_)) {
     return origin->target_object_handle_at(pc_);
   } else {
     DCHECK(IsCodeTarget(rmode_));
@@ -693,7 +691,10 @@ void RelocInfo::set_target_object(Heap* heap, HeapObject target,
                                   WriteBarrierMode write_barrier_mode,
                                   ICacheFlushMode icache_flush_mode) {
   DCHECK(IsCodeTarget(rmode_) || IsEmbeddedObjectMode(rmode_));
-  if (IsCompressedEmbeddedObject(rmode_)) {
+  if (IsDataEmbeddedObject(rmode_)) {
+    WriteUnalignedValue(pc_, target.ptr());
+    // No need to flush icache since no instructions were changed.
+  } else if (IsCompressedEmbeddedObject(rmode_)) {
     Assembler::set_target_compressed_address_at(
         pc_, constant_pool_, CompressTagged(target.ptr()), icache_flush_mode);
   } else {
@@ -701,9 +702,8 @@ void RelocInfo::set_target_object(Heap* heap, HeapObject target,
     Assembler::set_target_address_at(pc_, constant_pool_, target.ptr(),
                                      icache_flush_mode);
   }
-  if (write_barrier_mode == UPDATE_WRITE_BARRIER && !host().is_null() &&
-      !FLAG_disable_write_barriers) {
-    WriteBarrierForCode(host(), this, target);
+  if (!host().is_null() && !FLAG_disable_write_barriers) {
+    WriteBarrierForCode(host(), this, target, write_barrier_mode);
   }
 }
 
@@ -1065,19 +1065,8 @@ const Register& Assembler::AppropriateZeroRegFor(const CPURegister& reg) const {
   return reg.Is64Bits() ? xzr : wzr;
 }
 
-inline void Assembler::CheckBufferSpace() {
-  DCHECK_LT(pc_, buffer_start_ + buffer_->size());
-  if (buffer_space() < kGap) {
-    GrowBuffer();
-  }
-}
-
-inline void Assembler::CheckBuffer() {
-  CheckBufferSpace();
-  if (pc_offset() >= next_veneer_pool_check_) {
-    CheckVeneerPool(false, true);
-  }
-  constpool_.MaybeCheck();
+EnsureSpace::EnsureSpace(Assembler* assembler) : block_pools_scope_(assembler) {
+  assembler->CheckBufferSpace();
 }
 
 }  // namespace internal

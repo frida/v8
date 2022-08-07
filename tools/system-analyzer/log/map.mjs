@@ -7,8 +7,9 @@ import {LogEntry} from './log.mjs';
 // ===========================================================================
 // Map Log Events
 
-const kChunkHeight = 200;
-const kChunkWidth = 10;
+export const kChunkHeight = 200;
+export const kChunkWidth = 10;
+export const kChunkVisualWidth = 6;
 
 function define(prototype, name, fn) {
   Object.defineProperty(prototype, name, {value: fn, enumerable: false});
@@ -33,22 +34,35 @@ define(Array.prototype, 'last', function() {
 // ===========================================================================
 // Map Log Events
 
-class MapLogEntry extends LogEntry {
-  edge = void 0;
-  children = [];
-  depth = 0;
-  _isDeprecated = false;
-  deprecatedTargets = null;
-  leftId = 0;
-  rightId = 0;
-  filePosition = '';
-  script = '';
-  id = -1;
+export class MapLogEntry extends LogEntry {
   constructor(id, time) {
     if (!time) throw new Error('Invalid time');
-    super(id, time);
-    MapLogEntry.set(id, this);
+    // Use MapLogEntry.type getter instead of property, since we only know the
+    // type lazily from the incoming transition.
+    super(undefined, time);
     this.id = id;
+    MapLogEntry.set(id, this);
+    this.edge = undefined;
+    this.children = [];
+    this.depth = 0;
+    this._isDeprecated = false;
+    this.deprecatedTargets = null;
+    this.leftId = 0;
+    this.rightId = 0;
+    this.entry = undefined;
+    this.description = '';
+  }
+
+  get functionName() {
+    return this.entry?.functionName;
+  }
+
+  get code() {
+    return this.entry?.logEntry;
+  }
+
+  toString() {
+    return `Map(${this.id})`;
   }
 
   finalizeRootMap(id) {
@@ -59,9 +73,9 @@ class MapLogEntry extends LogEntry {
         console.warn('Skipping potential parent loop between maps:', current)
         continue;
       }
-      current.finalize(id)
+      current.finalize(id);
       id += 1;
-      current.children.forEach(edge => stack.push(edge.to))
+      current.children.forEach(edge => stack.push(edge.to));
       // TODO implement rightId
     }
     return id;
@@ -74,9 +88,8 @@ class MapLogEntry extends LogEntry {
     this.leftId = currentId
   }
 
-  parent() {
-    if (this.edge === void 0) return void 0;
-    return this.edge.from;
+  get parent() {
+    return this.edge?.from;
   }
 
   isDeprecated() {
@@ -88,7 +101,7 @@ class MapLogEntry extends LogEntry {
   }
 
   isRoot() {
-    return this.edge === void 0 || this.edge.from === void 0;
+    return this.edge === undefined || this.edge.from === undefined;
   }
 
   contains(map) {
@@ -111,9 +124,10 @@ class MapLogEntry extends LogEntry {
   }
 
   position(chunks) {
-    let index = this.chunkIndex(chunks);
-    let xFrom = (index + 1.5) * kChunkWidth;
-    let yFrom = kChunkHeight - chunks[index].yOffset(this);
+    const index = this.chunkIndex(chunks);
+    if (index === -1) return [0, 0];
+    const xFrom = (index * kChunkWidth + kChunkVisualWidth / 2) | 0;
+    const yFrom = kChunkHeight - chunks[index].yOffset(this) | 0;
     return [xFrom, yFrom];
   }
 
@@ -125,40 +139,49 @@ class MapLogEntry extends LogEntry {
       if (edge && edge.isTransition()) {
         transitions[edge.name] = edge;
       }
-      current = current.parent()
+      current = current.parent;
     }
     return transitions;
   }
 
   get type() {
-    return this.edge === void 0 ? 'new' : this.edge.type;
+    return this.edge?.type ?? 'new';
+  }
+
+  get reason() {
+    return this.edge?.reason;
+  }
+
+  get property() {
+    return this.edge?.name;
   }
 
   isBootstrapped() {
-    return this.edge === void 0;
+    return this.edge === undefined;
   }
 
   getParents() {
     let parents = [];
-    let current = this.parent();
+    let current = this.parent;
     while (current) {
       parents.push(current);
-      current = current.parent();
+      current = current.parent;
     }
     return parents;
   }
 
   static get(id, time = undefined) {
     let maps = this.cache.get(id);
-    if (maps) {
+    if (maps === undefined) return undefined;
+    if (time !== undefined) {
       for (let i = 1; i < maps.length; i++) {
         if (maps[i].time > time) {
           return maps[i - 1];
         }
       }
-      // default return the latest
-      return (maps.length > 0) ? maps[maps.length - 1] : undefined;
     }
+    // default return the latest
+    return maps[maps.length - 1];
   }
 
   static set(id, map) {
@@ -168,12 +191,19 @@ class MapLogEntry extends LogEntry {
       this.cache.set(id, [map]);
     }
   }
+
+  static get propertyNames() {
+    return [
+      'type', 'reason', 'property', 'parent', 'functionName', 'sourcePosition',
+      'script', 'code', 'id', 'description'
+    ];
+  }
 }
 
 MapLogEntry.cache = new Map();
 
 // ===========================================================================
-class Edge {
+export class Edge {
   constructor(type, name, reason, time, from, to) {
     this.type = type;
     this.name = name;
@@ -183,17 +213,29 @@ class Edge {
     this.to = to;
   }
 
+  updateFrom(edge) {
+    if (this.to !== edge.to || this.from !== edge.from) {
+      throw new Error('Invalid Edge updated', this, to);
+    }
+    this.type = edge.type;
+    this.name = edge.name;
+    this.reason = edge.reason;
+    this.time = edge.time;
+  }
+
   finishSetup() {
-    let from = this.from;
+    const from = this.from;
+    const to = this.to;
+    if (to?.time < from?.time) {
+      // This happens for map deprecation where the transition tree is converted
+      // in reverse order.
+      console.warn('Invalid time order');
+    }
     if (from) from.addEdge(this);
-    let to = this.to;
     if (to === undefined) return;
     to.edge = this;
     if (from === undefined) return;
     if (to === from) throw 'From and to must be distinct.';
-    if (to.time < from.time) {
-      console.warn('invalid time order');
-    }
     let newDepth = from.depth + 1;
     if (to.depth > 0 && to.depth != newDepth) {
       console.warn('Depth has already been initialized');
@@ -285,5 +327,3 @@ class Edge {
         (this.name ? this.name : '')
   }
 }
-
-export {MapLogEntry, Edge, kChunkWidth, kChunkHeight};

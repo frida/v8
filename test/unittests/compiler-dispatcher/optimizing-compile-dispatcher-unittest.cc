@@ -26,11 +26,10 @@ using OptimizingCompileDispatcherTest = TestWithNativeContext;
 
 namespace {
 
-class BlockingCompilationJob : public OptimizedCompilationJob {
+class BlockingCompilationJob : public TurbofanCompilationJob {
  public:
   BlockingCompilationJob(Isolate* isolate, Handle<JSFunction> function)
-      : OptimizedCompilationJob(&info_, "BlockingCompilationJob",
-                                State::kReadyToExecute),
+      : TurbofanCompilationJob(&info_, State::kReadyToExecute),
         shared_(function->shared(), isolate),
         zone_(isolate->allocator(), ZONE_NAME),
         info_(&zone_, isolate, shared_, function, CodeKind::TURBOFAN),
@@ -76,8 +75,8 @@ TEST_F(OptimizingCompileDispatcherTest, NonBlockingFlush) {
   Handle<JSFunction> fun =
       RunJS<JSFunction>("function f() { function g() {}; return g;}; f();");
   IsCompiledScope is_compiled_scope;
-  ASSERT_TRUE(
-      Compiler::Compile(fun, Compiler::CLEAR_EXCEPTION, &is_compiled_scope));
+  ASSERT_TRUE(Compiler::Compile(i_isolate(), fun, Compiler::CLEAR_EXCEPTION,
+                                &is_compiled_scope));
   BlockingCompilationJob* job = new BlockingCompilationJob(i_isolate(), fun);
 
   OptimizingCompileDispatcher dispatcher(i_isolate());

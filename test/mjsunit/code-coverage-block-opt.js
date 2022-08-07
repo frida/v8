@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --no-always-opt --opt
-// Flags: --no-stress-flush-bytecode --turbo-inlining
+// Flags: --allow-natives-syntax --no-always-turbofan --turbofan
+// Flags: --no-stress-flush-code --turbo-inlining
 // Files: test/mjsunit/code-coverage-utils.js
 
 if (isNeverOptimizeLiteMode()) {

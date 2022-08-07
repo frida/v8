@@ -14,6 +14,7 @@
 #include "src/base/bits.h"
 #include "src/base/hashmap-entry.h"
 #include "src/base/logging.h"
+#include "src/base/platform/wrappers.h"
 
 namespace v8 {
 namespace base {
@@ -22,11 +23,11 @@ class DefaultAllocationPolicy {
  public:
   template <typename T, typename TypeTag = T[]>
   V8_INLINE T* NewArray(size_t length) {
-    return static_cast<T*>(malloc(length * sizeof(T)));
+    return static_cast<T*>(base::Malloc(length * sizeof(T)));
   }
   template <typename T, typename TypeTag = T[]>
   V8_INLINE void DeleteArray(T* p, size_t length) {
-    free(p);
+    base::Free(p);
   }
 };
 
@@ -529,8 +530,8 @@ class TemplateHashMap
                                    AllocationPolicy>;
 
  public:
-  STATIC_ASSERT(sizeof(Key*) == sizeof(void*));    // NOLINT
-  STATIC_ASSERT(sizeof(Value*) == sizeof(void*));  // NOLINT
+  static_assert(sizeof(Key*) == sizeof(void*));
+  static_assert(sizeof(Value*) == sizeof(void*));
   struct value_type {
     Key* first;
     Value* second;

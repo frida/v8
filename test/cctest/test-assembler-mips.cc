@@ -25,9 +25,7 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#include <iostream>  // NOLINT(readability/streams)
-
-#include "src/init/v8.h"
+#include <iostream>
 
 #include "src/base/utils/random-number-generator.h"
 #include "src/codegen/assembler-inl.h"
@@ -35,7 +33,7 @@
 #include "src/diagnostics/disassembler.h"
 #include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-
+#include "src/init/v8.h"
 #include "test/cctest/cctest.h"
 
 namespace v8 {
@@ -3506,28 +3504,28 @@ TEST(class_fmt) {
 
     f.Call(&t, 0, 0, 0, 0);
     // Expected double results.
-    CHECK_EQ(bit_cast<int64_t>(t.dSignalingNan), 0x001);
-    CHECK_EQ(bit_cast<int64_t>(t.dQuietNan),     0x002);
-    CHECK_EQ(bit_cast<int64_t>(t.dNegInf),       0x004);
-    CHECK_EQ(bit_cast<int64_t>(t.dNegNorm),      0x008);
-    CHECK_EQ(bit_cast<int64_t>(t.dNegSubnorm),   0x010);
-    CHECK_EQ(bit_cast<int64_t>(t.dNegZero),      0x020);
-    CHECK_EQ(bit_cast<int64_t>(t.dPosInf),       0x040);
-    CHECK_EQ(bit_cast<int64_t>(t.dPosNorm),      0x080);
-    CHECK_EQ(bit_cast<int64_t>(t.dPosSubnorm),   0x100);
-    CHECK_EQ(bit_cast<int64_t>(t.dPosZero),      0x200);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dSignalingNan), 0x001);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dQuietNan), 0x002);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dNegInf), 0x004);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dNegNorm), 0x008);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dNegSubnorm), 0x010);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dNegZero), 0x020);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dPosInf), 0x040);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dPosNorm), 0x080);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dPosSubnorm), 0x100);
+    CHECK_EQ(base::bit_cast<int64_t>(t.dPosZero), 0x200);
 
     // Expected float results.
-    CHECK_EQ(bit_cast<int32_t>(t.fSignalingNan), 0x001);
-    CHECK_EQ(bit_cast<int32_t>(t.fQuietNan),     0x002);
-    CHECK_EQ(bit_cast<int32_t>(t.fNegInf),       0x004);
-    CHECK_EQ(bit_cast<int32_t>(t.fNegNorm),      0x008);
-    CHECK_EQ(bit_cast<int32_t>(t.fNegSubnorm),   0x010);
-    CHECK_EQ(bit_cast<int32_t>(t.fNegZero),      0x020);
-    CHECK_EQ(bit_cast<int32_t>(t.fPosInf),       0x040);
-    CHECK_EQ(bit_cast<int32_t>(t.fPosNorm),      0x080);
-    CHECK_EQ(bit_cast<int32_t>(t.fPosSubnorm),   0x100);
-    CHECK_EQ(bit_cast<int32_t>(t.fPosZero),      0x200);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fSignalingNan), 0x001);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fQuietNan), 0x002);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fNegInf), 0x004);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fNegNorm), 0x008);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fNegSubnorm), 0x010);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fNegZero), 0x020);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fPosInf), 0x040);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fPosNorm), 0x080);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fPosSubnorm), 0x100);
+    CHECK_EQ(base::bit_cast<int32_t>(t.fPosZero), 0x200);
   }
 }
 
@@ -4028,100 +4026,100 @@ TEST(CMP_COND_FMT) {
     test.fOp1 = 2.0;
     test.fOp2 = 3.0;
     (f.Call(&test, 0, 0, 0, 0));
-    CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUeq), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOlt), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUlt), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOle), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUle), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOr), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUne), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dNe), dTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fF), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUn), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fEq), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUeq), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOlt), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUlt), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOle), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUle), fTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dF), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUn), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dEq), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUeq), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOlt), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUlt), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOle), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUle), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOr), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUne), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dNe), dTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fF), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUn), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fEq), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUeq), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOlt), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUlt), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOle), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUle), fTrue);
 
     test.dOp1 = std::numeric_limits<double>::max();
     test.dOp2 = std::numeric_limits<double>::min();
     test.fOp1 = std::numeric_limits<float>::min();
     test.fOp2 = -std::numeric_limits<float>::max();  // lowest()
     (f.Call(&test, 0, 0, 0, 0));
-    CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUeq), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOlt), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUlt), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOle), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUle), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOr), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUne), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dNe), dTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fF), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUn), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fEq), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUeq), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOlt), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUlt), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOle), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUle), fFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dF), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUn), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dEq), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUeq), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOlt), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUlt), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOle), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUle), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOr), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUne), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dNe), dTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fF), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUn), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fEq), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUeq), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOlt), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUlt), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOle), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUle), fFalse);
 
     test.dOp1 = -std::numeric_limits<double>::max();  // lowest()
     test.dOp2 = -std::numeric_limits<double>::max();  // lowest()
     test.fOp1 = std::numeric_limits<float>::max();
     test.fOp2 = std::numeric_limits<float>::max();
     (f.Call(&test, 0, 0, 0, 0));
-    CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUn), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dEq), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUeq), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOlt), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUlt), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOle), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUle), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOr), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUne), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dNe), dFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fF), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUn), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fEq), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUeq), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOlt), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUlt), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOle), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUle), fTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dF), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUn), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dEq), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUeq), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOlt), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUlt), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOle), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUle), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOr), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUne), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dNe), dFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fF), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUn), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fEq), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUeq), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOlt), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUlt), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOle), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUle), fTrue);
 
     test.dOp1 = std::numeric_limits<double>::quiet_NaN();
     test.dOp2 = 0.0;
     test.fOp1 = std::numeric_limits<float>::quiet_NaN();
     test.fOp2 = 0.0;
     (f.Call(&test, 0, 0, 0, 0));
-    CHECK_EQ(bit_cast<uint64_t>(test.dF), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUn), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dEq), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUeq), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOlt), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUlt), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOle), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUle), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dOr), dFalse);
-    CHECK_EQ(bit_cast<uint64_t>(test.dUne), dTrue);
-    CHECK_EQ(bit_cast<uint64_t>(test.dNe), dFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fF), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUn), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fEq), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUeq), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOlt), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUlt), fTrue);
-    CHECK_EQ(bit_cast<uint32_t>(test.fOle), fFalse);
-    CHECK_EQ(bit_cast<uint32_t>(test.fUle), fTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dF), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUn), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dEq), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUeq), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOlt), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUlt), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOle), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUle), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dOr), dFalse);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dUne), dTrue);
+    CHECK_EQ(base::bit_cast<uint64_t>(test.dNe), dFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fF), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUn), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fEq), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUeq), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOlt), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUlt), fTrue);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fOle), fFalse);
+    CHECK_EQ(base::bit_cast<uint32_t>(test.fUle), fTrue);
   }
 }
 
@@ -5547,15 +5545,15 @@ TEST(Call_with_trampoline) {
     __ Call(FUNCTION_ADDR(DummyFunction), RelocInfo::RUNTIME_ENTRY);
   }
   int pc_offset_after = __ pc_offset();
-  int last_call_pc = __ pc_offset_for_safepoint();
+  int safepoint_pc_offset = __ pc_offset_for_safepoint();
 
   // Without trampoline, the Call emits no more than 6 instructions, otherwise
   // more than 6 instructions will be generated.
   int num_instrs = 6;
   // pc_offset_after records the offset after trampoline.
   CHECK_GT(pc_offset_after - pc_offset_before, num_instrs * kInstrSize);
-  // last_call_pc records the offset before trampoline.
-  CHECK_LE(last_call_pc - pc_offset_before, num_instrs * kInstrSize);
+  // safepoint_pc_offset records the offset before trampoline.
+  CHECK_LE(safepoint_pc_offset - pc_offset_before, num_instrs * kInstrSize);
 
   __ bind(&done);
 }
@@ -6751,82 +6749,82 @@ TEST(MSA_maxi_mini) {
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_s_b(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesByte, UINT8_MAX, Max));
+        MAXI_MINI_S_DF(kMSALanesByte, UINT8_MAX, std::max));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_s_h(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesHalf, UINT16_MAX, Max));
+        MAXI_MINI_S_DF(kMSALanesHalf, UINT16_MAX, std::max));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_s_w(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesWord, UINT32_MAX, Max));
+        MAXI_MINI_S_DF(kMSALanesWord, UINT32_MAX, std::max));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_s_d(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesDword, UINT64_MAX, Max));
+        MAXI_MINI_S_DF(kMSALanesDword, UINT64_MAX, std::max));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ mini_s_b(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesByte, UINT8_MAX, Min));
+        MAXI_MINI_S_DF(kMSALanesByte, UINT8_MAX, std::min));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ mini_s_h(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesHalf, UINT16_MAX, Min));
+        MAXI_MINI_S_DF(kMSALanesHalf, UINT16_MAX, std::min));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ mini_s_w(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesWord, UINT32_MAX, Min));
+        MAXI_MINI_S_DF(kMSALanesWord, UINT32_MAX, std::min));
 
     run_msa_i5(
         &tc[i], true,
         [](MacroAssembler& assm, int32_t i5) { __ mini_s_d(w2, w0, i5); },
-        MAXI_MINI_S_DF(kMSALanesDword, UINT64_MAX, Min));
+        MAXI_MINI_S_DF(kMSALanesDword, UINT64_MAX, std::min));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_u_b(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesByte, UINT8_MAX, Max));
+        MAXI_MINI_U_DF(kMSALanesByte, UINT8_MAX, std::max));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_u_h(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesHalf, UINT16_MAX, Max));
+        MAXI_MINI_U_DF(kMSALanesHalf, UINT16_MAX, std::max));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_u_w(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesWord, UINT32_MAX, Max));
+        MAXI_MINI_U_DF(kMSALanesWord, UINT32_MAX, std::max));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ maxi_u_d(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesDword, UINT64_MAX, Max));
+        MAXI_MINI_U_DF(kMSALanesDword, UINT64_MAX, std::max));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ mini_u_b(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesByte, UINT8_MAX, Min));
+        MAXI_MINI_U_DF(kMSALanesByte, UINT8_MAX, std::min));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ mini_u_h(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesHalf, UINT16_MAX, Min));
+        MAXI_MINI_U_DF(kMSALanesHalf, UINT16_MAX, std::min));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ mini_u_w(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesWord, UINT32_MAX, Min));
+        MAXI_MINI_U_DF(kMSALanesWord, UINT32_MAX, std::min));
 
     run_msa_i5(
         &tc[i], false,
         [](MacroAssembler& assm, int32_t i5) { __ mini_u_d(w2, w0, i5); },
-        MAXI_MINI_U_DF(kMSALanesDword, UINT64_MAX, Min));
+        MAXI_MINI_U_DF(kMSALanesDword, UINT64_MAX, std::min));
   }
 #undef MAXI_MINI_S_DF
 #undef MAXI_MINI_U_DF
@@ -9002,30 +9000,32 @@ TEST(MSA_3R_instructions) {
     wd[i] = res;                                                     \
   }
 
-#define MAX_DF(T, lanes, mask)                                              \
-  int size_in_bits = kMSARegSize / lanes;                                   \
-  for (int i = 0; i < 2; i++) {                                             \
-    uint64_t res = 0;                                                       \
-    for (int j = 0; j < lanes / 2; ++j) {                                   \
-      uint64_t shift = size_in_bits * j;                                    \
-      T ws_op = static_cast<T>((ws[i] >> shift) & mask);                    \
-      T wt_op = static_cast<T>((wt[i] >> shift) & mask);                    \
-      res |= (static_cast<uint64_t>(Max<T>(ws_op, wt_op)) & mask) << shift; \
-    }                                                                       \
-    wd[i] = res;                                                            \
+#define MAX_DF(T, lanes, mask)                                         \
+  int size_in_bits = kMSARegSize / lanes;                              \
+  for (int i = 0; i < 2; i++) {                                        \
+    uint64_t res = 0;                                                  \
+    for (int j = 0; j < lanes / 2; ++j) {                              \
+      uint64_t shift = size_in_bits * j;                               \
+      T ws_op = static_cast<T>((ws[i] >> shift) & mask);               \
+      T wt_op = static_cast<T>((wt[i] >> shift) & mask);               \
+      res |= (static_cast<uint64_t>(std::max<T>(ws_op, wt_op)) & mask) \
+             << shift;                                                 \
+    }                                                                  \
+    wd[i] = res;                                                       \
   }
 
-#define MIN_DF(T, lanes, mask)                                              \
-  int size_in_bits = kMSARegSize / lanes;                                   \
-  for (int i = 0; i < 2; i++) {                                             \
-    uint64_t res = 0;                                                       \
-    for (int j = 0; j < lanes / 2; ++j) {                                   \
-      uint64_t shift = size_in_bits * j;                                    \
-      T ws_op = static_cast<T>((ws[i] >> shift) & mask);                    \
-      T wt_op = static_cast<T>((wt[i] >> shift) & mask);                    \
-      res |= (static_cast<uint64_t>(Min<T>(ws_op, wt_op)) & mask) << shift; \
-    }                                                                       \
-    wd[i] = res;                                                            \
+#define MIN_DF(T, lanes, mask)                                         \
+  int size_in_bits = kMSARegSize / lanes;                              \
+  for (int i = 0; i < 2; i++) {                                        \
+    uint64_t res = 0;                                                  \
+    for (int j = 0; j < lanes / 2; ++j) {                              \
+      uint64_t shift = size_in_bits * j;                               \
+      T ws_op = static_cast<T>((ws[i] >> shift) & mask);               \
+      T wt_op = static_cast<T>((wt[i] >> shift) & mask);               \
+      res |= (static_cast<uint64_t>(std::min<T>(ws_op, wt_op)) & mask) \
+             << shift;                                                 \
+    }                                                                  \
+    wd[i] = res;                                                       \
   }
 
 #define MAXA_DF(T, lanes, mask)                                               \
@@ -10326,18 +10326,24 @@ TEST(MSA_fexdo) {
        static_cast<int16_t>(0xFC00), static_cast<int16_t>(0x0000)}};
 
   const struct ExpRes_32I exp_res_fexdo_d[] = {
-      {bit_cast<int32_t>(0x7F800000), bit_cast<int32_t>(0x7F7FC99E),
-       bit_cast<int32_t>(0x7F800000), bit_cast<int32_t>(0xC49A4000)},
-      {bit_cast<int32_t>(0xC21BAE14), bit_cast<int32_t>(0xFF800000),
-       bit_cast<int32_t>(0x0082AB1E), bit_cast<int32_t>(0x000BFA5A)},
-      {bit_cast<int32_t>(0x7673B164), bit_cast<int32_t>(0xFB13653D),
-       bit_cast<int32_t>(0x80000000), bit_cast<int32_t>(0x00000000)},
-      {bit_cast<int32_t>(0x000002CA), bit_cast<int32_t>(0x80000000),
-       bit_cast<int32_t>(0x80000001), bit_cast<int32_t>(0x00000001)},
-      {bit_cast<int32_t>(0xFF800000), bit_cast<int32_t>(0x56B5E621),
-       bit_cast<int32_t>(0x00000000), bit_cast<int32_t>(0x7F800000)},
-      {bit_cast<int32_t>(0xF673B164), bit_cast<int32_t>(0x7B13653D),
-       bit_cast<int32_t>(0x0000042E), bit_cast<int32_t>(0x00000000)}};
+      {base::bit_cast<int32_t>(0x7F800000), base::bit_cast<int32_t>(0x7F7FC99E),
+       base::bit_cast<int32_t>(0x7F800000),
+       base::bit_cast<int32_t>(0xC49A4000)},
+      {base::bit_cast<int32_t>(0xC21BAE14), base::bit_cast<int32_t>(0xFF800000),
+       base::bit_cast<int32_t>(0x0082AB1E),
+       base::bit_cast<int32_t>(0x000BFA5A)},
+      {base::bit_cast<int32_t>(0x7673B164), base::bit_cast<int32_t>(0xFB13653D),
+       base::bit_cast<int32_t>(0x80000000),
+       base::bit_cast<int32_t>(0x00000000)},
+      {base::bit_cast<int32_t>(0x000002CA), base::bit_cast<int32_t>(0x80000000),
+       base::bit_cast<int32_t>(0x80000001),
+       base::bit_cast<int32_t>(0x00000001)},
+      {base::bit_cast<int32_t>(0xFF800000), base::bit_cast<int32_t>(0x56B5E621),
+       base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x7F800000)},
+      {base::bit_cast<int32_t>(0xF673B164), base::bit_cast<int32_t>(0x7B13653D),
+       base::bit_cast<int32_t>(0x0000042E),
+       base::bit_cast<int32_t>(0x00000000)}};
 
 #define TEST_FEXDO_H(instruction, src, exp_res)                               \
   run_msa_3rf(reinterpret_cast<const struct TestCaseMsa3RF*>(src),            \
@@ -10401,18 +10407,24 @@ TEST(MSA_ftq) {
        static_cast<int16_t>(0x8000), static_cast<int16_t>(0x0000)}};
 
   const struct ExpRes_32I exp_res_ftq_d[] = {
-      {bit_cast<int32_t>(0x7FFFFFFF), bit_cast<int32_t>(0xFFFEFBF4),
-       bit_cast<int32_t>(0x7FFFFFFF), bit_cast<int32_t>(0x8020C49C)},
-      {bit_cast<int32_t>(0x004B5DCC), bit_cast<int32_t>(0x00000000),
-       bit_cast<int32_t>(0x000000D7), bit_cast<int32_t>(0xB374BC6A)},
-      {bit_cast<int32_t>(0x80000000), bit_cast<int32_t>(0x7FFFFFFF),
-       bit_cast<int32_t>(0x7FFFFFFF), bit_cast<int32_t>(0x80000000)},
-      {bit_cast<int32_t>(0x7FFCB900), bit_cast<int32_t>(0xFFF572DE),
-       bit_cast<int32_t>(0x00000000), bit_cast<int32_t>(0x80000000)},
-      {bit_cast<int32_t>(0x80000000), bit_cast<int32_t>(0x00000000),
-       bit_cast<int32_t>(0x00000000), bit_cast<int32_t>(0x7FFFFFFF)},
-      {bit_cast<int32_t>(0x7FFFFFFF), bit_cast<int32_t>(0x00000000),
-       bit_cast<int32_t>(0x80000000), bit_cast<int32_t>(0x00000000)}};
+      {base::bit_cast<int32_t>(0x7FFFFFFF), base::bit_cast<int32_t>(0xFFFEFBF4),
+       base::bit_cast<int32_t>(0x7FFFFFFF),
+       base::bit_cast<int32_t>(0x8020C49C)},
+      {base::bit_cast<int32_t>(0x004B5DCC), base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x000000D7),
+       base::bit_cast<int32_t>(0xB374BC6A)},
+      {base::bit_cast<int32_t>(0x80000000), base::bit_cast<int32_t>(0x7FFFFFFF),
+       base::bit_cast<int32_t>(0x7FFFFFFF),
+       base::bit_cast<int32_t>(0x80000000)},
+      {base::bit_cast<int32_t>(0x7FFCB900), base::bit_cast<int32_t>(0xFFF572DE),
+       base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x80000000)},
+      {base::bit_cast<int32_t>(0x80000000), base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x7FFFFFFF)},
+      {base::bit_cast<int32_t>(0x7FFFFFFF), base::bit_cast<int32_t>(0x00000000),
+       base::bit_cast<int32_t>(0x80000000),
+       base::bit_cast<int32_t>(0x00000000)}};
 
 #define TEST_FTQ_H(instruction, src, exp_res)                                 \
   run_msa_3rf(reinterpret_cast<const struct TestCaseMsa3RF*>(src),            \

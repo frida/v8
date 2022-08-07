@@ -5,9 +5,8 @@
 #ifndef V8_CODEGEN_ARM64_DECODER_ARM64_INL_H_
 #define V8_CODEGEN_ARM64_DECODER_ARM64_INL_H_
 
+#include "src/base/v8-fallthrough.h"
 #include "src/codegen/arm64/decoder-arm64.h"
-#include "src/common/globals.h"
-#include "src/utils/utils.h"
 
 namespace v8 {
 namespace internal {
@@ -445,10 +444,7 @@ void Decoder<V>::DecodeDataProcessing(Instruction* instr) {
                 V::VisitDataProcessing2Source(instr);
               }
             } else {
-              if ((instr->InstructionBits() & PointerAuthenticationFMask) ==
-                  PointerAuthenticationFixed) {
-                V::VisitPointerAuthentication(instr);
-              } else if ((instr->Bit(13) == 1) || (instr->Bits(20, 16) != 0) ||
+              if ((instr->Bit(13) == 1) || (instr->Bits(20, 16) != 0) ||
                   (instr->Bits(15, 14) != 0) ||
                   (instr->Mask(0xA01FFC00) == 0x00000C00) ||
                   (instr->Mask(0x201FF800) == 0x00001800)) {

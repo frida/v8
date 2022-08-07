@@ -4,12 +4,11 @@
 
 #include "src/base/utils/random-number-generator.h"
 
+#include <stdio.h>
 #include <stdlib.h>
-#if !V8_OS_CYGWIN && !V8_OS_WIN
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
+#if defined(V8_OS_STARBOARD)
+#include "starboard/system.h"
+#endif  //  V8_OS_STARBOARD
 
 #include <algorithm>
 #include <new>
@@ -18,6 +17,7 @@
 #include "src/base/macros.h"
 #include "src/base/platform/mutex.h"
 #include "src/base/platform/time.h"
+#include "src/base/platform/wrappers.h"
 
 namespace v8 {
 namespace base {
@@ -54,43 +54,25 @@ RandomNumberGenerator::RandomNumberGenerator() {
   DCHECK_EQ(0, result);
   result = rand_s(&second_half);
   DCHECK_EQ(0, result);
+  USE(result);
   SetSeed((static_cast<int64_t>(first_half) << 32) + second_half);
-#elif V8_OS_MACOSX || V8_OS_IOS || V8_OS_FREEBSD || V8_OS_OPENBSD
+#elif V8_OS_DARWIN || V8_OS_FREEBSD || V8_OS_OPENBSD
   // Despite its prefix suggests it is not RC4 algorithm anymore.
   // It always succeeds while having decent performance and
   // no file descriptor involved.
   int64_t seed;
   arc4random_buf(&seed, sizeof(seed));
   SetSeed(seed);
+#elif V8_OS_STARBOARD
+  SetSeed(SbSystemGetRandomUInt64());
 #else
   // Gather entropy from /dev/urandom if available.
-  int fd;
-  do {
-    fd = open("/dev/urandom", O_RDONLY);
-  } while (fd == -1 && errno == EINTR);
-  if (fd != -1) {
-    int64_t seed = 0;
-    bool got_seed = true;
-
-    size_t offset = 0;
-    do {
-      ssize_t n;
-      do {
-        n = read(fd, reinterpret_cast<char*>(&seed) + offset,
-                 sizeof(seed) - offset);
-      } while (n == -1 && errno == EINTR);
-
-      if (n == -1) {
-        got_seed = false;
-        break;
-      }
-
-      offset += n;
-    } while (offset != sizeof(seed));
-
-    close(fd);
-
-    if (got_seed) {
+  FILE* fp = base::Fopen("/dev/urandom", "rb");
+  if (fp != nullptr) {
+    int64_t seed;
+    size_t n = fread(&seed, sizeof(seed), 1, fp);
+    base::Fclose(fp);
+    if (n == 1) {
       SetSeed(seed);
       return;
     }
@@ -105,8 +87,7 @@ RandomNumberGenerator::RandomNumberGenerator() {
   // which provides reasonable entropy, see:
   // https://code.google.com/p/v8/issues/detail?id=2905
   int64_t seed = Time::NowFromSystemTime().ToInternalValue() << 24;
-  seed ^= TimeTicks::HighResolutionNow().ToInternalValue() << 16;
-  seed ^= TimeTicks::Now().ToInternalValue() << 8;
+  seed ^= TimeTicks::Now().ToInternalValue();
   SetSeed(seed);
 #endif  // V8_OS_CYGWIN || V8_OS_WIN
 }
@@ -138,7 +119,7 @@ double RandomNumberGenerator::NextDouble() {
 
 int64_t RandomNumberGenerator::NextInt64() {
   XorShift128(&state0_, &state1_);
-  return bit_cast<int64_t>(state0_ + state1_);
+  return base::bit_cast<int64_t>(state0_ + state1_);
 }
 
 
@@ -238,7 +219,7 @@ int RandomNumberGenerator::Next(int bits) {
 
 void RandomNumberGenerator::SetSeed(int64_t seed) {
   initial_seed_ = seed;
-  state0_ = MurmurHash3(bit_cast<uint64_t>(seed));
+  state0_ = MurmurHash3(base::bit_cast<uint64_t>(seed));
   state1_ = MurmurHash3(~state0_);
   CHECK(state0_ != 0 || state1_ != 0);
 }

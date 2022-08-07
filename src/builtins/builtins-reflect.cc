@@ -88,7 +88,7 @@ BUILTIN(ReflectOwnKeys) {
   Handle<FixedArray> keys;
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(
       isolate, keys,
-      KeyAccumulator::GetKeys(Handle<JSReceiver>::cast(target),
+      KeyAccumulator::GetKeys(isolate, Handle<JSReceiver>::cast(target),
                               KeyCollectionMode::kOwnOnly, ALL_PROPERTIES,
                               GetKeysConversion::kConvertToString));
   return *isolate->factory()->NewJSArrayWithElements(keys);
@@ -113,7 +113,7 @@ BUILTIN(ReflectSet) {
   ASSIGN_RETURN_FAILURE_ON_EXCEPTION(isolate, name,
                                      Object::ToName(isolate, key));
 
-  LookupIterator::Key lookup_key(isolate, name);
+  PropertyKey lookup_key(isolate, name);
   LookupIterator it(isolate, receiver, lookup_key,
                     Handle<JSReceiver>::cast(target));
   Maybe<bool> result = Object::SetSuperProperty(

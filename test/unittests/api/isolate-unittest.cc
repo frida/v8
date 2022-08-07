@@ -2,17 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "testing/gtest/include/gtest/gtest.h"
+#include "src/execution/isolate.h"
 
 #include "include/libplatform/libplatform.h"
 #include "include/v8-platform.h"
-#include "include/v8.h"
-#include "src/base/macros.h"
+#include "include/v8-template.h"
 #include "src/base/platform/semaphore.h"
-#include "src/execution/execution.h"
-#include "src/execution/isolate.h"
 #include "src/init/v8.h"
 #include "test/unittests/test-utils.h"
+#include "testing/gtest/include/gtest/gtest.h"
 
 namespace v8 {
 
@@ -133,6 +131,22 @@ TEST_F(IncumbentContextTest, Basic) {
     Context::BackupIncumbentScope backup_incumbent(context_a);
     EXPECT_EQ(global_c, Run(context_a, "funcA()"));
   }
+}
+
+namespace {
+thread_local std::map<v8::CrashKeyId, std::string> crash_keys;
+void CrashKeyCallback(v8::CrashKeyId id, const std::string& value) {
+  EXPECT_EQ(crash_keys.count(id), 0u);
+  crash_keys[id] = value;
+}
+}  // namespace
+TEST_F(IsolateTest, SetAddCrashKeyCallback) {
+  isolate()->SetAddCrashKeyCallback(CrashKeyCallback);
+
+  internal::Isolate* i_isolate =
+      reinterpret_cast<internal::Isolate*>(isolate());
+  const bool has_map_space = i_isolate->heap()->map_space() != nullptr;
+  EXPECT_EQ(crash_keys.size(), has_map_space ? 6u : 5u);
 }
 
 }  // namespace v8

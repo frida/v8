@@ -24,11 +24,13 @@ class V8_EXPORT_PRIVATE ConcurrentMarkerBase {
   ConcurrentMarkerBase& operator=(const ConcurrentMarkerBase&) = delete;
 
   void Start();
-  void Cancel();
+  // Returns whether the job has been joined.
+  bool Join();
+  // Returns whether the job has been cancelled.
+  bool Cancel();
 
-  void JoinForTesting();
-
-  bool NotifyIncrementalMutatorStepCompleted();
+  void NotifyIncrementalMutatorStepCompleted();
+  void NotifyOfWorkIfNeeded(cppgc::TaskPriority priority);
 
   bool IsActive() const;
 

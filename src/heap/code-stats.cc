@@ -14,24 +14,25 @@
 namespace v8 {
 namespace internal {
 
-// Record code statisitcs.
+// Record code statistics.
 void CodeStatistics::RecordCodeAndMetadataStatistics(HeapObject object,
                                                      Isolate* isolate) {
-  if (object.IsScript()) {
+  PtrComprCageBase cage_base(isolate);
+  if (object.IsScript(cage_base)) {
     Script script = Script::cast(object);
     // Log the size of external source code.
-    Object source = script.source();
-    if (source.IsExternalString()) {
+    Object source = script.source(cage_base);
+    if (source.IsExternalString(cage_base)) {
       ExternalString external_source_string = ExternalString::cast(source);
       int size = isolate->external_script_source_size();
       size += external_source_string.ExternalPayloadSize();
       isolate->set_external_script_source_size(size);
     }
-  } else if (object.IsAbstractCode()) {
-    // Record code+metadata statisitcs.
+  } else if (object.IsAbstractCode(cage_base)) {
+    // Record code+metadata statistics.
     AbstractCode abstract_code = AbstractCode::cast(object);
-    int size = abstract_code.SizeIncludingMetadata();
-    if (abstract_code.IsCode()) {
+    int size = abstract_code.SizeIncludingMetadata(cage_base);
+    if (abstract_code.IsCode(cage_base)) {
       size += isolate->code_and_metadata_size();
       isolate->set_code_and_metadata_size(size);
     } else {
@@ -41,8 +42,9 @@ void CodeStatistics::RecordCodeAndMetadataStatistics(HeapObject object,
 
 #ifdef DEBUG
     // Record code kind and code comment statistics.
-    isolate->code_kind_statistics()[static_cast<int>(abstract_code.kind())] +=
-        abstract_code.Size();
+    CodeKind code_kind = abstract_code.kind(cage_base);
+    isolate->code_kind_statistics()[static_cast<int>(code_kind)] +=
+        abstract_code.Size(cage_base);
     CodeStatistics::CollectCodeCommentStatistics(object, isolate);
 #endif
   }
@@ -95,7 +97,7 @@ void CodeStatistics::ReportCodeStatistics(Isolate* isolate) {
   }
   PrintF("\n");
 
-  // Report code and metadata statisitcs
+  // Report code and metadata statistics
   if (isolate->code_and_metadata_size() > 0) {
     PrintF("Code size including metadata    : %10d bytes\n",
            isolate->code_and_metadata_size());

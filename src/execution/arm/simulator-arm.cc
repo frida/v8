@@ -4,16 +4,22 @@
 
 #include "src/execution/arm/simulator-arm.h"
 
+#include "src/base/logging.h"
+
 #if defined(USE_SIMULATOR)
 
 #include <stdarg.h>
 #include <stdlib.h>
+
 #include <cmath>
 
 #include "src/base/bits.h"
 #include "src/base/lazy-instance.h"
 #include "src/base/memory.h"
 #include "src/base/overflowing-math.h"
+#include "src/base/platform/platform.h"
+#include "src/base/platform/wrappers.h"
+#include "src/base/vector.h"
 #include "src/codegen/arm/constants-arm.h"
 #include "src/codegen/assembler-inl.h"
 #include "src/codegen/macro-assembler.h"
@@ -24,7 +30,6 @@
 #include "src/runtime/runtime-utils.h"
 #include "src/utils/ostreams.h"
 #include "src/utils/utils.h"
-#include "src/utils/vector.h"
 
 // Only build the simulator if not compiling for real ARM hardware.
 namespace v8 {
@@ -37,7 +42,7 @@ DEFINE_LAZY_LEAKY_OBJECT_GETTER(Simulator::GlobalMonitor,
 // SScanF not being implemented in a platform independent way through
 // ::v8::internal::OS in the same way as SNPrintF is that the
 // Windows C Run-Time Library does not provide vsscanf.
-#define SScanF sscanf  // NOLINT
+#define SScanF sscanf
 
 // The ArmDebugger class is used by the simulator while debugging simulated ARM
 // code.
@@ -45,6 +50,7 @@ class ArmDebugger {
  public:
   explicit ArmDebugger(Simulator* sim) : sim_(sim) {}
   void Debug();
+  bool ExecDebugCommand(ArrayUniquePtr<char> line_ptr);
 
  private:
   static const Instr kBreakpointInstr =
@@ -76,6 +82,17 @@ void Simulator::DebugAtNextPC() {
   ArmDebugger(this).Debug();
 }
 
+void Simulator::AdvancedSIMDElementOrStructureLoadStoreWriteback(int Rn, int Rm,
+                                                                 int ebytes) {
+  if (Rm != 15) {
+    if (Rm == 13) {
+      set_register(Rn, get_register(Rn) + ebytes);
+    } else {
+      set_register(Rn, get_register(Rn) + get_register(Rm));
+    }
+  }
+}
+
 int32_t ArmDebugger::GetRegisterValue(int regnum) {
   if (regnum == kPCRegister) {
     return sim_->get_pc();
@@ -97,14 +114,10 @@ bool ArmDebugger::GetValue(const char* desc, int32_t* value) {
   if (regnum != kNoRegister) {
     *value = GetRegisterValue(regnum);
     return true;
-  } else {
-    if (strncmp(desc, "0x", 2) == 0) {
-      return SScanF(desc + 2, "%x", reinterpret_cast<uint32_t*>(value)) == 1;
-    } else {
-      return SScanF(desc, "%u", reinterpret_cast<uint32_t*>(value)) == 1;
-    }
   }
-  return false;
+  if (strncmp(desc, "0x", 2) == 0)
+    return SScanF(desc + 2, "%x", reinterpret_cast<uint32_t*>(value)) == 1;
+  return SScanF(desc, "%u", reinterpret_cast<uint32_t*>(value)) == 1;
 }
 
 bool ArmDebugger::GetVFPSingleValue(const char* desc, float* value) {
@@ -175,6 +188,31 @@ void ArmDebugger::Debug() {
   intptr_t last_pc = -1;
   bool done = false;
 
+  // Unset breakpoint while running in the debugger shell, making it invisible
+  // to all commands.
+  UndoBreakpoint();
+
+  while (!done && !sim_->has_bad_pc()) {
+    if (last_pc != sim_->get_pc()) {
+      disasm::NameConverter converter;
+      disasm::Disassembler dasm(converter);
+      // use a reasonably large buffer
+      v8::base::EmbeddedVector<char, 256> buffer;
+      dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(sim_->get_pc()));
+      PrintF("  0x%08x  %s\n", sim_->get_pc(), buffer.begin());
+      last_pc = sim_->get_pc();
+    }
+    ArrayUniquePtr<char> line(ReadLine("sim> "));
+
+    done = ExecDebugCommand(std::move(line));
+  }
+
+  // Reinstall breakpoint to stop execution and enter the debugger shell when
+  // hit.
+  RedoBreakpoint();
+}
+
+bool ArmDebugger::ExecDebugCommand(ArrayUniquePtr<char> line_ptr) {
 #define COMMAND_SIZE 63
 #define ARG_SIZE 255
 
@@ -191,352 +229,357 @@ void ArmDebugger::Debug() {
   arg1[ARG_SIZE] = 0;
   arg2[ARG_SIZE] = 0;
 
-  // Unset breakpoint while running in the debugger shell, making it invisible
-  // to all commands.
-  UndoBreakpoint();
+  if (line_ptr == nullptr) return true;
 
-  while (!done && !sim_->has_bad_pc()) {
-    if (last_pc != sim_->get_pc()) {
-      disasm::NameConverter converter;
-      disasm::Disassembler dasm(converter);
-      // use a reasonably large buffer
-      v8::internal::EmbeddedVector<char, 256> buffer;
-      dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(sim_->get_pc()));
-      PrintF("  0x%08x  %s\n", sim_->get_pc(), buffer.begin());
-      last_pc = sim_->get_pc();
-    }
-    char* line = ReadLine("sim> ");
-    if (line == nullptr) {
-      break;
-    } else {
-      char* last_input = sim_->last_debugger_input();
-      if (strcmp(line, "\n") == 0 && last_input != nullptr) {
-        line = last_input;
-      } else {
-        // Ownership is transferred to sim_;
-        sim_->set_last_debugger_input(line);
-      }
-      // Use sscanf to parse the individual parts of the command line. At the
-      // moment no command expects more than two parameters.
-      int argc = SScanF(line,
-                        "%" XSTR(COMMAND_SIZE) "s "
-                        "%" XSTR(ARG_SIZE) "s "
-                        "%" XSTR(ARG_SIZE) "s",
-                        cmd, arg1, arg2);
-      if ((strcmp(cmd, "si") == 0) || (strcmp(cmd, "stepi") == 0)) {
-        sim_->InstructionDecode(reinterpret_cast<Instruction*>(sim_->get_pc()));
-      } else if ((strcmp(cmd, "c") == 0) || (strcmp(cmd, "cont") == 0)) {
-        // Execute the one instruction we broke at with breakpoints disabled.
-        sim_->InstructionDecode(reinterpret_cast<Instruction*>(sim_->get_pc()));
-        // Leave the debugger shell.
-        done = true;
-      } else if ((strcmp(cmd, "p") == 0) || (strcmp(cmd, "print") == 0)) {
-        if (argc == 2 || (argc == 3 && strcmp(arg2, "fp") == 0)) {
-          int32_t value;
-          float svalue;
-          double dvalue;
-          if (strcmp(arg1, "all") == 0) {
-            for (int i = 0; i < kNumRegisters; i++) {
-              value = GetRegisterValue(i);
-              PrintF("%3s: 0x%08x %10d", RegisterName(Register::from_code(i)),
-                     value, value);
-              if ((argc == 3 && strcmp(arg2, "fp") == 0) && i < 8 &&
-                  (i % 2) == 0) {
-                dvalue = GetRegisterPairDoubleValue(i);
-                PrintF(" (%f)\n", dvalue);
-              } else {
-                PrintF("\n");
-              }
-            }
-            for (int i = 0; i < DwVfpRegister::SupportedRegisterCount(); i++) {
-              dvalue = GetVFPDoubleRegisterValue(i);
-              uint64_t as_words = bit_cast<uint64_t>(dvalue);
-              PrintF("%3s: %f 0x%08x %08x\n", VFPRegisters::Name(i, true),
-                     dvalue, static_cast<uint32_t>(as_words >> 32),
-                     static_cast<uint32_t>(as_words & 0xFFFFFFFF));
-            }
-          } else {
-            if (GetValue(arg1, &value)) {
-              PrintF("%s: 0x%08x %d \n", arg1, value, value);
-            } else if (GetVFPSingleValue(arg1, &svalue)) {
-              uint32_t as_word = bit_cast<uint32_t>(svalue);
-              PrintF("%s: %f 0x%08x\n", arg1, svalue, as_word);
-            } else if (GetVFPDoubleValue(arg1, &dvalue)) {
-              uint64_t as_words = bit_cast<uint64_t>(dvalue);
-              PrintF("%s: %f 0x%08x %08x\n", arg1, dvalue,
-                     static_cast<uint32_t>(as_words >> 32),
-                     static_cast<uint32_t>(as_words & 0xFFFFFFFF));
-            } else {
-              PrintF("%s unrecognized\n", arg1);
-            }
-          }
-        } else {
-          PrintF("print <register>\n");
-        }
-      } else if ((strcmp(cmd, "po") == 0) ||
-                 (strcmp(cmd, "printobject") == 0)) {
-        if (argc == 2) {
-          int32_t value;
-          StdoutStream os;
-          if (GetValue(arg1, &value)) {
-            Object obj(value);
-            os << arg1 << ": \n";
-#ifdef DEBUG
-            obj.Print(os);
-            os << "\n";
-#else
-            os << Brief(obj) << "\n";
-#endif
-          } else {
-            os << arg1 << " unrecognized\n";
-          }
-        } else {
-          PrintF("printobject <value>\n");
-        }
-      } else if (strcmp(cmd, "stack") == 0 || strcmp(cmd, "mem") == 0 ||
-                 strcmp(cmd, "dump") == 0) {
-        int32_t* cur = nullptr;
-        int32_t* end = nullptr;
-        int next_arg = 1;
-
-        if (strcmp(cmd, "stack") == 0) {
-          cur = reinterpret_cast<int32_t*>(sim_->get_register(Simulator::sp));
-        } else {  // "mem"
-          int32_t value;
-          if (!GetValue(arg1, &value)) {
-            PrintF("%s unrecognized\n", arg1);
-            continue;
-          }
-          cur = reinterpret_cast<int32_t*>(value);
-          next_arg++;
-        }
-
-        int32_t words;
-        if (argc == next_arg) {
-          words = 10;
-        } else {
-          if (!GetValue(argv[next_arg], &words)) {
-            words = 10;
-          }
-        }
-        end = cur + words;
-
-        bool skip_obj_print = (strcmp(cmd, "dump") == 0);
-        while (cur < end) {
-          PrintF("  0x%08" V8PRIxPTR ":  0x%08x %10d",
-                 reinterpret_cast<intptr_t>(cur), *cur, *cur);
-          Object obj(*cur);
-          Heap* current_heap = sim_->isolate_->heap();
-          if (!skip_obj_print) {
-            if (obj.IsSmi() ||
-                IsValidHeapObject(current_heap, HeapObject::cast(obj))) {
-              PrintF(" (");
-              if (obj.IsSmi()) {
-                PrintF("smi %d", Smi::ToInt(obj));
-              } else {
-                obj.ShortPrint();
-              }
-              PrintF(")");
-            }
-          }
-          PrintF("\n");
-          cur++;
-        }
-      } else if (strcmp(cmd, "disasm") == 0 || strcmp(cmd, "di") == 0) {
-        disasm::NameConverter converter;
-        disasm::Disassembler dasm(converter);
-        // use a reasonably large buffer
-        v8::internal::EmbeddedVector<char, 256> buffer;
-
-        byte* prev = nullptr;
-        byte* cur = nullptr;
-        byte* end = nullptr;
-
-        if (argc == 1) {
-          cur = reinterpret_cast<byte*>(sim_->get_pc());
-          end = cur + (10 * kInstrSize);
-        } else if (argc == 2) {
-          int regnum = Registers::Number(arg1);
-          if (regnum != kNoRegister || strncmp(arg1, "0x", 2) == 0) {
-            // The argument is an address or a register name.
-            int32_t value;
-            if (GetValue(arg1, &value)) {
-              cur = reinterpret_cast<byte*>(value);
-              // Disassemble 10 instructions at <arg1>.
-              end = cur + (10 * kInstrSize);
-            }
-          } else {
-            // The argument is the number of instructions.
-            int32_t value;
-            if (GetValue(arg1, &value)) {
-              cur = reinterpret_cast<byte*>(sim_->get_pc());
-              // Disassemble <arg1> instructions.
-              end = cur + (value * kInstrSize);
-            }
-          }
-        } else {
-          int32_t value1;
-          int32_t value2;
-          if (GetValue(arg1, &value1) && GetValue(arg2, &value2)) {
-            cur = reinterpret_cast<byte*>(value1);
-            end = cur + (value2 * kInstrSize);
-          }
-        }
-
-        while (cur < end) {
-          prev = cur;
-          cur += dasm.InstructionDecode(buffer, cur);
-          PrintF("  0x%08" V8PRIxPTR "  %s\n", reinterpret_cast<intptr_t>(prev),
-                 buffer.begin());
-        }
-      } else if (strcmp(cmd, "gdb") == 0) {
-        PrintF("relinquishing control to gdb\n");
-        v8::base::OS::DebugBreak();
-        PrintF("regaining control from gdb\n");
-      } else if (strcmp(cmd, "break") == 0) {
-        if (argc == 2) {
-          int32_t value;
-          if (GetValue(arg1, &value)) {
-            if (!SetBreakpoint(reinterpret_cast<Instruction*>(value))) {
-              PrintF("setting breakpoint failed\n");
-            }
-          } else {
-            PrintF("%s unrecognized\n", arg1);
-          }
-        } else {
-          PrintF("break <address>\n");
-        }
-      } else if (strcmp(cmd, "del") == 0) {
-        DeleteBreakpoint();
-      } else if (strcmp(cmd, "flags") == 0) {
-        PrintF("N flag: %d; ", sim_->n_flag_);
-        PrintF("Z flag: %d; ", sim_->z_flag_);
-        PrintF("C flag: %d; ", sim_->c_flag_);
-        PrintF("V flag: %d\n", sim_->v_flag_);
-        PrintF("INVALID OP flag: %d; ", sim_->inv_op_vfp_flag_);
-        PrintF("DIV BY ZERO flag: %d; ", sim_->div_zero_vfp_flag_);
-        PrintF("OVERFLOW flag: %d; ", sim_->overflow_vfp_flag_);
-        PrintF("UNDERFLOW flag: %d; ", sim_->underflow_vfp_flag_);
-        PrintF("INEXACT flag: %d;\n", sim_->inexact_vfp_flag_);
-      } else if (strcmp(cmd, "stop") == 0) {
-        int32_t value;
-        intptr_t stop_pc = sim_->get_pc() - kInstrSize;
-        Instruction* stop_instr = reinterpret_cast<Instruction*>(stop_pc);
-        if ((argc == 2) && (strcmp(arg1, "unstop") == 0)) {
-          // Remove the current stop.
-          if (stop_instr->IsStop()) {
-            SetInstructionBitsInCodeSpace(stop_instr, kNopInstr,
-                                          sim_->isolate_->heap());
-          } else {
-            PrintF("Not at debugger stop.\n");
-          }
-        } else if (argc == 3) {
-          // Print information about all/the specified breakpoint(s).
-          if (strcmp(arg1, "info") == 0) {
-            if (strcmp(arg2, "all") == 0) {
-              PrintF("Stop information:\n");
-              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
-                sim_->PrintStopInfo(i);
-              }
-            } else if (GetValue(arg2, &value)) {
-              sim_->PrintStopInfo(value);
-            } else {
-              PrintF("Unrecognized argument.\n");
-            }
-          } else if (strcmp(arg1, "enable") == 0) {
-            // Enable all/the specified breakpoint(s).
-            if (strcmp(arg2, "all") == 0) {
-              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
-                sim_->EnableStop(i);
-              }
-            } else if (GetValue(arg2, &value)) {
-              sim_->EnableStop(value);
-            } else {
-              PrintF("Unrecognized argument.\n");
-            }
-          } else if (strcmp(arg1, "disable") == 0) {
-            // Disable all/the specified breakpoint(s).
-            if (strcmp(arg2, "all") == 0) {
-              for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
-                sim_->DisableStop(i);
-              }
-            } else if (GetValue(arg2, &value)) {
-              sim_->DisableStop(value);
-            } else {
-              PrintF("Unrecognized argument.\n");
-            }
-          }
-        } else {
-          PrintF("Wrong usage. Use help command for more information.\n");
-        }
-      } else if ((strcmp(cmd, "t") == 0) || strcmp(cmd, "trace") == 0) {
-        ::v8::internal::FLAG_trace_sim = !::v8::internal::FLAG_trace_sim;
-        PrintF("Trace of executed instructions is %s\n",
-               ::v8::internal::FLAG_trace_sim ? "on" : "off");
-      } else if ((strcmp(cmd, "h") == 0) || (strcmp(cmd, "help") == 0)) {
-        PrintF("cont\n");
-        PrintF("  continue execution (alias 'c')\n");
-        PrintF("stepi\n");
-        PrintF("  step one instruction (alias 'si')\n");
-        PrintF("print <register>\n");
-        PrintF("  print register content (alias 'p')\n");
-        PrintF("  use register name 'all' to print all registers\n");
-        PrintF("  add argument 'fp' to print register pair double values\n");
-        PrintF("printobject <register>\n");
-        PrintF("  print an object from a register (alias 'po')\n");
-        PrintF("flags\n");
-        PrintF("  print flags\n");
-        PrintF("stack [<words>]\n");
-        PrintF("  dump stack content, default dump 10 words)\n");
-        PrintF("mem <address> [<words>]\n");
-        PrintF("  dump memory content, default dump 10 words)\n");
-        PrintF("dump [<words>]\n");
-        PrintF(
-            "  dump memory content without pretty printing JS objects, default "
-            "dump 10 words)\n");
-        PrintF("disasm [<instructions>]\n");
-        PrintF("disasm [<address/register>]\n");
-        PrintF("disasm [[<address/register>] <instructions>]\n");
-        PrintF("  disassemble code, default is 10 instructions\n");
-        PrintF("  from pc (alias 'di')\n");
-        PrintF("gdb\n");
-        PrintF("  enter gdb\n");
-        PrintF("break <address>\n");
-        PrintF("  set a break point on the address\n");
-        PrintF("del\n");
-        PrintF("  delete the breakpoint\n");
-        PrintF("trace (alias 't')\n");
-        PrintF("  toogle the tracing of all executed statements\n");
-        PrintF("stop feature:\n");
-        PrintF("  Description:\n");
-        PrintF("    Stops are debug instructions inserted by\n");
-        PrintF("    the Assembler::stop() function.\n");
-        PrintF("    When hitting a stop, the Simulator will\n");
-        PrintF("    stop and give control to the ArmDebugger.\n");
-        PrintF("    The first %d stop codes are watched:\n",
-               Simulator::kNumOfWatchedStops);
-        PrintF("    - They can be enabled / disabled: the Simulator\n");
-        PrintF("      will / won't stop when hitting them.\n");
-        PrintF("    - The Simulator keeps track of how many times they \n");
-        PrintF("      are met. (See the info command.) Going over a\n");
-        PrintF("      disabled stop still increases its counter. \n");
-        PrintF("  Commands:\n");
-        PrintF("    stop info all/<code> : print infos about number <code>\n");
-        PrintF("      or all stop(s).\n");
-        PrintF("    stop enable/disable all/<code> : enables / disables\n");
-        PrintF("      all or number <code> stop(s)\n");
-        PrintF("    stop unstop\n");
-        PrintF("      ignore the stop instruction at the current location\n");
-        PrintF("      from now on\n");
-      } else {
-        PrintF("Unknown command: %s\n", cmd);
-      }
-    }
+  // Repeat last command by default.
+  const char* line = line_ptr.get();
+  const char* last_input = sim_->last_debugger_input();
+  if (strcmp(line, "\n") == 0 && (last_input != nullptr)) {
+    line_ptr.reset();
+    line = last_input;
+  } else {
+    // Update the latest command ran
+    sim_->set_last_debugger_input(std::move(line_ptr));
   }
 
-  // Reinstall breakpoint to stop execution and enter the debugger shell when
-  // hit.
-  RedoBreakpoint();
+  // Use sscanf to parse the individual parts of the command line. At the
+  // moment no command expects more than two parameters.
+  int argc = SScanF(line,
+                      "%" XSTR(COMMAND_SIZE) "s "
+                      "%" XSTR(ARG_SIZE) "s "
+                      "%" XSTR(ARG_SIZE) "s",
+                      cmd, arg1, arg2);
+  if ((strcmp(cmd, "si") == 0) || (strcmp(cmd, "stepi") == 0)) {
+    sim_->InstructionDecode(reinterpret_cast<Instruction*>(sim_->get_pc()));
+  } else if ((strcmp(cmd, "c") == 0) || (strcmp(cmd, "cont") == 0)) {
+    // Execute the one instruction we broke at with breakpoints disabled.
+    sim_->InstructionDecode(reinterpret_cast<Instruction*>(sim_->get_pc()));
+    // Leave the debugger shell.
+    return true;
+  } else if ((strcmp(cmd, "p") == 0) || (strcmp(cmd, "print") == 0)) {
+    if (argc == 2 || (argc == 3 && strcmp(arg2, "fp") == 0)) {
+      int32_t value;
+      float svalue;
+      double dvalue;
+      if (strcmp(arg1, "all") == 0) {
+        for (int i = 0; i < kNumRegisters; i++) {
+          value = GetRegisterValue(i);
+          PrintF("%3s: 0x%08x %10d", RegisterName(Register::from_code(i)),
+                 value, value);
+          if ((argc == 3 && strcmp(arg2, "fp") == 0) && i < 8 && (i % 2) == 0) {
+            dvalue = GetRegisterPairDoubleValue(i);
+            PrintF(" (%f)\n", dvalue);
+          } else {
+            PrintF("\n");
+          }
+        }
+        for (int i = 0; i < DwVfpRegister::SupportedRegisterCount(); i++) {
+          dvalue = GetVFPDoubleRegisterValue(i);
+          uint64_t as_words = base::bit_cast<uint64_t>(dvalue);
+          PrintF("%3s: %f 0x%08x %08x\n", VFPRegisters::Name(i, true), dvalue,
+                 static_cast<uint32_t>(as_words >> 32),
+                 static_cast<uint32_t>(as_words & 0xFFFFFFFF));
+        }
+      } else {
+        if (GetValue(arg1, &value)) {
+          PrintF("%s: 0x%08x %d \n", arg1, value, value);
+        } else if (GetVFPSingleValue(arg1, &svalue)) {
+          uint32_t as_word = base::bit_cast<uint32_t>(svalue);
+          PrintF("%s: %f 0x%08x\n", arg1, svalue, as_word);
+        } else if (GetVFPDoubleValue(arg1, &dvalue)) {
+          uint64_t as_words = base::bit_cast<uint64_t>(dvalue);
+          PrintF("%s: %f 0x%08x %08x\n", arg1, dvalue,
+                 static_cast<uint32_t>(as_words >> 32),
+                 static_cast<uint32_t>(as_words & 0xFFFFFFFF));
+        } else {
+          PrintF("%s unrecognized\n", arg1);
+        }
+      }
+    } else {
+      PrintF("print <register>\n");
+    }
+  } else if ((strcmp(cmd, "po") == 0) || (strcmp(cmd, "printobject") == 0)) {
+    if (argc == 2) {
+      int32_t value;
+      StdoutStream os;
+      if (GetValue(arg1, &value)) {
+        Object obj(value);
+        os << arg1 << ": \n";
+#ifdef DEBUG
+        obj.Print(os);
+        os << "\n";
+#else
+        os << Brief(obj) << "\n";
+#endif
+      } else {
+        os << arg1 << " unrecognized\n";
+      }
+    } else {
+      PrintF("printobject <value>\n");
+    }
+  } else if (strcmp(cmd, "stack") == 0 || strcmp(cmd, "mem") == 0 ||
+             strcmp(cmd, "dump") == 0) {
+    int32_t* cur = nullptr;
+    int32_t* end = nullptr;
+    int next_arg = 1;
+
+    if (strcmp(cmd, "stack") == 0) {
+      cur = reinterpret_cast<int32_t*>(sim_->get_register(Simulator::sp));
+    } else {  // "mem"
+      int32_t value;
+      if (!GetValue(arg1, &value)) {
+        PrintF("%s unrecognized\n", arg1);
+        return false;
+      }
+      cur = reinterpret_cast<int32_t*>(value);
+      next_arg++;
+    }
+
+    int32_t words;
+    if (argc == next_arg) {
+      words = 10;
+    } else {
+      if (!GetValue(argv[next_arg], &words)) {
+        words = 10;
+      }
+    }
+    end = cur + words;
+
+    bool skip_obj_print = (strcmp(cmd, "dump") == 0);
+    while (cur < end) {
+      PrintF("  0x%08" V8PRIxPTR ":  0x%08x %10d",
+             reinterpret_cast<intptr_t>(cur), *cur, *cur);
+      Object obj(*cur);
+      Heap* current_heap = sim_->isolate_->heap();
+      if (!skip_obj_print) {
+        if (obj.IsSmi() ||
+            IsValidHeapObject(current_heap, HeapObject::cast(obj))) {
+          PrintF(" (");
+          if (obj.IsSmi()) {
+            PrintF("smi %d", Smi::ToInt(obj));
+          } else {
+            obj.ShortPrint();
+          }
+          PrintF(")");
+        }
+      }
+      PrintF("\n");
+      cur++;
+    }
+  } else if (strcmp(cmd, "disasm") == 0 || strcmp(cmd, "di") == 0) {
+    disasm::NameConverter converter;
+    disasm::Disassembler dasm(converter);
+    // use a reasonably large buffer
+    v8::base::EmbeddedVector<char, 256> buffer;
+
+    byte* prev = nullptr;
+    byte* cur = nullptr;
+    byte* end = nullptr;
+
+    if (argc == 1) {
+      cur = reinterpret_cast<byte*>(sim_->get_pc());
+      end = cur + (10 * kInstrSize);
+    } else if (argc == 2) {
+      int regnum = Registers::Number(arg1);
+      if (regnum != kNoRegister || strncmp(arg1, "0x", 2) == 0) {
+        // The argument is an address or a register name.
+        int32_t value;
+        if (GetValue(arg1, &value)) {
+          cur = reinterpret_cast<byte*>(value);
+          // Disassemble 10 instructions at <arg1>.
+          end = cur + (10 * kInstrSize);
+        }
+      } else {
+        // The argument is the number of instructions.
+        int32_t value;
+        if (GetValue(arg1, &value)) {
+          cur = reinterpret_cast<byte*>(sim_->get_pc());
+          // Disassemble <arg1> instructions.
+          end = cur + (value * kInstrSize);
+        }
+      }
+    } else {
+      int32_t value1;
+      int32_t value2;
+      if (GetValue(arg1, &value1) && GetValue(arg2, &value2)) {
+        cur = reinterpret_cast<byte*>(value1);
+        end = cur + (value2 * kInstrSize);
+      }
+    }
+
+    while (cur < end) {
+      prev = cur;
+      cur += dasm.InstructionDecode(buffer, cur);
+      PrintF("  0x%08" V8PRIxPTR "  %s\n", reinterpret_cast<intptr_t>(prev),
+             buffer.begin());
+    }
+  } else if (strcmp(cmd, "gdb") == 0) {
+    PrintF("relinquishing control to gdb\n");
+    v8::base::OS::DebugBreak();
+    PrintF("regaining control from gdb\n");
+  } else if (strcmp(cmd, "break") == 0) {
+    if (argc == 2) {
+      int32_t value;
+      if (GetValue(arg1, &value)) {
+        if (!SetBreakpoint(reinterpret_cast<Instruction*>(value))) {
+          PrintF("setting breakpoint failed\n");
+        }
+      } else {
+        PrintF("%s unrecognized\n", arg1);
+      }
+    } else {
+      PrintF("break <address>\n");
+    }
+  } else if (strcmp(cmd, "backtrace") == 0 || strcmp(cmd, "bt") == 0) {
+    int32_t pc = sim_->get_pc();
+    int32_t lr = sim_->get_register(Simulator::lr);
+    int32_t sp = sim_->get_register(Simulator::sp);
+    int32_t fp = sim_->get_register(Simulator::fp);
+
+    int i = 0;
+    while (true) {
+      PrintF("#%d: 0x%08x (sp=0x%08x, fp=0x%08x)\n", i, pc, sp, fp);
+      pc = lr;
+      sp = fp;
+      if (pc == Simulator::end_sim_pc) {
+        break;
+      }
+      lr = *(reinterpret_cast<int32_t*>(fp) + 1);
+      fp = *reinterpret_cast<int32_t*>(fp);
+      i++;
+      if (i > 100) {
+        PrintF("Too many frames\n");
+        break;
+      }
+    }
+  } else if (strcmp(cmd, "del") == 0) {
+    DeleteBreakpoint();
+  } else if (strcmp(cmd, "flags") == 0) {
+    PrintF("N flag: %d; ", sim_->n_flag_);
+    PrintF("Z flag: %d; ", sim_->z_flag_);
+    PrintF("C flag: %d; ", sim_->c_flag_);
+    PrintF("V flag: %d\n", sim_->v_flag_);
+    PrintF("INVALID OP flag: %d; ", sim_->inv_op_vfp_flag_);
+    PrintF("DIV BY ZERO flag: %d; ", sim_->div_zero_vfp_flag_);
+    PrintF("OVERFLOW flag: %d; ", sim_->overflow_vfp_flag_);
+    PrintF("UNDERFLOW flag: %d; ", sim_->underflow_vfp_flag_);
+    PrintF("INEXACT flag: %d;\n", sim_->inexact_vfp_flag_);
+  } else if (strcmp(cmd, "stop") == 0) {
+    int32_t value;
+    intptr_t stop_pc = sim_->get_pc() - kInstrSize;
+    Instruction* stop_instr = reinterpret_cast<Instruction*>(stop_pc);
+    if ((argc == 2) && (strcmp(arg1, "unstop") == 0)) {
+      // Remove the current stop.
+      if (stop_instr->IsStop()) {
+        SetInstructionBitsInCodeSpace(stop_instr, kNopInstr,
+                                      sim_->isolate_->heap());
+      } else {
+        PrintF("Not at debugger stop.\n");
+      }
+    } else if (argc == 3) {
+      // Print information about all/the specified breakpoint(s).
+      if (strcmp(arg1, "info") == 0) {
+        if (strcmp(arg2, "all") == 0) {
+          PrintF("Stop information:\n");
+          for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+            sim_->PrintStopInfo(i);
+          }
+        } else if (GetValue(arg2, &value)) {
+          sim_->PrintStopInfo(value);
+        } else {
+          PrintF("Unrecognized argument.\n");
+        }
+      } else if (strcmp(arg1, "enable") == 0) {
+        // Enable all/the specified breakpoint(s).
+        if (strcmp(arg2, "all") == 0) {
+          for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+            sim_->EnableStop(i);
+          }
+        } else if (GetValue(arg2, &value)) {
+          sim_->EnableStop(value);
+        } else {
+          PrintF("Unrecognized argument.\n");
+        }
+      } else if (strcmp(arg1, "disable") == 0) {
+        // Disable all/the specified breakpoint(s).
+        if (strcmp(arg2, "all") == 0) {
+          for (uint32_t i = 0; i < sim_->kNumOfWatchedStops; i++) {
+            sim_->DisableStop(i);
+          }
+        } else if (GetValue(arg2, &value)) {
+          sim_->DisableStop(value);
+        } else {
+          PrintF("Unrecognized argument.\n");
+        }
+      }
+    } else {
+      PrintF("Wrong usage. Use help command for more information.\n");
+    }
+  } else if ((strcmp(cmd, "t") == 0) || strcmp(cmd, "trace") == 0) {
+    ::v8::internal::FLAG_trace_sim = !::v8::internal::FLAG_trace_sim;
+    PrintF("Trace of executed instructions is %s\n",
+           ::v8::internal::FLAG_trace_sim ? "on" : "off");
+  } else if ((strcmp(cmd, "h") == 0) || (strcmp(cmd, "help") == 0)) {
+    PrintF("cont\n");
+    PrintF("  continue execution (alias 'c')\n");
+    PrintF("stepi\n");
+    PrintF("  step one instruction (alias 'si')\n");
+    PrintF("print <register>\n");
+    PrintF("  print register content (alias 'p')\n");
+    PrintF("  use register name 'all' to print all registers\n");
+    PrintF("  add argument 'fp' to print register pair double values\n");
+    PrintF("printobject <register>\n");
+    PrintF("  print an object from a register (alias 'po')\n");
+    PrintF("flags\n");
+    PrintF("  print flags\n");
+    PrintF("stack [<words>]\n");
+    PrintF("  dump stack content, default dump 10 words)\n");
+    PrintF("mem <address> [<words>]\n");
+    PrintF("  dump memory content, default dump 10 words)\n");
+    PrintF("dump [<words>]\n");
+    PrintF(
+        "  dump memory content without pretty printing JS objects, default "
+        "dump 10 words)\n");
+    PrintF("disasm [<instructions>]\n");
+    PrintF("disasm [<address/register>]\n");
+    PrintF("disasm [[<address/register>] <instructions>]\n");
+    PrintF("  disassemble code, default is 10 instructions\n");
+    PrintF("  from pc (alias 'di')\n");
+    PrintF("gdb\n");
+    PrintF("  enter gdb\n");
+    PrintF("break <address>\n");
+    PrintF("  set a break point on the address\n");
+    PrintF("backtrace / bt\n");
+    PrintF("  Walk the frame pointers, dumping the pc/sp/fp for each frame.\n");
+    PrintF("del\n");
+    PrintF("  delete the breakpoint\n");
+    PrintF("trace (alias 't')\n");
+    PrintF("  toogle the tracing of all executed statements\n");
+    PrintF("stop feature:\n");
+    PrintF("  Description:\n");
+    PrintF("    Stops are debug instructions inserted by\n");
+    PrintF("    the Assembler::stop() function.\n");
+    PrintF("    When hitting a stop, the Simulator will\n");
+    PrintF("    stop and give control to the ArmDebugger.\n");
+    PrintF("    The first %d stop codes are watched:\n",
+           Simulator::kNumOfWatchedStops);
+    PrintF("    - They can be enabled / disabled: the Simulator\n");
+    PrintF("      will / won't stop when hitting them.\n");
+    PrintF("    - The Simulator keeps track of how many times they \n");
+    PrintF("      are met. (See the info command.) Going over a\n");
+    PrintF("      disabled stop still increases its counter. \n");
+    PrintF("  Commands:\n");
+    PrintF("    stop info all/<code> : print infos about number <code>\n");
+    PrintF("      or all stop(s).\n");
+    PrintF("    stop enable/disable all/<code> : enables / disables\n");
+    PrintF("      all or number <code> stop(s)\n");
+    PrintF("    stop unstop\n");
+    PrintF("      ignore the stop instruction at the current location\n");
+    PrintF("      from now on\n");
+  } else {
+    PrintF("Unknown command: %s\n", cmd);
+  }
+  return false;
 
 #undef COMMAND_SIZE
 #undef ARG_SIZE
@@ -559,11 +602,6 @@ static bool AllOnOnePage(uintptr_t start, int size) {
   intptr_t start_page = (start & ~CachePage::kPageMask);
   intptr_t end_page = ((start + size) & ~CachePage::kPageMask);
   return start_page == end_page;
-}
-
-void Simulator::set_last_debugger_input(char* input) {
-  DeleteArray(last_debugger_input_);
-  last_debugger_input_ = input;
 }
 
 void Simulator::SetRedirectInstruction(Instruction* instruction) {
@@ -640,7 +678,7 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
   // Set up simulator support first. Some of this information is needed to
   // setup the architecture state.
   size_t stack_size = 1 * 1024 * 1024;  // allocate 1MB for stack
-  stack_ = reinterpret_cast<char*>(malloc(stack_size));
+  stack_ = reinterpret_cast<char*>(base::Malloc(stack_size));
   pc_modified_ = false;
   icount_ = 0;
   break_pc_ = nullptr;
@@ -690,7 +728,7 @@ Simulator::Simulator(Isolate* isolate) : isolate_(isolate) {
 
 Simulator::~Simulator() {
   GlobalMonitor::Get()->RemoveProcessor(&global_monitor_processor_);
-  free(stack_);
+  base::Free(stack_);
 }
 
 // Get the active Simulator for the current thread.
@@ -1097,13 +1135,13 @@ int Simulator::WriteExDW(int32_t addr, int32_t value1, int32_t value2) {
 uintptr_t Simulator::StackLimit(uintptr_t c_limit) const {
   // The simulator uses a separate JS stack. If we have exhausted the C stack,
   // we also drop down the JS limit to reflect the exhaustion on the JS stack.
-  if (GetCurrentStackPosition() < c_limit) {
+  if (base::Stack::GetCurrentStackPosition() < c_limit) {
     return reinterpret_cast<uintptr_t>(get_sp());
   }
 
-  // Otherwise the limit is the JS stack. Leave a safety margin of 1024 bytes
+  // Otherwise the limit is the JS stack. Leave a safety margin of 4 KiB
   // to prevent overrunning the stack when pushing values.
-  return reinterpret_cast<uintptr_t>(stack_) + 1024;
+  return reinterpret_cast<uintptr_t>(stack_) + 4 * KB;
 }
 
 // Unsupported instructions use Format to print an error and stop execution.
@@ -1150,7 +1188,6 @@ bool Simulator::ConditionallyExecute(Instruction* instr) {
     default:
       UNREACHABLE();
   }
-  return false;
 }
 
 // Calculate and set the Negative and Zero flags.
@@ -1272,7 +1309,6 @@ int32_t Simulator::GetShiftRm(Instruction* instr, bool* carry_out) {
     // by immediate
     if ((shift == ROR) && (shift_amount == 0)) {
       UNIMPLEMENTED();
-      return result;
     } else if (((shift == LSR) || (shift == ASR)) && (shift_amount == 0)) {
       shift_amount = 32;
     }
@@ -1331,7 +1367,6 @@ int32_t Simulator::GetShiftRm(Instruction* instr, bool* carry_out) {
 
       default: {
         UNREACHABLE();
-        break;
       }
     }
   } else {
@@ -1409,7 +1444,6 @@ int32_t Simulator::GetShiftRm(Instruction* instr, bool* carry_out) {
 
       default: {
         UNREACHABLE();
-        break;
       }
     }
   }
@@ -1444,7 +1478,6 @@ int32_t Simulator::ProcessPU(Instruction* instr, int num_regs, int reg_size,
   switch (instr->PUField()) {
     case da_x: {
       UNIMPLEMENTED();
-      break;
     }
     case ia_x: {
       *start_address = rn_val;
@@ -1562,11 +1595,11 @@ void Simulator::HandleVList(Instruction* instr) {
 // 64-bit value. With the code below we assume that all runtime calls return
 // 64 bits of result. If they don't, the r1 result register contains a bogus
 // value, which is fine because it is caller-saved.
-using SimulatorRuntimeCall = int64_t (*)(int32_t arg0, int32_t arg1,
-                                         int32_t arg2, int32_t arg3,
-                                         int32_t arg4, int32_t arg5,
-                                         int32_t arg6, int32_t arg7,
-                                         int32_t arg8, int32_t arg9);
+using SimulatorRuntimeCall = int64_t (*)(
+    int32_t arg0, int32_t arg1, int32_t arg2, int32_t arg3, int32_t arg4,
+    int32_t arg5, int32_t arg6, int32_t arg7, int32_t arg8, int32_t arg9,
+    int32_t arg10, int32_t arg11, int32_t arg12, int32_t arg13, int32_t arg14,
+    int32_t arg15, int32_t arg16, int32_t arg17, int32_t arg18, int32_t arg19);
 
 // These prototypes handle the four types of FP calls.
 using SimulatorRuntimeCompareCall = int64_t (*)(double darg0, double darg1);
@@ -1591,10 +1624,15 @@ using SimulatorRuntimeProfilingGetterCall = void (*)(int32_t arg0, int32_t arg1,
 int64_t UnsafeGenericFunctionCall(intptr_t function, int32_t arg0, int32_t arg1,
                                   int32_t arg2, int32_t arg3, int32_t arg4,
                                   int32_t arg5, int32_t arg6, int32_t arg7,
-                                  int32_t arg8, int32_t arg9) {
+                                  int32_t arg8, int32_t arg9, int32_t arg10,
+                                  int32_t arg11, int32_t arg12, int32_t arg13,
+                                  int32_t arg14, int32_t arg15, int32_t arg16,
+                                  int32_t arg17, int32_t arg18, int32_t arg19) {
   SimulatorRuntimeCall target =
       reinterpret_cast<SimulatorRuntimeCall>(function);
-  return target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+  return target(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+                arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18,
+                arg19);
 }
 void UnsafeDirectApiCall(intptr_t function, int32_t arg0) {
   SimulatorRuntimeDirectApiCall target =
@@ -1635,7 +1673,17 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
       int32_t arg7 = stack_pointer[3];
       int32_t arg8 = stack_pointer[4];
       int32_t arg9 = stack_pointer[5];
-      STATIC_ASSERT(kMaxCParameters == 10);
+      int32_t arg10 = stack_pointer[6];
+      int32_t arg11 = stack_pointer[7];
+      int32_t arg12 = stack_pointer[8];
+      int32_t arg13 = stack_pointer[9];
+      int32_t arg14 = stack_pointer[10];
+      int32_t arg15 = stack_pointer[11];
+      int32_t arg16 = stack_pointer[12];
+      int32_t arg17 = stack_pointer[13];
+      int32_t arg18 = stack_pointer[14];
+      int32_t arg19 = stack_pointer[15];
+      static_assert(kMaxCParameters == 20);
 
       bool fp_call =
           (redirection->type() == ExternalReference::BUILTIN_FP_FP_CALL) ||
@@ -1675,7 +1723,6 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
               break;
             default:
               UNREACHABLE();
-              break;
           }
           if (!stack_aligned) {
             PrintF(" with unaligned stack %08x\n", get_register(sp));
@@ -1727,7 +1774,6 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
           }
           default:
             UNREACHABLE();
-            break;
         }
         if (::v8::internal::FLAG_trace_sim || !stack_aligned) {
           switch (redirection->type()) {
@@ -1741,7 +1787,6 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
               break;
             default:
               UNREACHABLE();
-              break;
           }
         }
       } else if (redirection->type() == ExternalReference::DIRECT_API_CALL) {
@@ -1805,23 +1850,38 @@ void Simulator::SoftwareInterrupt(Instruction* instr) {
 #endif
       } else {
         // builtin call.
+        // FAST_C_CALL is temporarily handled here as well, because we lack
+        // proper support for direct C calls with FP params in the simulator.
+        // The generic BUILTIN_CALL path assumes all parameters are passed in
+        // the GP registers, thus supporting calling the slow callback without
+        // crashing. The reason for that is that in the mjsunit tests we check
+        // the `fast_c_api.supports_fp_params` (which is false on non-simulator
+        // builds for arm/arm64), thus we expect that the slow path will be
+        // called. And since the slow path passes the arguments as a `const
+        // FunctionCallbackInfo<Value>&` (which is a GP argument), the call is
+        // made correctly.
         DCHECK(redirection->type() == ExternalReference::BUILTIN_CALL ||
-               redirection->type() == ExternalReference::BUILTIN_CALL_PAIR);
+               redirection->type() == ExternalReference::BUILTIN_CALL_PAIR ||
+               redirection->type() == ExternalReference::FAST_C_CALL);
         if (::v8::internal::FLAG_trace_sim || !stack_aligned) {
           PrintF(
               "Call to host function at %p "
-              "args %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x",
+              "args %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, "
+              "%08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, %08x, "
+              "%08x",
               reinterpret_cast<void*>(external), arg0, arg1, arg2, arg3, arg4,
-              arg5, arg6, arg7, arg8, arg9);
+              arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14,
+              arg15, arg16, arg17, arg18, arg19);
           if (!stack_aligned) {
             PrintF(" with unaligned stack %08x\n", get_register(sp));
           }
           PrintF("\n");
         }
         CHECK(stack_aligned);
-        int64_t result =
-            UnsafeGenericFunctionCall(external, arg0, arg1, arg2, arg3, arg4,
-                                      arg5, arg6, arg7, arg8, arg9);
+        int64_t result = UnsafeGenericFunctionCall(
+            external, arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8,
+            arg9, arg10, arg11, arg12, arg13, arg14, arg15, arg16, arg17, arg18,
+            arg19);
 #ifdef DEBUG
         TrashCallerSaveRegisters();
 #endif
@@ -1869,7 +1929,7 @@ float Simulator::canonicalizeNaN(float value) {
   // choices" of the ARM Reference Manual.
   constexpr uint32_t kDefaultNaN = 0x7FC00000u;
   if (FPSCR_default_NaN_mode_ && std::isnan(value)) {
-    value = bit_cast<float>(kDefaultNaN);
+    value = base::bit_cast<float>(kDefaultNaN);
   }
   return value;
 }
@@ -1886,7 +1946,7 @@ double Simulator::canonicalizeNaN(double value) {
   // choices" of the ARM Reference Manual.
   constexpr uint64_t kDefaultNaN = uint64_t{0x7FF8000000000000};
   if (FPSCR_default_NaN_mode_ && std::isnan(value)) {
-    value = bit_cast<double>(kDefaultNaN);
+    value = base::bit_cast<double>(kDefaultNaN);
   }
   return value;
 }
@@ -2079,7 +2139,6 @@ void Simulator::DecodeType01(Instruction* instr) {
               }
               default:
                 UNREACHABLE();
-                break;
             }
           } else {
             // The instruction is documented as strex rd, rt, [rn], but the
@@ -2123,7 +2182,6 @@ void Simulator::DecodeType01(Instruction* instr) {
               }
               default:
                 UNREACHABLE();
-                break;
             }
           }
         } else {
@@ -2177,7 +2235,6 @@ void Simulator::DecodeType01(Instruction* instr) {
           default: {
             // The PU field is a 2-bit field.
             UNREACHABLE();
-            break;
           }
         }
       } else {
@@ -2220,7 +2277,6 @@ void Simulator::DecodeType01(Instruction* instr) {
           default: {
             // The PU field is a 2-bit field.
             UNREACHABLE();
-            break;
           }
         }
       }
@@ -2337,7 +2393,7 @@ void Simulator::DecodeType01(Instruction* instr) {
     int rn = instr->RnValue();
     int32_t rn_val = get_register(rn);
     int32_t shifter_operand = 0;
-    bool shifter_carry_out = 0;
+    bool shifter_carry_out = false;
     if (type == 0) {
       shifter_operand = GetShiftRm(instr, &shifter_carry_out);
     } else {
@@ -2558,7 +2614,6 @@ void Simulator::DecodeType01(Instruction* instr) {
 
       default: {
         UNREACHABLE();
-        break;
       }
     }
   }
@@ -2630,7 +2685,7 @@ void Simulator::DecodeType3(Instruction* instr) {
   int rd = instr->RdValue();
   int rn = instr->RnValue();
   int32_t rn_val = get_register(rn);
-  bool shifter_carry_out = 0;
+  bool shifter_carry_out = false;
   int32_t shifter_operand = GetShiftRm(instr, &shifter_carry_out);
   int32_t addr = 0;
   switch (instr->PUField()) {
@@ -2638,7 +2693,6 @@ void Simulator::DecodeType3(Instruction* instr) {
       DCHECK(!instr->HasW());
       Format(instr, "'memop'cond'b 'rd, ['rn], -'shift_rm");
       UNIMPLEMENTED();
-      break;
     }
     case ia_x: {
       if (instr->Bit(4) == 0) {
@@ -2672,10 +2726,8 @@ void Simulator::DecodeType3(Instruction* instr) {
               break;
             case 1:
               UNIMPLEMENTED();
-              break;
             case 2:
               UNIMPLEMENTED();
-              break;
             case 3: {
               // Usat.
               int32_t sat_pos = instr->Bits(20, 16);
@@ -2704,7 +2756,6 @@ void Simulator::DecodeType3(Instruction* instr) {
           switch (instr->Bits(22, 21)) {
             case 0:
               UNIMPLEMENTED();
-              break;
             case 1:
               if (instr->Bits(9, 6) == 1) {
                 if (instr->Bit(20) == 0) {
@@ -2954,8 +3005,9 @@ void Simulator::DecodeType3(Instruction* instr) {
           int32_t ret_val = 0;
           // udiv
           if (instr->Bit(21) == 0x1) {
-            ret_val = bit_cast<int32_t>(base::bits::UnsignedDiv32(
-                bit_cast<uint32_t>(rm_val), bit_cast<uint32_t>(rs_val)));
+            ret_val = base::bit_cast<int32_t>(
+                base::bits::UnsignedDiv32(base::bit_cast<uint32_t>(rm_val),
+                                          base::bit_cast<uint32_t>(rs_val)));
           } else {
             ret_val = base::bits::SignedDiv32(rm_val, rs_val);
           }
@@ -3400,7 +3452,6 @@ void Simulator::DecodeTypeVFP(Instruction* instr) {
           }
           default:
             UNREACHABLE();
-            break;
         }
         set_neon_register(vd, q_data);
       }
@@ -3413,6 +3464,7 @@ void Simulator::DecodeTypeVFP(Instruction* instr) {
       get_d_register(vn, &data);
       if ((opc1_opc2 & 0xB) == 0) {
         // NeonS32 / NeonU32
+        DCHECK_EQ(0, instr->Bit(23));
         int32_t int_data[2];
         memcpy(int_data, &data, sizeof(int_data));
         set_register(rt, int_data[instr->Bit(21)]);
@@ -3880,28 +3932,28 @@ void Simulator::DecodeType6CoprocessorIns(Instruction* instr) {
 
 // Helper functions for implementing NEON ops. Unop applies a unary op to each
 // lane. Binop applies a binary operation to matching input lanes.
-template <typename T>
+template <typename T, int SIZE = kSimd128Size>
 void Unop(Simulator* simulator, int Vd, int Vm, std::function<T(T)> unop) {
-  static const int kLanes = 16 / sizeof(T);
+  static const int kLanes = SIZE / sizeof(T);
   T src[kLanes];
-  simulator->get_neon_register(Vm, src);
+  simulator->get_neon_register<T, SIZE>(Vm, src);
   for (int i = 0; i < kLanes; i++) {
     src[i] = unop(src[i]);
   }
-  simulator->set_neon_register(Vd, src);
+  simulator->set_neon_register<T, SIZE>(Vd, src);
 }
 
-template <typename T>
+template <typename T, int SIZE = kSimd128Size>
 void Binop(Simulator* simulator, int Vd, int Vm, int Vn,
            std::function<T(T, T)> binop) {
-  static const int kLanes = 16 / sizeof(T);
+  static const int kLanes = SIZE / sizeof(T);
   T src1[kLanes], src2[kLanes];
-  simulator->get_neon_register(Vn, src1);
-  simulator->get_neon_register(Vm, src2);
+  simulator->get_neon_register<T, SIZE>(Vn, src1);
+  simulator->get_neon_register<T, SIZE>(Vm, src2);
   for (int i = 0; i < kLanes; i++) {
     src1[i] = binop(src1[i], src2[i]);
   }
-  simulator->set_neon_register(Vd, src1);
+  simulator->set_neon_register<T, SIZE>(Vd, src1);
 }
 
 // Templated operations for NEON instructions.
@@ -3909,19 +3961,6 @@ template <typename T, typename U>
 U Widen(T value) {
   static_assert(sizeof(int64_t) > sizeof(T), "T must be int32_t or smaller");
   static_assert(sizeof(U) > sizeof(T), "T must smaller than U");
-  return static_cast<U>(value);
-}
-
-template <typename T, typename U>
-U Narrow(T value) {
-  static_assert(sizeof(int8_t) < sizeof(T), "T must be int16_t or larger");
-  static_assert(sizeof(U) < sizeof(T), "T must larger than U");
-  static_assert(std::is_unsigned<T>() == std::is_unsigned<U>(),
-                "Signed-ness of T and U must match");
-  // Make sure value can be expressed in the smaller type; otherwise, the
-  // casted result is implementation defined.
-  DCHECK_LE(std::numeric_limits<T>::min(), value);
-  DCHECK_GE(std::numeric_limits<T>::max(), value);
   return static_cast<U>(value);
 }
 
@@ -3957,19 +3996,7 @@ void SaturatingNarrow(Simulator* simulator, int Vd, int Vm) {
   U dst[kLanes];
   simulator->get_neon_register(Vm, src);
   for (int i = 0; i < kLanes; i++) {
-    dst[i] = Narrow<T, U>(Saturate<U>(src[i]));
-  }
-  simulator->set_neon_register<U, kDoubleSize>(Vd, dst);
-}
-
-template <typename T, typename U>
-void SaturatingUnsignedNarrow(Simulator* simulator, int Vd, int Vm) {
-  static const int kLanes = 16 / sizeof(T);
-  T src[kLanes];
-  U dst[kLanes];
-  simulator->get_neon_register(Vm, src);
-  for (int i = 0; i < kLanes; i++) {
-    dst[i] = Saturate<U>(src[i]);
+    dst[i] = base::saturated_cast<U>(src[i]);
   }
   simulator->set_neon_register<U, kDoubleSize>(Vd, dst);
 }
@@ -4111,15 +4138,41 @@ void ShiftLeft(Simulator* simulator, int Vd, int Vm, int shift) {
 }
 
 template <typename T, int SIZE>
-void ShiftRight(Simulator* simulator, int Vd, int Vm, int shift) {
-  Unop<T>(simulator, Vd, Vm, [shift](T x) { return x >> shift; });
+void LogicalShiftRight(Simulator* simulator, int Vd, int Vm, int shift) {
+  Unop<T, SIZE>(simulator, Vd, Vm, [shift](T x) { return x >> shift; });
 }
 
 template <typename T, int SIZE>
 void ArithmeticShiftRight(Simulator* simulator, int Vd, int Vm, int shift) {
   auto shift_fn =
       std::bind(ArithmeticShiftRight<T>, std::placeholders::_1, shift);
-  Unop<T>(simulator, Vd, Vm, shift_fn);
+  Unop<T, SIZE>(simulator, Vd, Vm, shift_fn);
+}
+
+template <typename T, int SIZE>
+void ShiftRight(Simulator* simulator, int Vd, int Vm, int shift,
+                bool is_unsigned) {
+  if (is_unsigned) {
+    using unsigned_T = typename std::make_unsigned<T>::type;
+    LogicalShiftRight<unsigned_T, SIZE>(simulator, Vd, Vm, shift);
+  } else {
+    ArithmeticShiftRight<T, SIZE>(simulator, Vd, Vm, shift);
+  }
+}
+
+template <typename T, int SIZE>
+void ShiftRightAccumulate(Simulator* simulator, int Vd, int Vm, int shift) {
+  Binop<T, SIZE>(simulator, Vd, Vm, Vd,
+                 [shift](T a, T x) { return a + (x >> shift); });
+}
+
+template <typename T, int SIZE>
+void ArithmeticShiftRightAccumulate(Simulator* simulator, int Vd, int Vm,
+                                    int shift) {
+  Binop<T, SIZE>(simulator, Vd, Vm, Vd, [shift](T a, T x) {
+    T result = ArithmeticShiftRight<T>(x, shift);
+    return a + result;
+  });
 }
 
 template <typename T, int SIZE>
@@ -4245,11 +4298,33 @@ void PairwiseAdd(Simulator* simulator, int Vd, int Vm, int Vn) {
   simulator->set_neon_register<T, kDoubleSize>(Vd, dst);
 }
 
-template <typename T, int SIZE = kSimd128Size>
-void RoundingAverageUnsigned(Simulator* simulator, int Vd, int Vm, int Vn) {
-  static_assert(std::is_unsigned<T>::value,
-                "Implemented only for unsigned types.");
-  Binop<T>(simulator, Vd, Vm, Vn, base::RoundingAverageUnsigned<T>);
+template <typename NarrowType, typename WideType, int SIZE = kSimd128Size>
+void PairwiseAddLong(Simulator* simulator, int Vd, int Vm) {
+  DCHECK_EQ(sizeof(WideType), 2 * sizeof(NarrowType));
+  static constexpr int kSElems = SIZE / sizeof(NarrowType);
+  static constexpr int kTElems = SIZE / sizeof(WideType);
+  NarrowType src[kSElems];
+  WideType dst[kTElems];
+  simulator->get_neon_register<NarrowType, SIZE>(Vm, src);
+  for (int i = 0; i < kTElems; i++) {
+    dst[i] = WideType{src[i * 2]} + WideType{src[i * 2 + 1]};
+  }
+  simulator->set_neon_register<WideType, SIZE>(Vd, dst);
+}
+
+template <typename NarrowType, typename WideType, int SIZE = kSimd128Size>
+void PairwiseAddAccumulateLong(Simulator* simulator, int Vd, int Vm) {
+  DCHECK_EQ(sizeof(WideType), 2 * sizeof(NarrowType));
+  static constexpr int kSElems = SIZE / sizeof(NarrowType);
+  static constexpr int kTElems = SIZE / sizeof(WideType);
+  NarrowType src[kSElems];
+  WideType dst[kTElems];
+  simulator->get_neon_register<NarrowType, SIZE>(Vm, src);
+  simulator->get_neon_register<WideType, SIZE>(Vd, dst);
+  for (int i = 0; i < kTElems; i++) {
+    dst[i] += WideType{src[i * 2]} + WideType{src[i * 2 + 1]};
+  }
+  simulator->set_neon_register<WideType, SIZE>(Vd, dst);
 }
 
 template <typename NarrowType, typename WideType>
@@ -4367,7 +4442,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             }
             default:
               UNREACHABLE();
-              break;
           }
           break;
         }
@@ -4403,13 +4477,58 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             }
             default:
               UNREACHABLE();
-              break;
           }
           break;
         }
         default:
           UNREACHABLE();
+      }
+    } else if (opc1 == 0 && (opc2 == 0b0100 || opc2 == 0b0101)) {
+      DCHECK_EQ(1, instr->Bit(6));  // Only support Q regs.
+      int Vd = instr->VFPDRegValue(kSimd128Precision);
+      int Vm = instr->VFPMRegValue(kSimd128Precision);
+      int is_signed = instr->Bit(7) == 0;
+      // vpaddl Qd, Qm.
+      switch (size) {
+        case Neon8:
+          is_signed ? PairwiseAddLong<int8_t, int16_t>(this, Vd, Vm)
+                    : PairwiseAddLong<uint8_t, uint16_t>(this, Vd, Vm);
           break;
+        case Neon16:
+          is_signed ? PairwiseAddLong<int16_t, int32_t>(this, Vd, Vm)
+                    : PairwiseAddLong<uint16_t, uint32_t>(this, Vd, Vm);
+          break;
+        case Neon32:
+          is_signed ? PairwiseAddLong<int32_t, int64_t>(this, Vd, Vm)
+                    : PairwiseAddLong<uint32_t, uint64_t>(this, Vd, Vm);
+          break;
+        case Neon64:
+          UNREACHABLE();
+      }
+    } else if (opc1 == 0 && (opc2 == 0b1100 || opc2 == 0b1101)) {
+      DCHECK_EQ(1, instr->Bit(6));  // Only support Q regs.
+      int Vd = instr->VFPDRegValue(kSimd128Precision);
+      int Vm = instr->VFPMRegValue(kSimd128Precision);
+      int is_signed = instr->Bit(7) == 0;
+      // vpadal Qd, Qm
+      switch (size) {
+        case Neon8:
+          is_signed
+              ? PairwiseAddAccumulateLong<int8_t, int16_t>(this, Vd, Vm)
+              : PairwiseAddAccumulateLong<uint8_t, uint16_t>(this, Vd, Vm);
+          break;
+        case Neon16:
+          is_signed
+              ? PairwiseAddAccumulateLong<int16_t, int32_t>(this, Vd, Vm)
+              : PairwiseAddAccumulateLong<uint16_t, uint32_t>(this, Vd, Vm);
+          break;
+        case Neon32:
+          is_signed
+              ? PairwiseAddAccumulateLong<int32_t, int64_t>(this, Vd, Vm)
+              : PairwiseAddAccumulateLong<uint32_t, uint64_t>(this, Vd, Vm);
+          break;
+        case Neon64:
+          UNREACHABLE();
       }
     } else if (size == 0 && opc1 == 0b10 && opc2 == 0) {
       if (instr->Bit(6) == 0) {
@@ -4431,6 +4550,17 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
         set_neon_register(vm, dval);
         set_neon_register(vd, mval);
       }
+    } else if (opc1 == 0 && opc2 == 0b1010) {
+      // vcnt Qd, Qm.
+      DCHECK_EQ(0, size);
+      int vd = instr->VFPDRegValue(q ? kSimd128Precision : kDoublePrecision);
+      int vm = instr->VFPMRegValue(q ? kSimd128Precision : kDoublePrecision);
+      uint8_t q_data[16];
+      get_neon_register(vm, q_data);
+      for (int i = 0; i < 16; i++) {
+        q_data[i] = base::bits::CountPopulation(q_data[i]);
+      }
+      set_neon_register(vd, q_data);
     } else if (opc1 == 0 && opc2 == 0b1011) {
       // vmvn Qd, Qm.
       int vd = instr->VFPDRegValue(kSimd128Precision);
@@ -4439,6 +4569,42 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
       get_neon_register(vm, q_data);
       for (int i = 0; i < 4; i++) q_data[i] = ~q_data[i];
       set_neon_register(vd, q_data);
+    } else if (opc1 == 0b01 && opc2 == 0b0010) {
+      // vceq.<dt> Qd, Qm, #0 (signed integers).
+      int Vd = instr->VFPDRegValue(kSimd128Precision);
+      int Vm = instr->VFPMRegValue(kSimd128Precision);
+      switch (size) {
+        case Neon8:
+          Unop<int8_t>(this, Vd, Vm, [](int8_t x) { return x == 0 ? -1 : 0; });
+          break;
+        case Neon16:
+          Unop<int16_t>(this, Vd, Vm,
+                        [](int16_t x) { return x == 0 ? -1 : 0; });
+          break;
+        case Neon32:
+          Unop<int32_t>(this, Vd, Vm,
+                        [](int32_t x) { return x == 0 ? -1 : 0; });
+          break;
+        case Neon64:
+          UNREACHABLE();
+      }
+    } else if (opc1 == 0b01 && opc2 == 0b0100) {
+      // vclt.<dt> Qd, Qm, #0 (signed integers).
+      int Vd = instr->VFPDRegValue(kSimd128Precision);
+      int Vm = instr->VFPMRegValue(kSimd128Precision);
+      switch (size) {
+        case Neon8:
+          Unop<int8_t>(this, Vd, Vm, [](int8_t x) { return x < 0 ? -1 : 0; });
+          break;
+        case Neon16:
+          Unop<int16_t>(this, Vd, Vm, [](int16_t x) { return x < 0 ? -1 : 0; });
+          break;
+        case Neon32:
+          Unop<int32_t>(this, Vd, Vm, [](int32_t x) { return x < 0 ? -1 : 0; });
+          break;
+        case Neon64:
+          UNREACHABLE();
+      }
     } else if (opc1 == 0b01 && (opc2 & 0b0111) == 0b110) {
       // vabs<type>.<size> Qd, Qm
       int Vd = instr->VFPDRegValue(kSimd128Precision);
@@ -4465,7 +4631,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             break;
           default:
             UNIMPLEMENTED();
-            break;
         }
       }
     } else if (opc1 == 0b01 && (opc2 & 0b0111) == 0b111) {
@@ -4494,7 +4659,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             break;
           default:
             UNIMPLEMENTED();
-            break;
         }
       }
     } else if (opc1 == 0b10 && opc2 == 0b0001) {
@@ -4514,7 +4678,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             break;
           default:
             UNREACHABLE();
-            break;
         }
       } else {
         int Vd = instr->VFPDRegValue(kDoublePrecision);
@@ -4532,7 +4695,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
             break;
           default:
             UNREACHABLE();
-            break;
         }
       }
     } else if (opc1 == 0b10 && (opc2 & 0b1110) == 0b0010) {
@@ -4554,7 +4716,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
               break;
             default:
               UNREACHABLE();
-              break;
           }
         } else {
           // vuzp.<size> Qd, Qm.
@@ -4570,7 +4731,6 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
               break;
             default:
               UNREACHABLE();
-              break;
           }
         }
       } else {
@@ -4587,10 +4747,8 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
               break;
             case Neon32:
               UNIMPLEMENTED();
-              break;
             default:
               UNREACHABLE();
-              break;
           }
         } else {
           // vuzp.<size> Dd, Dm.
@@ -4603,10 +4761,8 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
               break;
             case Neon32:
               UNIMPLEMENTED();
-              break;
             default:
               UNREACHABLE();
-              break;
           }
         }
       }
@@ -4623,7 +4779,7 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
           if (src_unsigned) {
             SaturatingNarrow<uint16_t, uint8_t>(this, Vd, Vm);
           } else if (dst_unsigned) {
-            SaturatingUnsignedNarrow<int16_t, uint8_t>(this, Vd, Vm);
+            SaturatingNarrow<int16_t, uint8_t>(this, Vd, Vm);
           } else {
             SaturatingNarrow<int16_t, int8_t>(this, Vd, Vm);
           }
@@ -4633,7 +4789,7 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
           if (src_unsigned) {
             SaturatingNarrow<uint32_t, uint16_t>(this, Vd, Vm);
           } else if (dst_unsigned) {
-            SaturatingUnsignedNarrow<int32_t, uint16_t>(this, Vd, Vm);
+            SaturatingNarrow<int32_t, uint16_t>(this, Vd, Vm);
           } else {
             SaturatingNarrow<int32_t, int16_t>(this, Vd, Vm);
           }
@@ -4643,15 +4799,14 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
           if (src_unsigned) {
             SaturatingNarrow<uint64_t, uint32_t>(this, Vd, Vm);
           } else if (dst_unsigned) {
-            SaturatingUnsignedNarrow<int64_t, uint32_t>(this, Vd, Vm);
+            SaturatingNarrow<int64_t, uint32_t>(this, Vd, Vm);
           } else {
             SaturatingNarrow<int64_t, int32_t>(this, Vd, Vm);
           }
           break;
         }
-        default:
-          UNIMPLEMENTED();
-          break;
+        case Neon64:
+          UNREACHABLE();
       }
     } else if (opc1 == 0b10 && instr->Bit(10) == 1) {
       // vrint<q>.<dt> <Dd>, <Dm>
@@ -4697,18 +4852,18 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
       get_neon_register(Vm, src);
       if (instr->Bit(7) == 0) {
         for (int i = 0; i < 4; i++) {
-          float denom = bit_cast<float>(src[i]);
+          float denom = base::bit_cast<float>(src[i]);
           div_zero_vfp_flag_ = (denom == 0);
           float result = 1.0f / denom;
           result = canonicalizeNaN(result);
-          src[i] = bit_cast<uint32_t>(result);
+          src[i] = base::bit_cast<uint32_t>(result);
         }
       } else {
         for (int i = 0; i < 4; i++) {
-          float radicand = bit_cast<float>(src[i]);
+          float radicand = base::bit_cast<float>(src[i]);
           float result = 1.0f / std::sqrt(radicand);
           result = canonicalizeNaN(result);
-          src[i] = bit_cast<uint32_t>(result);
+          src[i] = base::bit_cast<uint32_t>(result);
         }
       }
       set_neon_register(Vd, src);
@@ -4723,27 +4878,29 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
         switch (op) {
           case 0:
             // f32 <- s32, round towards nearest.
-            q_data[i] = bit_cast<uint32_t>(
-                std::round(static_cast<float>(bit_cast<int32_t>(q_data[i]))));
+            q_data[i] = base::bit_cast<uint32_t>(std::round(
+                static_cast<float>(base::bit_cast<int32_t>(q_data[i]))));
             break;
           case 1:
             // f32 <- u32, round towards nearest.
-            q_data[i] =
-                bit_cast<uint32_t>(std::round(static_cast<float>(q_data[i])));
+            q_data[i] = base::bit_cast<uint32_t>(
+                std::round(static_cast<float>(q_data[i])));
             break;
           case 2:
             // s32 <- f32, round to zero.
-            q_data[i] = static_cast<uint32_t>(
-                ConvertDoubleToInt(bit_cast<float>(q_data[i]), false, RZ));
+            q_data[i] = static_cast<uint32_t>(ConvertDoubleToInt(
+                base::bit_cast<float>(q_data[i]), false, RZ));
             break;
           case 3:
             // u32 <- f32, round to zero.
             q_data[i] = static_cast<uint32_t>(
-                ConvertDoubleToInt(bit_cast<float>(q_data[i]), true, RZ));
+                ConvertDoubleToInt(base::bit_cast<float>(q_data[i]), true, RZ));
             break;
         }
       }
       set_neon_register(Vd, q_data);
+    } else {
+      UNIMPLEMENTED();
     }
   } else if (op0 && op1 == 0b11 && op2 == 0b10) {
     // vtb[l,x] Dd, <list>, Dm.
@@ -4812,9 +4969,9 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
     // Advanced SIMD three registers of different lengths.
     int u = instr->Bit(24);
     int opc = instr->Bits(11, 8);
+    NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
     if (opc == 0b1000) {
       // vmlal.u<size> Qd, Dn, Dm
-      NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
       if (size != Neon32) UNIMPLEMENTED();
 
       int Vd = instr->VFPDRegValue(kSimd128Precision);
@@ -4829,33 +4986,46 @@ void Simulator::DecodeAdvancedSIMDTwoOrThreeRegisters(Instruction* instr) {
       dst[1] += (src1 >> 32) * (src2 >> 32);
       set_neon_register<uint64_t>(Vd, dst);
     } else if (opc == 0b1100) {
+      int Vd = instr->VFPDRegValue(kSimd128Precision);
+      int Vn = instr->VFPNRegValue(kDoublePrecision);
+      int Vm = instr->VFPMRegValue(kDoublePrecision);
       if (u) {
         // vmull.u<size> Qd, Dn, Dm
-        NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
-        int Vd = instr->VFPDRegValue(kSimd128Precision);
-        int Vn = instr->VFPNRegValue(kDoublePrecision);
-        int Vm = instr->VFPMRegValue(kDoublePrecision);
         switch (size) {
+          case Neon8: {
+            MultiplyLong<uint8_t, uint16_t>(this, Vd, Vn, Vm);
+            break;
+          }
+          case Neon16: {
+            MultiplyLong<uint16_t, uint32_t>(this, Vd, Vn, Vm);
+            break;
+          }
           case Neon32: {
             MultiplyLong<uint32_t, uint64_t>(this, Vd, Vn, Vm);
             break;
           }
-          default:
+          case Neon64: {
             UNIMPLEMENTED();
+          }
         }
       } else {
         // vmull.s<size> Qd, Dn, Dm
-        NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
-        int Vd = instr->VFPDRegValue(kSimd128Precision);
-        int Vn = instr->VFPNRegValue(kDoublePrecision);
-        int Vm = instr->VFPMRegValue(kDoublePrecision);
         switch (size) {
+          case Neon8: {
+            MultiplyLong<int8_t, int16_t>(this, Vd, Vn, Vm);
+            break;
+          }
           case Neon16: {
             MultiplyLong<int16_t, int32_t>(this, Vd, Vn, Vm);
             break;
           }
-          default:
+          case Neon32: {
+            MultiplyLong<int32_t, int64_t>(this, Vd, Vn, Vm);
+            break;
+          }
+          case Neon64: {
             UNIMPLEMENTED();
+          }
         }
       }
     }
@@ -4903,7 +5073,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 1 && sz == 2 && q && op1) {
       // vmov Qd, Qm.
@@ -4918,6 +5087,11 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
         }
       }
       set_neon_register(Vd, src1);
+    } else if (!u && opc == 1 && sz == 3 && q && op1) {
+      // vorn, Qd, Qm, Qn.
+      // NeonSize does not matter.
+      Binop<uint32_t>(this, Vd, Vm, Vn,
+                      [](uint32_t x, uint32_t y) { return x | (~y); });
     } else if (!u && opc == 1 && sz == 0 && q && op1) {
       // vand Qd, Qm, Qn.
       uint32_t src1[4], src2[4];
@@ -4954,7 +5128,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 3) {
       // vcge/vcgt.s<size> Qd, Qm, Qn.
@@ -4972,7 +5145,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 4 && !op1) {
       // vshl s<size> Qd, Qm, Qn.
@@ -4992,7 +5164,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 6) {
       // vmin/vmax.s<size> Qd, Qm, Qn.
@@ -5010,7 +5181,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 8 && op1) {
       // vtst.i<size> Qd, Qm, Qn.
@@ -5027,7 +5197,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 8 && !op1) {
       // vadd.i<size> Qd, Qm, Qn.
@@ -5061,7 +5230,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 0xA) {
       // vpmin/vpmax.s<size> Dd, Dm, Dn.
@@ -5079,7 +5247,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 0xB) {
       // vpadd.i<size> Dd, Dm, Dn.
@@ -5096,7 +5263,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (!u && opc == 0xD && !op1) {
       float src1[4], src2[4];
@@ -5167,7 +5333,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 1 && sz == 1 && op1) {
       // vbsl.size Qd, Qm, Qn.
@@ -5198,17 +5363,16 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
       NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
       switch (size) {
         case Neon8:
-          RoundingAverageUnsigned<uint8_t>(this, Vd, Vm, Vn);
+          Binop<uint8_t>(this, Vd, Vm, Vn, RoundingAverageUnsigned<uint8_t>);
           break;
         case Neon16:
-          RoundingAverageUnsigned<uint16_t>(this, Vd, Vm, Vn);
+          Binop<uint16_t>(this, Vd, Vm, Vn, RoundingAverageUnsigned<uint16_t>);
           break;
         case Neon32:
-          RoundingAverageUnsigned<uint32_t>(this, Vd, Vm, Vn);
+          Binop<uint32_t>(this, Vd, Vm, Vn, RoundingAverageUnsigned<uint32_t>);
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 2 && op1) {
       // vqsub.u<size> Qd, Qm, Qn.
@@ -5225,7 +5389,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 3) {
       // vcge/vcgt.u<size> Qd, Qm, Qn.
@@ -5243,7 +5406,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 4 && !op1) {
       // vshl u<size> Qd, Qm, Qn.
@@ -5263,7 +5425,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 6) {
       // vmin/vmax.u<size> Qd, Qm, Qn.
@@ -5281,7 +5442,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 8 && !op1) {
       // vsub.size Qd, Qm, Qn.
@@ -5315,7 +5475,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 0xA) {
       // vpmin/vpmax.u<size> Dd, Dm, Dn.
@@ -5333,7 +5492,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           break;
         default:
           UNREACHABLE();
-          break;
       }
     } else if (u && opc == 0xD && sz == 0 && q && op1) {
       // vmul.f32 Qd, Qn, Qm
@@ -5362,6 +5520,15 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
         }
       }
       set_neon_register(Vd, dst);
+    } else if (u && opc == 0xB) {
+      // vqrdmulh.<dt> Qd, Qm, Qn
+      NeonSize size = static_cast<NeonSize>(instr->Bits(21, 20));
+      if (size == Neon16) {
+        Binop<int16_t>(this, Vd, Vm, Vn, SaturateRoundingQMul<int16_t>);
+      } else {
+        DCHECK_EQ(Neon32, size);
+        Binop<int32_t>(this, Vd, Vm, Vn, SaturateRoundingQMul<int32_t>);
+      }
     } else {
       UNIMPLEMENTED();
     }
@@ -5381,45 +5548,73 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
       int l = instr->Bit(7);
       int q = instr->Bit(6);
       int imm3H_L = imm3H << 1 | l;
+      int imm7 = instr->Bits(21, 16);
+      imm7 += (l << 6);
+      int size = base::bits::RoundDownToPowerOfTwo32(imm7);
+      NeonSize ns =
+          static_cast<NeonSize>(base::bits::WhichPowerOfTwo(size >> 3));
 
       if (imm3H_L != 0 && opc == 0) {
-        // vshr.s<size> Qd, Qm, shift
-        int imm7 = instr->Bits(21, 16);
-        if (instr->Bit(7) != 0) imm7 += 64;
-        int size = base::bits::RoundDownToPowerOfTwo32(imm7);
+        // vshr.s/u<size> Qd, Qm, shift
         int shift = 2 * size - imm7;
-        int Vd = instr->VFPDRegValue(kSimd128Precision);
-        int Vm = instr->VFPMRegValue(kSimd128Precision);
-        NeonSize ns =
-            static_cast<NeonSize>(base::bits::WhichPowerOfTwo(size >> 3));
+        int Vd = instr->VFPDRegValue(q ? kSimd128Precision : kDoublePrecision);
+        int Vm = instr->VFPMRegValue(q ? kSimd128Precision : kDoublePrecision);
+        switch (ns) {
+          case Neon8:
+            q ? ShiftRight<int8_t, kSimd128Size>(this, Vd, Vm, shift, u)
+              : ShiftRight<int8_t, kDoubleSize>(this, Vd, Vm, shift, u);
+            break;
+          case Neon16:
+            q ? ShiftRight<int16_t, kSimd128Size>(this, Vd, Vm, shift, u)
+              : ShiftRight<int16_t, kDoubleSize>(this, Vd, Vm, shift, u);
+            break;
+          case Neon32:
+            q ? ShiftRight<int32_t, kSimd128Size>(this, Vd, Vm, shift, u)
+              : ShiftRight<int32_t, kDoubleSize>(this, Vd, Vm, shift, u);
+            break;
+          case Neon64:
+            q ? ShiftRight<int64_t, kSimd128Size>(this, Vd, Vm, shift, u)
+              : ShiftRight<int64_t, kDoubleSize>(this, Vd, Vm, shift, u);
+            break;
+        }
+      } else if (imm3H_L != 0 && opc == 1) {
+        // vsra Dd, Dm, #imm
+        DCHECK(!q);  // Unimplemented for now.
+        int shift = 2 * size - imm7;
+        int Vd = instr->VFPDRegValue(kDoublePrecision);
+        int Vm = instr->VFPMRegValue(kDoublePrecision);
         if (u) {
           switch (ns) {
             case Neon8:
-              ShiftRight<uint8_t, kSimd128Size>(this, Vd, Vm, shift);
+              ShiftRightAccumulate<uint8_t, kDoubleSize>(this, Vd, Vm, shift);
               break;
             case Neon16:
-              ShiftRight<uint16_t, kSimd128Size>(this, Vd, Vm, shift);
+              ShiftRightAccumulate<uint16_t, kDoubleSize>(this, Vd, Vm, shift);
               break;
             case Neon32:
-              ShiftRight<uint32_t, kSimd128Size>(this, Vd, Vm, shift);
+              ShiftRightAccumulate<uint32_t, kDoubleSize>(this, Vd, Vm, shift);
               break;
             case Neon64:
-              ShiftRight<uint64_t, kSimd128Size>(this, Vd, Vm, shift);
+              ShiftRightAccumulate<uint64_t, kDoubleSize>(this, Vd, Vm, shift);
               break;
           }
         } else {
           switch (ns) {
             case Neon8:
-              ArithmeticShiftRight<int8_t, kSimd128Size>(this, Vd, Vm, shift);
+              ArithmeticShiftRightAccumulate<int8_t, kDoubleSize>(this, Vd, Vm,
+                                                                  shift);
               break;
             case Neon16:
-              ArithmeticShiftRight<int16_t, kSimd128Size>(this, Vd, Vm, shift);
+              ArithmeticShiftRightAccumulate<int16_t, kDoubleSize>(this, Vd, Vm,
+                                                                   shift);
               break;
             case Neon32:
-              ArithmeticShiftRight<int32_t, kSimd128Size>(this, Vd, Vm, shift);
+              ArithmeticShiftRightAccumulate<int32_t, kDoubleSize>(this, Vd, Vm,
+                                                                   shift);
               break;
             case Neon64:
-              ArithmeticShiftRight<int64_t, kSimd128Size>(this, Vd, Vm, shift);
+              ArithmeticShiftRightAccumulate<int64_t, kDoubleSize>(this, Vd, Vm,
+                                                                   shift);
               break;
           }
         }
@@ -5429,8 +5624,7 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
           if ((instr->VdValue() & 1) != 0) UNIMPLEMENTED();
           int Vd = instr->VFPDRegValue(kSimd128Precision);
           int Vm = instr->VFPMRegValue(kDoublePrecision);
-          int imm3 = instr->Bits(21, 19);
-          switch (imm3) {
+          switch (imm3H) {
             case 1:
               Widen<uint8_t, uint16_t>(this, Vd, Vm);
               break;
@@ -5442,15 +5636,13 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
               break;
             default:
               UNIMPLEMENTED();
-              break;
           }
         } else {
           // vmovl signed
           if ((instr->VdValue() & 1) != 0) UNIMPLEMENTED();
           int Vd = instr->VFPDRegValue(kSimd128Precision);
           int Vm = instr->VFPMRegValue(kDoublePrecision);
-          int imm3 = instr->Bits(21, 19);
-          switch (imm3) {
+          switch (imm3H) {
             case 1:
               Widen<int8_t, int16_t>(this, Vd, Vm);
               break;
@@ -5462,14 +5654,10 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
               break;
             default:
               UNIMPLEMENTED();
-              break;
           }
         }
       } else if (!u && imm3H_L != 0 && opc == 0b0101) {
         // vshl.i<size> Qd, Qm, shift
-        int imm7 = instr->Bits(21, 16);
-        if (instr->Bit(7) != 0) imm7 += 64;
-        int size = base::bits::RoundDownToPowerOfTwo32(imm7);
         int shift = imm7 - size;
         int Vd = instr->VFPDRegValue(kSimd128Precision);
         int Vm = instr->VFPMRegValue(kSimd128Precision);
@@ -5491,9 +5679,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
         }
       } else if (u && imm3H_L != 0 && opc == 0b0100) {
         // vsri.<size> Dd, Dm, shift
-        int imm7 = instr->Bits(21, 16);
-        if (instr->Bit(7) != 0) imm7 += 64;
-        int size = base::bits::RoundDownToPowerOfTwo32(imm7);
         int shift = 2 * size - imm7;
         int Vd = instr->VFPDRegValue(kDoublePrecision);
         int Vm = instr->VFPMRegValue(kDoublePrecision);
@@ -5512,13 +5697,9 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
             break;
           default:
             UNREACHABLE();
-            break;
         }
       } else if (u && imm3H_L != 0 && opc == 0b0101) {
         // vsli.<size> Dd, Dm, shift
-        int imm7 = instr->Bits(21, 16);
-        if (instr->Bit(7) != 0) imm7 += 64;
-        int size = base::bits::RoundDownToPowerOfTwo32(imm7);
         int shift = imm7 - size;
         int Vd = instr->VFPDRegValue(kDoublePrecision);
         int Vm = instr->VFPMRegValue(kDoublePrecision);
@@ -5537,7 +5718,6 @@ void Simulator::DecodeAdvancedSIMDDataProcessing(Instruction* instr) {
             break;
           default:
             UNREACHABLE();
-            break;
         }
       }
     }
@@ -5566,200 +5746,196 @@ void Simulator::DecodeMemoryHintsAndBarriers(Instruction* instr) {
 
 void Simulator::DecodeAdvancedSIMDElementOrStructureLoadStore(
     Instruction* instr) {
-  switch (instr->SpecialValue()) {
-    case 8:
-      if (instr->Bits(21, 20) == 0) {
-        // vst1
-        int Vd = (instr->Bit(22) << 4) | instr->VdValue();
-        int Rn = instr->VnValue();
-        int type = instr->Bits(11, 8);
-        int Rm = instr->VmValue();
-        int32_t address = get_register(Rn);
-        int regs = 0;
-        switch (type) {
-          case nlt_1:
-            regs = 1;
-            break;
-          case nlt_2:
-            regs = 2;
-            break;
-          case nlt_3:
-            regs = 3;
-            break;
-          case nlt_4:
-            regs = 4;
-            break;
-          default:
-            UNIMPLEMENTED();
-            break;
-        }
-        int r = 0;
-        while (r < regs) {
-          uint32_t data[2];
-          get_d_register(Vd + r, data);
-          WriteW(address, data[0]);
-          WriteW(address + 4, data[1]);
-          address += 8;
-          r++;
-        }
-        if (Rm != 15) {
-          if (Rm == 13) {
-            set_register(Rn, address);
-          } else {
-            set_register(Rn, get_register(Rn) + get_register(Rm));
-          }
-        }
-      } else if (instr->Bits(21, 20) == 2) {
-        // vld1
-        int Vd = (instr->Bit(22) << 4) | instr->VdValue();
-        int Rn = instr->VnValue();
-        int type = instr->Bits(11, 8);
-        int Rm = instr->VmValue();
-        int32_t address = get_register(Rn);
-        int regs = 0;
-        switch (type) {
-          case nlt_1:
-            regs = 1;
-            break;
-          case nlt_2:
-            regs = 2;
-            break;
-          case nlt_3:
-            regs = 3;
-            break;
-          case nlt_4:
-            regs = 4;
-            break;
-          default:
-            UNIMPLEMENTED();
-            break;
-        }
-        int r = 0;
-        while (r < regs) {
-          uint32_t data[2];
-          data[0] = ReadW(address);
-          data[1] = ReadW(address + 4);
-          set_d_register(Vd + r, data);
-          address += 8;
-          r++;
-        }
-        if (Rm != 15) {
-          if (Rm == 13) {
-            set_register(Rn, address);
-          } else {
-            set_register(Rn, get_register(Rn) + get_register(Rm));
-          }
-        }
-      } else {
-        UNIMPLEMENTED();
-      }
-      break;
-    case 9: {
-      if (instr->Bits(21, 20) == 2) {
-        // Bits(11, 8) is the B field in A7.7 Advanced SIMD element or structure
-        // load/store instructions. See table A7-21.
-        if (instr->Bits(11, 8) == 0xC) {
-          // vld1 (single element to all lanes).
-          DCHECK_EQ(instr->Bits(11, 8), 0b1100);  // Type field.
-          int Vd = (instr->Bit(22) << 4) | instr->VdValue();
-          int Rn = instr->VnValue();
-          int Rm = instr->VmValue();
-          int32_t address = get_register(Rn);
-          int regs = instr->Bit(5) + 1;
-          int size = instr->Bits(7, 6);
-          uint32_t q_data[2];
-          switch (size) {
-            case Neon8: {
-              uint8_t data = ReadBU(address);
-              uint8_t* dst = reinterpret_cast<uint8_t*>(q_data);
-              for (int i = 0; i < 8; i++) {
-                dst[i] = data;
-              }
-              break;
-            }
-            case Neon16: {
-              uint16_t data = ReadHU(address);
-              uint16_t* dst = reinterpret_cast<uint16_t*>(q_data);
-              for (int i = 0; i < 4; i++) {
-                dst[i] = data;
-              }
-              break;
-            }
-            case Neon32: {
-              uint32_t data = ReadW(address);
-              for (int i = 0; i < 2; i++) {
-                q_data[i] = data;
-              }
-              break;
-            }
-          }
-          for (int r = 0; r < regs; r++) {
-            set_neon_register<uint32_t, kDoubleSize>(Vd + r, q_data);
-          }
-          if (Rm != 15) {
-            if (Rm == 13) {
-              set_register(Rn, address);
-            } else {
-              set_register(Rn, get_register(Rn) + get_register(Rm));
-            }
-          }
-        } else if (instr->Bits(11, 8) == 8 ||
-                   ((instr->Bits(11, 8) & 0b1011) == 0)) {
-          // vld1 (single element to one lane)
-          int Vd = (instr->Bit(22) << 4) | instr->VdValue();
-          int Rn = instr->VnValue();
-          int Rm = instr->VmValue();
-          int32_t address = get_register(Rn);
-          int size = instr->Bits(11, 10);
-          uint64_t dreg;
-          get_d_register(Vd, &dreg);
-          switch (size) {
-            case Neon8: {
-              uint64_t data = ReadBU(address);
-              DCHECK_EQ(0, instr->Bit(4));
-              int i = instr->Bits(7, 5) * 8;
-              dreg = (dreg & ~(uint64_t{0xff} << i)) | (data << i);
-              break;
-            }
-            case Neon16: {
-              DCHECK_EQ(0, instr->Bits(5, 4));  // Alignment not supported.
-              uint64_t data = ReadHU(address);
-              int i = instr->Bits(7, 6) * 16;
-              dreg = (dreg & ~(uint64_t{0xffff} << i)) | (data << i);
-              break;
-            }
-            case Neon32: {
-              DCHECK_EQ(0, instr->Bits(6, 4));  // Alignment not supported.
-              uint64_t data = static_cast<unsigned>(ReadW(address));
-              int i = instr->Bit(7) * 32;
-              dreg = (dreg & ~(uint64_t{0xffffffff} << i)) | (data << i);
-              break;
-            }
-            case Neon64: {
-              // Should have been handled by vld1 (single element to all lanes).
-              UNREACHABLE();
-            }
-          }
-          set_d_register(Vd, &dreg);
+  int op0 = instr->Bit(23);
+  int op1 = instr->Bits(11, 10);
 
-          // write back
-          if (Rm != 15) {
-            if (Rm == 13) {
-              set_register(Rn, address);
-            } else {
-              set_register(Rn, get_register(Rn) + get_register(Rm));
-            }
-          }
-        } else {
-          UNIMPLEMENTED();
-        }
-      } else {
-        UNIMPLEMENTED();
-      }
+  if (!op0) {
+    DecodeAdvancedSIMDLoadStoreMultipleStructures(instr);
+  } else if (op1 == 0b11) {
+    DecodeAdvancedSIMDLoadSingleStructureToAllLanes(instr);
+  } else {
+    DecodeAdvancedSIMDLoadStoreSingleStructureToOneLane(instr);
+  }
+}
+
+void Simulator::DecodeAdvancedSIMDLoadStoreMultipleStructures(
+    Instruction* instr) {
+  int Vd = instr->VFPDRegValue(kDoublePrecision);
+  int Rn = instr->VnValue();
+  int Rm = instr->VmValue();
+  int type = instr->Bits(11, 8);
+  int32_t address = get_register(Rn);
+  int regs = 0;
+  switch (type) {
+    case nlt_1:
+      regs = 1;
       break;
-    }
+    case nlt_2:
+      regs = 2;
+      break;
+    case nlt_3:
+      regs = 3;
+      break;
+    case nlt_4:
+      regs = 4;
+      break;
     default:
       UNIMPLEMENTED();
+  }
+  if (instr->Bit(21)) {
+    // vld1
+    int r = 0;
+    while (r < regs) {
+      uint32_t data[2];
+      data[0] = ReadW(address);
+      data[1] = ReadW(address + 4);
+      set_d_register(Vd + r, data);
+      address += 8;
+      r++;
+    }
+  } else {
+    // vst1
+    int r = 0;
+    while (r < regs) {
+      uint32_t data[2];
+      get_d_register(Vd + r, data);
+      WriteW(address, data[0]);
+      WriteW(address + 4, data[1]);
+      address += 8;
+      r++;
+    }
+  }
+  AdvancedSIMDElementOrStructureLoadStoreWriteback(Rn, Rm, 8 * regs);
+}
+
+void Simulator::DecodeAdvancedSIMDLoadSingleStructureToAllLanes(
+    Instruction* instr) {
+  DCHECK_NE(0, instr->Bit(21));
+  int N = instr->Bits(9, 8);
+
+  int Vd = instr->VFPDRegValue(kDoublePrecision);
+  int Rn = instr->VnValue();
+  int Rm = instr->VmValue();
+  int32_t address = get_register(Rn);
+
+  if (!N) {
+    // vld1 (single element to all lanes).
+    int regs = instr->Bit(5) + 1;
+    int size = instr->Bits(7, 6);
+    uint32_t q_data[2];
+    switch (size) {
+      case Neon8: {
+        uint8_t data = ReadBU(address);
+        uint8_t* dst = reinterpret_cast<uint8_t*>(q_data);
+        for (int i = 0; i < 8; i++) {
+          dst[i] = data;
+        }
+        break;
+      }
+      case Neon16: {
+        uint16_t data = ReadHU(address);
+        uint16_t* dst = reinterpret_cast<uint16_t*>(q_data);
+        for (int i = 0; i < 4; i++) {
+          dst[i] = data;
+        }
+        break;
+      }
+      case Neon32: {
+        uint32_t data = ReadW(address);
+        for (int i = 0; i < 2; i++) {
+          q_data[i] = data;
+        }
+        break;
+      }
+    }
+    for (int r = 0; r < regs; r++) {
+      set_neon_register<uint32_t, kDoubleSize>(Vd + r, q_data);
+    }
+    AdvancedSIMDElementOrStructureLoadStoreWriteback(Rn, Rm, 1 << size);
+  } else {
+    UNIMPLEMENTED();
+  }
+}
+
+void Simulator::DecodeAdvancedSIMDLoadStoreSingleStructureToOneLane(
+    Instruction* instr) {
+  int L = instr->Bit(21);
+  int size = instr->Bits(11, 10);
+  int N = instr->Bits(9, 8);
+  int Vd = instr->VFPDRegValue(kDoublePrecision);
+  int Rn = instr->VnValue();
+  int Rm = instr->VmValue();
+  int32_t address = get_register(Rn);
+
+  if (L && N == 0) {
+    // vld1 (single element to one lane)
+    DCHECK_NE(3, size);
+    uint64_t dreg;
+    get_d_register(Vd, &dreg);
+    switch (size) {
+      case Neon8: {
+        uint64_t data = ReadBU(address);
+        DCHECK_EQ(0, instr->Bit(4));
+        int i = instr->Bits(7, 5) * 8;
+        dreg = (dreg & ~(uint64_t{0xff} << i)) | (data << i);
+        break;
+      }
+      case Neon16: {
+        DCHECK_EQ(0, instr->Bits(5, 4));  // Alignment not supported.
+        uint64_t data = ReadHU(address);
+        int i = instr->Bits(7, 6) * 16;
+        dreg = (dreg & ~(uint64_t{0xffff} << i)) | (data << i);
+        break;
+      }
+      case Neon32: {
+        DCHECK_EQ(0, instr->Bits(6, 4));  // Alignment not supported.
+        uint64_t data = static_cast<unsigned>(ReadW(address));
+        int i = instr->Bit(7) * 32;
+        dreg = (dreg & ~(uint64_t{0xffffffff} << i)) | (data << i);
+        break;
+      }
+      case Neon64: {
+        // Should have been handled by vld1 (single element to all lanes).
+        UNREACHABLE();
+      }
+    }
+    set_d_register(Vd, &dreg);
+    AdvancedSIMDElementOrStructureLoadStoreWriteback(Rn, Rm, 1 << size);
+  } else if (!L && N == 0) {
+    // vst1s (single element from one lane).
+    DCHECK_NE(3, size);
+    uint64_t dreg;
+    get_d_register(Vd, &dreg);
+    switch (size) {
+      case Neon8: {
+        DCHECK_EQ(0, instr->Bit(4));
+        int i = instr->Bits(7, 5) * 8;
+        dreg = (dreg >> i) & 0xff;
+        WriteB(address, static_cast<uint8_t>(dreg));
+        break;
+      }
+      case Neon16: {
+        DCHECK_EQ(0, instr->Bits(5, 4));  // Alignment not supported.
+        int i = instr->Bits(7, 6) * 16;
+        dreg = (dreg >> i) & 0xffff;
+        WriteH(address, static_cast<uint16_t>(dreg));
+        break;
+      }
+      case Neon32: {
+        DCHECK_EQ(0, instr->Bits(6, 4));  // Alignment not supported.
+        int i = instr->Bit(7) * 32;
+        dreg = (dreg >> i) & 0xffffffff;
+        WriteW(address, base::bit_cast<int>(static_cast<uint32_t>(dreg)));
+        break;
+      }
+      case Neon64: {
+        // Should have been handled by vst1 (single element to all lanes).
+        UNREACHABLE();
+      }
+    }
+    AdvancedSIMDElementOrStructureLoadStoreWriteback(Rn, Rm, 1 << size);
+  } else {
+    UNIMPLEMENTED();
   }
 }
 
@@ -5790,7 +5966,6 @@ void Simulator::DecodeFloatingPointDataProcessing(Instruction* instr) {
               break;
             default:
               UNREACHABLE();  // Case analysis is exhaustive.
-              break;
           }
           dd_value = canonicalizeNaN(dd_value);
           set_d_register_from_double(vd, dd_value);
@@ -5816,7 +5991,6 @@ void Simulator::DecodeFloatingPointDataProcessing(Instruction* instr) {
               break;
             default:
               UNREACHABLE();  // Case analysis is exhaustive.
-              break;
           }
           sd_value = canonicalizeNaN(sd_value);
           set_s_register_from_float(d, sd_value);
@@ -5908,7 +6082,6 @@ void Simulator::DecodeFloatingPointDataProcessing(Instruction* instr) {
             break;
           default:
             UNREACHABLE();  // Case analysis is exhaustive.
-            break;
         }
         if (instr->SzValue() == 0x1) {
           int n = instr->VFPNRegValue(kDoublePrecision);
@@ -5929,7 +6102,6 @@ void Simulator::DecodeFloatingPointDataProcessing(Instruction* instr) {
       break;
     default:
       UNIMPLEMENTED();
-      break;
   }
 }
 
@@ -5958,7 +6130,7 @@ void Simulator::InstructionDecode(Instruction* instr) {
     disasm::NameConverter converter;
     disasm::Disassembler dasm(converter);
     // use a reasonably large buffer
-    v8::internal::EmbeddedVector<char, 256> buffer;
+    v8::base::EmbeddedVector<char, 256> buffer;
     dasm.InstructionDecode(buffer, reinterpret_cast<byte*>(instr));
     PrintF("  0x%08" V8PRIxPTR "  %s\n", reinterpret_cast<intptr_t>(instr),
            buffer.begin());
@@ -5998,7 +6170,6 @@ void Simulator::InstructionDecode(Instruction* instr) {
       }
       default: {
         UNIMPLEMENTED();
-        break;
       }
     }
   }
@@ -6360,5 +6531,27 @@ void Simulator::GlobalMonitor::RemoveProcessor(Processor* processor) {
 
 }  // namespace internal
 }  // namespace v8
+
+//
+// The following functions are used by our gdb macros.
+//
+V8_EXPORT_PRIVATE extern bool _v8_internal_Simulator_ExecDebugCommand(
+    const char* command) {
+  i::Isolate* isolate = i::Isolate::Current();
+  if (!isolate) {
+    fprintf(stderr, "No V8 Isolate found\n");
+    return false;
+  }
+  i::Simulator* simulator = i::Simulator::current(isolate);
+  if (!simulator) {
+    fprintf(stderr, "No Arm simulator found\n");
+    return false;
+  }
+  // Copy the command so that the simulator can take ownership of it.
+  size_t len = strlen(command);
+  i::ArrayUniquePtr<char> command_copy(i::NewArray<char>(len + 1));
+  i::MemCopy(command_copy.get(), command, len + 1);
+  return i::ArmDebugger(simulator).ExecDebugCommand(std::move(command_copy));
+}
 
 #endif  // USE_SIMULATOR

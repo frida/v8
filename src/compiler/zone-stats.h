@@ -6,10 +6,8 @@
 #define V8_COMPILER_ZONE_STATS_H_
 
 #include <map>
-#include <set>
 #include <vector>
 
-#include "src/common/globals.h"
 #include "src/zone/zone.h"
 
 namespace v8 {
@@ -18,7 +16,7 @@ namespace compiler {
 
 class V8_EXPORT_PRIVATE ZoneStats final {
  public:
-  class Scope final {
+  class V8_NODISCARD Scope final {
    public:
     explicit Scope(ZoneStats* zone_stats, const char* zone_name,
                    bool support_zone_compression = false)
@@ -51,7 +49,7 @@ class V8_EXPORT_PRIVATE ZoneStats final {
     const bool support_zone_compression_;
   };
 
-  class V8_EXPORT_PRIVATE StatsScope final {
+  class V8_EXPORT_PRIVATE V8_NODISCARD StatsScope final {
    public:
     explicit StatsScope(ZoneStats* zone_stats);
     ~StatsScope();

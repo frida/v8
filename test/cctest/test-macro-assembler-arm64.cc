@@ -27,15 +27,11 @@
 
 #include <stdlib.h>
 
-#include "src/base/platform/platform.h"
 #include "src/codegen/arm64/assembler-arm64-inl.h"
 #include "src/codegen/macro-assembler-inl.h"
 #include "src/deoptimizer/deoptimizer.h"
-#include "src/execution/simulator.h"
 #include "src/heap/factory.h"
-#include "src/init/v8.h"
 #include "src/objects/objects-inl.h"
-#include "src/objects/smi.h"
 #include "src/utils/ostreams.h"
 #include "test/cctest/cctest.h"
 #include "test/common/assembler-tester.h"
@@ -57,6 +53,8 @@ TEST(EmbeddedObj) {
   MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes,
                       buffer->CreateView());
 
+  AssemblerBufferWriteScope rw_scope(*buffer);
+
   Handle<HeapObject> old_array = isolate->factory()->NewFixedArray(2000);
   Handle<HeapObject> my_array = isolate->factory()->NewFixedArray(1000);
   __ Mov(w4, Immediate(my_array, RelocInfo::COMPRESSED_EMBEDDED_OBJECT));
@@ -77,34 +75,36 @@ TEST(EmbeddedObj) {
   CcTest::CollectAllGarbage();
   CcTest::CollectAllGarbage();
 
+  PtrComprCageBase cage_base(isolate);
+
   // Test the user-facing reloc interface.
   const int mode_mask = RelocInfo::EmbeddedObjectModeMask();
   for (RelocIterator it(*code, mode_mask); !it.done(); it.next()) {
     RelocInfo::Mode mode = it.rinfo()->rmode();
     if (RelocInfo::IsCompressedEmbeddedObject(mode)) {
-      CHECK_EQ(*my_array, it.rinfo()->target_object());
+      CHECK_EQ(*my_array, it.rinfo()->target_object(cage_base));
     } else {
       CHECK(RelocInfo::IsFullEmbeddedObject(mode));
-      CHECK_EQ(*old_array, it.rinfo()->target_object());
+      CHECK_EQ(*old_array, it.rinfo()->target_object(cage_base));
     }
   }
 #endif  // V8_COMPRESS_POINTERS
 }
 
 TEST(DeoptExitSizeIsFixed) {
-  CHECK(Deoptimizer::kSupportsFixedDeoptExitSizes);
-
   Isolate* isolate = CcTest::i_isolate();
   HandleScope handles(isolate);
   auto buffer = AllocateAssemblerBuffer();
   MacroAssembler masm(isolate, v8::internal::CodeObjectRequired::kYes,
                       buffer->CreateView());
 
-  STATIC_ASSERT(static_cast<int>(kFirstDeoptimizeKind) == 0);
+  AssemblerBufferWriteScope rw_scope(*buffer);
+
+  static_assert(static_cast<int>(kFirstDeoptimizeKind) == 0);
   for (int i = 0; i < kDeoptimizeKindCount; i++) {
     DeoptimizeKind kind = static_cast<DeoptimizeKind>(i);
-    Builtins::Name target = Deoptimizer::GetDeoptimizationEntry(isolate, kind);
     Label before_exit;
+    Builtin target = Deoptimizer::GetDeoptimizationEntry(kind);
     // Mirroring logic in code-generator.cc.
     if (kind == DeoptimizeKind::kLazy) {
       // CFI emits an extra instruction here.
@@ -112,11 +112,11 @@ TEST(DeoptExitSizeIsFixed) {
     } else {
       masm.bind(&before_exit);
     }
-    masm.CallForDeoptimization(target, 42, &before_exit, kind, &before_exit);
+    masm.CallForDeoptimization(target, 42, &before_exit, kind, &before_exit,
+                               &before_exit);
     CHECK_EQ(masm.SizeOfCodeGeneratedSince(&before_exit),
-             kind == DeoptimizeKind::kLazy
-                 ? Deoptimizer::kLazyDeoptExitSize
-                 : Deoptimizer::kNonLazyDeoptExitSize);
+             kind == DeoptimizeKind::kLazy ? Deoptimizer::kLazyDeoptExitSize
+                                           : Deoptimizer::kEagerDeoptExitSize);
   }
 }
 

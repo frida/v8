@@ -24,14 +24,14 @@
 #include "src/execution/mips/simulator-mips.h"
 #elif V8_TARGET_ARCH_MIPS64
 #include "src/execution/mips64/simulator-mips64.h"
+#elif V8_TARGET_ARCH_LOONG64
+#include "src/execution/loong64/simulator-loong64.h"
 #elif V8_TARGET_ARCH_S390
 #include "src/execution/s390/simulator-s390.h"
+#elif V8_TARGET_ARCH_RISCV32 || V8_TARGET_ARCH_RISCV64
+#include "src/execution/riscv/simulator-riscv.h"
 #else
 #error Unsupported target architecture.
-#endif
-
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-#include <ptrauth.h>
 #endif
 
 namespace v8 {
@@ -105,11 +105,11 @@ class GeneratedCode {
   using Signature = Return(Args...);
 
   static GeneratedCode FromAddress(Isolate* isolate, Address addr) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(addr));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(addr));
   }
 
   static GeneratedCode FromBuffer(Isolate* isolate, byte* buffer) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(buffer));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(buffer));
   }
 
   static GeneratedCode FromCode(Code code) {
@@ -119,9 +119,16 @@ class GeneratedCode {
 #ifdef USE_SIMULATOR
   // Defined in simulator-base.h.
   Return Call(Args... args) {
-#if defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
-    FATAL("Generated code execution not possible during cross-compilation.");
-#endif  // defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
+// Starboard is a platform abstraction interface that also include Windows
+// platforms like UWP.
+#if defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN) && \
+    !defined(V8_OS_STARBOARD) && !defined(V8_TARGET_ARCH_ARM)
+    FATAL(
+        "Generated code execution not possible during cross-compilation."
+        "Also, generic C function calls are not implemented on 32-bit arm "
+        "yet.");
+#endif  // defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN) &&
+        // !defined(V8_OS_STARBOARD) && !defined(V8_TARGET_ARCH_ARM)
     return Simulator::current(isolate_)->template Call<Return>(
         reinterpret_cast<Address>(fn_ptr_), args...);
   }
@@ -129,7 +136,10 @@ class GeneratedCode {
 
   DISABLE_CFI_ICALL Return Call(Args... args) {
     // When running without a simulator we call the entry directly.
-#if defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
+// Starboard is a platform abstraction interface that also include Windows
+// platforms like UWP.
+#if defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN) && \
+    !defined(V8_OS_STARBOARD)
     FATAL("Generated code execution not possible during cross-compilation.");
 #endif  // defined(V8_TARGET_OS_WIN) && !defined(V8_OS_WIN)
 #if ABI_USES_FUNCTION_DESCRIPTORS
@@ -152,18 +162,8 @@ class GeneratedCode {
   friend class GeneratedCode<Return(Args...)>;
   Isolate* isolate_;
   Signature* fn_ptr_;
-
   GeneratedCode(Isolate* isolate, Signature* fn_ptr)
       : isolate_(isolate), fn_ptr_(fn_ptr) {}
-
-  template <typename P, typename V>
-  static P ToCodePtr(V value) {
-    P ptr = reinterpret_cast<P>(value);
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-    ptr = ptrauth_sign_unauthenticated(ptr, ptrauth_key_asia, 0);
-#endif
-    return ptr;
-  }
 };
 
 // Allow to use {GeneratedCode<ret(arg1, arg2)>} instead of

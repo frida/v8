@@ -3,24 +3,23 @@
 // found in the LICENSE file.
 
 #if !defined(_WIN32) && !defined(_WIN64)
-#include <unistd.h>  // NOLINT
-#endif               // !defined(_WIN32) && !defined(_WIN64)
+#include <unistd.h>
+#endif  // !defined(_WIN32) && !defined(_WIN64)
 
 #include <locale.h>
 
 #include <string>
 #include <vector>
 
-#include "include/libplatform/libplatform.h"
-#include "include/v8.h"
+#include "include/v8-isolate.h"
+#include "include/v8-local-handle.h"
+#include "include/v8-object.h"
+#include "include/v8-primitive.h"
+#include "include/v8-template.h"
 #include "src/base/platform/platform.h"
 #include "src/base/platform/time.h"
 #include "src/base/small-vector.h"
-#include "src/flags/flags.h"
-#include "src/heap/read-only-heap.h"
-#include "src/libplatform/default-platform.h"
-#include "src/utils/utils.h"
-#include "src/utils/vector.h"
+#include "src/base/vector.h"
 #include "test/inspector/frontend-channel.h"
 #include "test/inspector/isolate-data.h"
 #include "test/inspector/task-runner.h"
@@ -32,7 +31,7 @@ namespace {
 
 base::SmallVector<TaskRunner*, 2> task_runners;
 
-class UtilsExtension : public IsolateData::SetupGlobalTask {
+class UtilsExtension : public InspectorIsolateData::SetupGlobalTask {
  public:
   ~UtilsExtension() override = default;
   void Run(v8::Isolate* isolate,
@@ -40,9 +39,12 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     v8::Local<v8::ObjectTemplate> utils = v8::ObjectTemplate::New(isolate);
     auto Set = [isolate](v8::Local<v8::ObjectTemplate> tmpl, const char* str,
                          v8::Local<v8::Data> value) {
+      // Do not set {ReadOnly}, because fuzzer inputs might overwrite individual
+      // methods, or the whole "utils" global. See the
+      // `testing/libfuzzer/fuzzers/generate_v8_inspector_fuzzer_corpus.py` file
+      // in chromium.
       tmpl->Set(ToV8String(isolate, str), value,
                 static_cast<v8::PropertyAttribute>(
-                    v8::PropertyAttribute::ReadOnly |
                     v8::PropertyAttribute::DontDelete));
     };
     Set(utils, "quit",
@@ -88,8 +90,9 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
 
   static void CompileAndRunWithOrigin(
       const v8::FunctionCallbackInfo<v8::Value>& args) {
-    if (args.Length() != 5 || !args[0]->IsInt32() || !args[1]->IsString() ||
-        !args[2]->IsString() || !args[3]->IsInt32() || !args[4]->IsInt32()) {
+    if (args.Length() != 6 || !args[0]->IsInt32() || !args[1]->IsString() ||
+        !args[2]->IsString() || !args[3]->IsInt32() || !args[4]->IsInt32() ||
+        !args[5]->IsBoolean()) {
       return;
     }
 
@@ -97,7 +100,7 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
         args.GetIsolate(), args[0].As<v8::Int32>()->Value(),
         ToVector(args.GetIsolate(), args[1].As<v8::String>()),
         args[2].As<v8::String>(), args[3].As<v8::Int32>(),
-        args[4].As<v8::Int32>(), v8::Boolean::New(args.GetIsolate(), false)));
+        args[4].As<v8::Int32>(), args[5].As<v8::Boolean>()));
   }
 
   static void SchedulePauseOnNextStatement(
@@ -112,7 +115,8 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
         ToVector(args.GetIsolate(), args[2].As<v8::String>());
     int context_group_id = args[0].As<v8::Int32>()->Value();
     RunSyncTask(backend_runner_,
-                [&context_group_id, &reason, &details](IsolateData* data) {
+                [&context_group_id, &reason,
+                 &details](InspectorIsolateData* data) {
                   data->SchedulePauseOnNextStatement(
                       context_group_id,
                       v8_inspector::StringView(reason.data(), reason.size()),
@@ -126,9 +130,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     int context_group_id = args[0].As<v8::Int32>()->Value();
-    RunSyncTask(backend_runner_, [&context_group_id](IsolateData* data) {
-      data->CancelPauseOnNextStatement(context_group_id);
-    });
+    RunSyncTask(backend_runner_,
+                [&context_group_id](InspectorIsolateData* data) {
+                  data->CancelPauseOnNextStatement(context_group_id);
+                });
   }
 
   static void CreateContextGroup(
@@ -137,9 +142,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     int context_group_id = 0;
-    RunSyncTask(backend_runner_, [&context_group_id](IsolateData* data) {
-      context_group_id = data->CreateContextGroup();
-    });
+    RunSyncTask(backend_runner_,
+                [&context_group_id](InspectorIsolateData* data) {
+                  context_group_id = data->CreateContextGroup();
+                });
     args.GetReturnValue().Set(
         v8::Int32::New(args.GetIsolate(), context_group_id));
   }
@@ -150,9 +156,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     int context_group_id = args[0].As<v8::Int32>()->Value();
-    RunSyncTask(backend_runner_, [&context_group_id](IsolateData* data) {
-      data->ResetContextGroup(context_group_id);
-    });
+    RunSyncTask(backend_runner_,
+                [&context_group_id](InspectorIsolateData* data) {
+                  data->ResetContextGroup(context_group_id);
+                });
   }
 
   static void ConnectSession(const v8::FunctionCallbackInfo<v8::Value>& args) {
@@ -162,8 +169,8 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
     FrontendChannelImpl* channel = new FrontendChannelImpl(
-        IsolateData::FromContext(context)->task_runner(),
-        IsolateData::FromContext(context)->GetContextGroupId(context),
+        InspectorIsolateData::FromContext(context)->task_runner(),
+        InspectorIsolateData::FromContext(context)->GetContextGroupId(context),
         args.GetIsolate(), args[2].As<v8::Function>());
 
     std::vector<uint8_t> state =
@@ -171,7 +178,7 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     int context_group_id = args[0].As<v8::Int32>()->Value();
     int session_id = 0;
     RunSyncTask(backend_runner_, [&context_group_id, &session_id, &channel,
-                                  &state](IsolateData* data) {
+                                  &state](InspectorIsolateData* data) {
       session_id = data->ConnectSession(
           context_group_id,
           v8_inspector::StringView(state.data(), state.size()), channel);
@@ -189,9 +196,10 @@ class UtilsExtension : public IsolateData::SetupGlobalTask {
     }
     int session_id = args[0].As<v8::Int32>()->Value();
     std::vector<uint8_t> state;
-    RunSyncTask(backend_runner_, [&session_id, &state](IsolateData* data) {
-      state = data->DisconnectSession(session_id);
-    });
+    RunSyncTask(backend_runner_,
+                [&session_id, &state](InspectorIsolateData* data) {
+                  state = data->DisconnectSession(session_id);
+                });
     channels_.erase(session_id);
     args.GetReturnValue().Set(ToV8String(args.GetIsolate(), state));
   }
@@ -219,7 +227,7 @@ bool StrictAccessCheck(v8::Local<v8::Context> accessing_context,
   return accessing_context.IsEmpty();
 }
 
-class InspectorExtension : public IsolateData::SetupGlobalTask {
+class InspectorExtension : public InspectorIsolateData::SetupGlobalTask {
  public:
   ~InspectorExtension() override = default;
   void Run(v8::Isolate* isolate,
@@ -241,10 +249,6 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
                    v8::FunctionTemplate::New(
                        isolate, &InspectorExtension::SetMaxAsyncTaskStacks));
     inspector->Set(
-        ToV8String(isolate, "dumpAsyncTaskStacksStateForTest"),
-        v8::FunctionTemplate::New(
-            isolate, &InspectorExtension::DumpAsyncTaskStacksStateForTest));
-    inspector->Set(
         ToV8String(isolate, "breakProgram"),
         v8::FunctionTemplate::New(isolate, &InspectorExtension::BreakProgram));
     inspector->Set(
@@ -254,9 +258,6 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     inspector->Set(ToV8String(isolate, "callWithScheduledBreak"),
                    v8::FunctionTemplate::New(
                        isolate, &InspectorExtension::CallWithScheduledBreak));
-    inspector->Set(ToV8String(isolate, "allowAccessorFormatting"),
-                   v8::FunctionTemplate::New(
-                       isolate, &InspectorExtension::AllowAccessorFormatting));
     inspector->Set(
         ToV8String(isolate, "markObjectAsNotInspectable"),
         v8::FunctionTemplate::New(
@@ -291,7 +292,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
   static void FireContextCreated(
       const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     data->FireContextCreated(context, data->GetContextGroupId(context),
                              v8_inspector::StringView());
   }
@@ -299,13 +300,13 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
   static void FireContextDestroyed(
       const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     data->FireContextDestroyed(context);
   }
 
   static void FreeContext(const v8::FunctionCallbackInfo<v8::Value>& args) {
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     data->FreeContext(context);
   }
 
@@ -315,7 +316,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     data->AddInspectedObject(args[0].As<v8::Int32>()->Value(), args[1]);
   }
 
@@ -324,7 +325,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     if (args.Length() != 1 || !args[0]->IsInt32()) {
       return;
     }
-    IsolateData::FromContext(args.GetIsolate()->GetCurrentContext())
+    InspectorIsolateData::FromContext(args.GetIsolate()->GetCurrentContext())
         ->SetMaxAsyncTaskStacksForTest(args[0].As<v8::Int32>()->Value());
   }
 
@@ -333,7 +334,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     if (args.Length() != 0) {
       return;
     }
-    IsolateData::FromContext(args.GetIsolate()->GetCurrentContext())
+    InspectorIsolateData::FromContext(args.GetIsolate()->GetCurrentContext())
         ->DumpAsyncTaskStacksStateForTest();
   }
 
@@ -342,7 +343,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     std::vector<uint16_t> reason =
         ToVector(args.GetIsolate(), args[0].As<v8::String>());
     v8_inspector::StringView reason_view(reason.data(), reason.size());
@@ -379,7 +380,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
         ToVector(args.GetIsolate(), args[2].As<v8::String>());
     v8_inspector::StringView details_view(details.data(), details.size());
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     int context_group_id = data->GetContextGroupId(context);
     data->SchedulePauseOnNextStatement(context_group_id, reason_view,
                                        details_view);
@@ -387,21 +388,6 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     result = args[0].As<v8::Function>()->Call(context, context->Global(), 0,
                                               nullptr);
     data->CancelPauseOnNextStatement(context_group_id);
-  }
-
-  static void AllowAccessorFormatting(
-      const v8::FunctionCallbackInfo<v8::Value>& args) {
-    if (args.Length() != 1 || !args[0]->IsObject()) {
-      return;
-    }
-    v8::Local<v8::Object> object = args[0].As<v8::Object>();
-    v8::Isolate* isolate = args.GetIsolate();
-    v8::Local<v8::Private> shouldFormatAccessorsPrivate = v8::Private::ForApi(
-        isolate, ToV8String(isolate, "allowAccessorFormatting"));
-    object
-        ->SetPrivate(isolate->GetCurrentContext(), shouldFormatAccessorsPrivate,
-                     v8::Null(isolate))
-        .ToChecked();
   }
 
   static void MarkObjectAsNotInspectable(
@@ -439,14 +425,14 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
   static void AccessorGetter(v8::Local<v8::String> property,
                              const v8::PropertyCallbackInfo<v8::Value>& info) {
     v8::Isolate* isolate = info.GetIsolate();
-    isolate->ThrowException(ToV8String(isolate, "Getter is called"));
+    isolate->ThrowError("Getter is called");
   }
 
   static void AccessorSetter(v8::Local<v8::String> property,
                              v8::Local<v8::Value> value,
                              const v8::PropertyCallbackInfo<void>& info) {
     v8::Isolate* isolate = info.GetIsolate();
-    isolate->ThrowException(ToV8String(isolate, "Setter is called"));
+    isolate->ThrowError("Setter is called");
   }
 
   static void StoreCurrentStackTrace(
@@ -456,7 +442,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     }
     v8::Isolate* isolate = args.GetIsolate();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     std::vector<uint16_t> description =
         ToVector(isolate, args[0].As<v8::String>());
     v8_inspector::StringView description_view(description.data(),
@@ -476,7 +462,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     v8_inspector::V8StackTraceId* id =
         static_cast<v8_inspector::V8StackTraceId*>(
             args[0].As<v8::ArrayBuffer>()->GetBackingStore()->Data());
@@ -489,7 +475,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
       return;
     }
     v8::Local<v8::Context> context = args.GetIsolate()->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     v8_inspector::V8StackTraceId* id =
         static_cast<v8_inspector::V8StackTraceId*>(
             args[0].As<v8::ArrayBuffer>()->GetBackingStore()->Data());
@@ -504,7 +490,7 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     }
     v8::Isolate* isolate = args.GetIsolate();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     int context_group_id = data->GetContextGroupId(context);
     bool with_empty_stack = args[2].As<v8::Boolean>()->Value();
     if (with_empty_stack) context->Exit();
@@ -536,12 +522,12 @@ class InspectorExtension : public IsolateData::SetupGlobalTask {
     }
     v8::Isolate* isolate = args.GetIsolate();
     v8::Local<v8::Context> context = isolate->GetCurrentContext();
-    IsolateData* data = IsolateData::FromContext(context);
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
     data->SetResourceNamePrefix(v8::Local<v8::String>::Cast(args[0]));
   }
 };
 
-using CharVector = v8::internal::Vector<const char>;
+using CharVector = v8::base::Vector<const char>;
 
 constexpr auto kMaxExecutionSeconds = v8::base::TimeDelta::FromSeconds(2);
 
@@ -565,24 +551,25 @@ class Watchdog final : public base::Thread {
 void FuzzInspector(const uint8_t* data, size_t size) {
   base::Semaphore ready_semaphore(0);
 
-  IsolateData::SetupGlobalTasks frontend_extensions;
+  InspectorIsolateData::SetupGlobalTasks frontend_extensions;
   frontend_extensions.emplace_back(new UtilsExtension());
   TaskRunner frontend_runner(std::move(frontend_extensions),
-                             kDontCatchExceptions, &ready_semaphore, nullptr,
-                             kNoInspector);
+                             kSuppressUncaughtExceptions, &ready_semaphore,
+                             nullptr, kNoInspector);
   ready_semaphore.Wait();
 
   int frontend_context_group_id = 0;
   RunSyncTask(&frontend_runner,
-              [&frontend_context_group_id](IsolateData* data) {
+              [&frontend_context_group_id](InspectorIsolateData* data) {
                 frontend_context_group_id = data->CreateContextGroup();
               });
 
-  IsolateData::SetupGlobalTasks backend_extensions;
+  InspectorIsolateData::SetupGlobalTasks backend_extensions;
   backend_extensions.emplace_back(new SetTimeoutExtension());
   backend_extensions.emplace_back(new InspectorExtension());
-  TaskRunner backend_runner(std::move(backend_extensions), kDontCatchExceptions,
-                            &ready_semaphore, nullptr, kWithInspector);
+  TaskRunner backend_runner(std::move(backend_extensions),
+                            kSuppressUncaughtExceptions, &ready_semaphore,
+                            nullptr, kWithInspector);
   ready_semaphore.Wait();
   UtilsExtension::set_backend_task_runner(&backend_runner);
 

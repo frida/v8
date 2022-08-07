@@ -3,18 +3,15 @@
 // found in the LICENSE file.
 
 #include "src/compiler/node-properties.h"
+
 #include "src/compiler/common-operator.h"
 #include "src/compiler/graph.h"
 #include "src/compiler/js-heap-broker.h"
-#include "src/compiler/js-operator.h"
-#include "src/compiler/linkage.h"
 #include "src/compiler/map-inference.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/operator-properties.h"
 #include "src/compiler/simplified-operator.h"
 #include "src/compiler/verifier.h"
-#include "src/handles/handles-inl.h"
-#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -332,12 +329,9 @@ base::Optional<MapRef> NodeProperties::GetJSCreateMap(JSHeapBroker* broker,
       mnewtarget.Ref(broker).IsJSFunction()) {
     ObjectRef target = mtarget.Ref(broker);
     JSFunctionRef newtarget = mnewtarget.Ref(broker).AsJSFunction();
-    if (newtarget.map().has_prototype_slot() && newtarget.has_initial_map()) {
-      if (!newtarget.serialized()) {
-        TRACE_BROKER_MISSING(broker, "initial map on " << newtarget);
-        return base::nullopt;
-      }
-      MapRef initial_map = newtarget.initial_map();
+    if (newtarget.map().has_prototype_slot() &&
+        newtarget.has_initial_map(broker->dependencies())) {
+      MapRef initial_map = newtarget.initial_map(broker->dependencies());
       if (initial_map.GetConstructor().equals(target)) {
         DCHECK(target.AsJSFunction().map().is_constructor());
         DCHECK(newtarget.map().is_constructor());
@@ -348,13 +342,35 @@ base::Optional<MapRef> NodeProperties::GetJSCreateMap(JSHeapBroker* broker,
   return base::nullopt;
 }
 
+namespace {
+
+// TODO(jgruber): Remove the intermediate ZoneHandleSet and then this function.
+ZoneRefUnorderedSet<MapRef> ToRefSet(JSHeapBroker* broker,
+                                     const ZoneHandleSet<Map>& handles) {
+  ZoneRefUnorderedSet<MapRef> refs =
+      ZoneRefUnorderedSet<MapRef>(broker->zone());
+  for (Handle<Map> handle : handles) {
+    refs.insert(MakeRefAssumeMemoryFence(broker, *handle));
+  }
+  return refs;
+}
+
+ZoneRefUnorderedSet<MapRef> RefSetOf(JSHeapBroker* broker, const MapRef& ref) {
+  ZoneRefUnorderedSet<MapRef> refs =
+      ZoneRefUnorderedSet<MapRef>(broker->zone());
+  refs.insert(ref);
+  return refs;
+}
+
+}  // namespace
+
 // static
-NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
-    JSHeapBroker* broker, Node* receiver, Node* effect,
-    ZoneHandleSet<Map>* maps_return) {
+NodeProperties::InferMapsResult NodeProperties::InferMapsUnsafe(
+    JSHeapBroker* broker, Node* receiver, Effect effect,
+    ZoneRefUnorderedSet<MapRef>* maps_out) {
   HeapObjectMatcher m(receiver);
   if (m.HasResolvedValue()) {
-    HeapObjectRef receiver = m.Ref(broker);
+    HeapObjectRef ref = m.Ref(broker);
     // We don't use ICs for the Array.prototype and the Object.prototype
     // because the runtime has to be able to intercept them properly, so
     // we better make sure that TurboFan doesn't outsmart the system here
@@ -362,23 +378,23 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
     //
     // TODO(bmeurer): This can be removed once the Array.prototype and
     // Object.prototype have NO_ELEMENTS elements kind.
-    if (!receiver.IsJSObject() ||
-        !broker->IsArrayOrObjectPrototype(receiver.AsJSObject())) {
-      if (receiver.map().is_stable()) {
+    if (!ref.IsJSObject() ||
+        !broker->IsArrayOrObjectPrototype(ref.AsJSObject())) {
+      if (ref.map().is_stable()) {
         // The {receiver_map} is only reliable when we install a stability
         // code dependency.
-        *maps_return = ZoneHandleSet<Map>(receiver.map().object());
-        return kUnreliableReceiverMaps;
+        *maps_out = RefSetOf(broker, ref.map());
+        return kUnreliableMaps;
       }
     }
   }
-  InferReceiverMapsResult result = kReliableReceiverMaps;
+  InferMapsResult result = kReliableMaps;
   while (true) {
     switch (effect->opcode()) {
       case IrOpcode::kMapGuard: {
         Node* const object = GetValueInput(effect, 0);
         if (IsSame(receiver, object)) {
-          *maps_return = MapGuardMapsOf(effect->op());
+          *maps_out = ToRefSet(broker, MapGuardMapsOf(effect->op()));
           return result;
         }
         break;
@@ -386,7 +402,8 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
       case IrOpcode::kCheckMaps: {
         Node* const object = GetValueInput(effect, 0);
         if (IsSame(receiver, object)) {
-          *maps_return = CheckMapsParametersOf(effect->op()).maps();
+          *maps_out =
+              ToRefSet(broker, CheckMapsParametersOf(effect->op()).maps());
           return result;
         }
         break;
@@ -395,21 +412,21 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
         if (IsSame(receiver, effect)) {
           base::Optional<MapRef> initial_map = GetJSCreateMap(broker, receiver);
           if (initial_map.has_value()) {
-            *maps_return = ZoneHandleSet<Map>(initial_map->object());
+            *maps_out = RefSetOf(broker, initial_map.value());
             return result;
           }
           // We reached the allocation of the {receiver}.
-          return kNoReceiverMaps;
+          return kNoMaps;
         }
-        result = kUnreliableReceiverMaps;  // JSCreate can have side-effect.
+        result = kUnreliableMaps;  // JSCreate can have side-effect.
         break;
       }
       case IrOpcode::kJSCreatePromise: {
         if (IsSame(receiver, effect)) {
-          *maps_return = ZoneHandleSet<Map>(broker->target_native_context()
-                                                .promise_function()
-                                                .initial_map()
-                                                .object());
+          *maps_out = RefSetOf(
+              broker,
+              broker->target_native_context().promise_function().initial_map(
+                  broker->dependencies()));
           return result;
         }
         break;
@@ -422,15 +439,15 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
             access.offset == HeapObject::kMapOffset) {
           if (IsSame(receiver, object)) {
             Node* const value = GetValueInput(effect, 1);
-            HeapObjectMatcher m(value);
-            if (m.HasResolvedValue()) {
-              *maps_return = ZoneHandleSet<Map>(m.Ref(broker).AsMap().object());
+            HeapObjectMatcher m2(value);
+            if (m2.HasResolvedValue()) {
+              *maps_out = RefSetOf(broker, m2.Ref(broker).AsMap());
               return result;
             }
           }
           // Without alias analysis we cannot tell whether this
           // StoreField[map] affects {receiver} or not.
-          result = kUnreliableReceiverMaps;
+          result = kUnreliableMaps;
         }
         break;
       }
@@ -453,25 +470,25 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
         if (control->opcode() != IrOpcode::kLoop) {
           DCHECK(control->opcode() == IrOpcode::kDead ||
                  control->opcode() == IrOpcode::kMerge);
-          return kNoReceiverMaps;
+          return kNoMaps;
         }
 
         // Continue search for receiver map outside the loop. Since operations
         // inside the loop may change the map, the result is unreliable.
         effect = GetEffectInput(effect, 0);
-        result = kUnreliableReceiverMaps;
+        result = kUnreliableMaps;
         continue;
       }
       default: {
         DCHECK_EQ(1, effect->op()->EffectOutputCount());
         if (effect->op()->EffectInputCount() != 1) {
           // Didn't find any appropriate CheckMaps node.
-          return kNoReceiverMaps;
+          return kNoMaps;
         }
         if (!effect->op()->HasProperty(Operator::kNoWrite)) {
           // Without alias/escape analysis we cannot tell whether this
           // {effect} affects {receiver} or not.
-          result = kUnreliableReceiverMaps;
+          result = kUnreliableMaps;
         }
         break;
       }
@@ -479,7 +496,7 @@ NodeProperties::InferReceiverMapsResult NodeProperties::InferReceiverMapsUnsafe(
 
     // Stop walking the effect chain once we hit the definition of
     // the {receiver} along the {effect}s.
-    if (IsSame(receiver, effect)) return kNoReceiverMaps;
+    if (IsSame(receiver, effect)) return kNoMaps;
 
     // Continue with the next {effect}.
     DCHECK_EQ(1, effect->op()->EffectInputCount());
@@ -503,7 +520,7 @@ bool NodeProperties::NoObservableSideEffectBetween(Node* effect,
 
 // static
 bool NodeProperties::CanBePrimitive(JSHeapBroker* broker, Node* receiver,
-                                    Node* effect) {
+                                    Effect effect) {
   switch (receiver->opcode()) {
 #define CASE(Opcode) case IrOpcode::k##Opcode:
     JS_CONSTRUCT_OP_LIST(CASE)
@@ -528,7 +545,7 @@ bool NodeProperties::CanBePrimitive(JSHeapBroker* broker, Node* receiver,
 
 // static
 bool NodeProperties::CanBeNullOrUndefined(JSHeapBroker* broker, Node* receiver,
-                                          Node* effect) {
+                                          Effect effect) {
   if (CanBePrimitive(broker, receiver, effect)) {
     switch (receiver->opcode()) {
       case IrOpcode::kCheckInternalizedString:
@@ -568,10 +585,9 @@ Node* NodeProperties::GetOuterContext(Node* node, size_t* depth) {
 }
 
 // static
-Type NodeProperties::GetTypeOrAny(Node* node) {
+Type NodeProperties::GetTypeOrAny(const Node* node) {
   return IsTyped(node) ? node->type() : Type::Any();
 }
-
 
 // static
 bool NodeProperties::AllValueInputsAreTyped(Node* node) {
@@ -581,7 +597,6 @@ bool NodeProperties::AllValueInputsAreTyped(Node* node) {
   }
   return true;
 }
-
 
 // static
 bool NodeProperties::IsInputRange(Edge edge, int first, int num) {

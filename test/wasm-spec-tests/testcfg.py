@@ -8,16 +8,6 @@ from testrunner.local import testsuite
 from testrunner.objects import testcase
 
 proposal_flags = [{
-                    'name': 'reference-types',
-                    'flags': ['--experimental-wasm-reftypes',
-                              '--wasm-staging']
-                  },
-                  {
-                    'name': 'bulk-memory-operations',
-                    'flags': ['--experimental-wasm-bulk-memory',
-                              '--wasm-staging']
-                  },
-                  {
                     'name': 'js-types',
                     'flags': ['--experimental-wasm-type-reflection',
                               '--wasm-staging']
@@ -28,8 +18,8 @@ proposal_flags = [{
                               '--wasm-staging']
                   },
                   {
-                    'name': 'simd',
-                    'flags': ['--experimental-wasm-simd',
+                    'name': 'memory64',
+                    'flags': ['--experimental-wasm-memory64',
                               '--wasm-staging']
                   },
                   ]
@@ -38,8 +28,9 @@ class TestLoader(testsuite.JSTestLoader):
   pass
 
 class TestSuite(testsuite.TestSuite):
-  def __init__(self, *args, **kwargs):
-    super(TestSuite, self).__init__(*args, **kwargs)
+
+  def __init__(self, ctx, *args, **kwargs):
+    super(TestSuite, self).__init__(ctx, *args, **kwargs)
     self.test_root = os.path.join(self.root, "tests")
     self._test_loader.test_root = self.test_root
 
@@ -58,7 +49,3 @@ class TestCase(testcase.D8TestCase):
       if os.sep.join(['proposals', proposal['name']]) in self.path:
         return proposal['flags']
     return []
-
-
-def GetSuite(*args, **kwargs):
-  return TestSuite(*args, **kwargs)

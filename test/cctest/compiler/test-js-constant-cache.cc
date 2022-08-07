@@ -87,10 +87,12 @@ TEST(MinusZeroConstant) {
   double zero_value = OpParameter<double>(zero->op());
   double minus_zero_value = OpParameter<double>(minus_zero->op());
 
-  CHECK(bit_cast<uint64_t>(0.0) == bit_cast<uint64_t>(zero_value));
-  CHECK(bit_cast<uint64_t>(-0.0) != bit_cast<uint64_t>(zero_value));
-  CHECK(bit_cast<uint64_t>(0.0) != bit_cast<uint64_t>(minus_zero_value));
-  CHECK(bit_cast<uint64_t>(-0.0) == bit_cast<uint64_t>(minus_zero_value));
+  CHECK(base::bit_cast<uint64_t>(0.0) == base::bit_cast<uint64_t>(zero_value));
+  CHECK(base::bit_cast<uint64_t>(-0.0) != base::bit_cast<uint64_t>(zero_value));
+  CHECK(base::bit_cast<uint64_t>(0.0) !=
+        base::bit_cast<uint64_t>(minus_zero_value));
+  CHECK(base::bit_cast<uint64_t>(-0.0) ==
+        base::bit_cast<uint64_t>(minus_zero_value));
 }
 
 
@@ -191,8 +193,8 @@ TEST(HeapNumbers) {
     Handle<Object> num = T.factory()->NewNumber(value);
     Handle<HeapNumber> heap = T.factory()->NewHeapNumber(value);
     Node* node1 = T.Constant(value);
-    Node* node2 = T.Constant(ObjectRef(T.broker(), num));
-    Node* node3 = T.Constant(ObjectRef(T.broker(), heap));
+    Node* node2 = T.Constant(MakeRef(T.broker(), num));
+    Node* node3 = T.Constant(MakeRef(T.broker(), heap));
     CHECK_EQ(node1, node2);
     CHECK_EQ(node1, node3);
   }
@@ -202,18 +204,20 @@ TEST(HeapNumbers) {
 TEST(OddballHandle) {
   JSConstantCacheTester T;
 
-  CHECK_EQ(T.UndefinedConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->undefined_value())));
-  CHECK_EQ(T.TheHoleConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->the_hole_value())));
+  CHECK_EQ(
+      T.UndefinedConstant(),
+      T.Constant(MakeRef<Object>(T.broker(), T.factory()->undefined_value())));
+  CHECK_EQ(
+      T.TheHoleConstant(),
+      T.Constant(MakeRef<Object>(T.broker(), T.factory()->the_hole_value())));
   CHECK_EQ(T.TrueConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->true_value())));
+           T.Constant(MakeRef<Object>(T.broker(), T.factory()->true_value())));
   CHECK_EQ(T.FalseConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->false_value())));
+           T.Constant(MakeRef<Object>(T.broker(), T.factory()->false_value())));
   CHECK_EQ(T.NullConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->null_value())));
+           T.Constant(MakeRef<Object>(T.broker(), T.factory()->null_value())));
   CHECK_EQ(T.NaNConstant(),
-           T.Constant(ObjectRef(T.broker(), T.factory()->nan_value())));
+           T.Constant(MakeRef<Object>(T.broker(), T.factory()->nan_value())));
 }
 
 

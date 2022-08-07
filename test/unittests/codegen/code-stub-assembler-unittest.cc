@@ -4,16 +4,12 @@
 
 #include "test/unittests/codegen/code-stub-assembler-unittest.h"
 
-#include "src/codegen/code-factory.h"
-#include "src/codegen/interface-descriptors.h"
 #include "src/compiler/node.h"
 #include "src/execution/isolate.h"
-#include "src/objects/objects-inl.h"
 #include "test/unittests/compiler/compiler-test-utils.h"
 #include "test/unittests/compiler/node-test-utils.h"
 
 using ::testing::_;
-using v8::internal::compiler::Node;
 
 namespace c = v8::internal::compiler;
 
@@ -22,10 +18,9 @@ namespace internal {
 
 CodeStubAssemblerTestState::CodeStubAssemblerTestState(
     CodeStubAssemblerTest* test)
-    : compiler::CodeAssemblerState(
-          test->isolate(), test->zone(), VoidDescriptor{},
-          CodeKind::FOR_TESTING, "test",
-          PoisoningMitigationLevel::kPoisonCriticalOnly) {}
+    : compiler::CodeAssemblerState(test->isolate(), test->zone(),
+                                   VoidDescriptor{}, CodeKind::FOR_TESTING,
+                                   "test") {}
 
 TARGET_TEST_F(CodeStubAssemblerTest, SmiTag) {
   CodeStubAssemblerTestState state(this);
