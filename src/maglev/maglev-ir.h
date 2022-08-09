@@ -137,6 +137,7 @@ class CompactInterpreterFrameState;
   V(ForInPrepare)                 \
   V(ForInNext)                    \
   V(GetSecondReturnedValue)       \
+  V(GetTemplateObject)            \
   V(InitialValue)                 \
   V(LoadTaggedField)              \
   V(LoadDoubleField)              \
@@ -159,6 +160,7 @@ class CompactInterpreterFrameState;
   V(Float64Box)                   \
   V(CheckedFloat64Unbox)          \
   V(LogicalNot)                   \
+  V(SetPendingMessage)            \
   V(ToBooleanLogicalNot)          \
   V(TaggedEqual)                  \
   V(TaggedNotEqual)               \
@@ -548,6 +550,7 @@ class LazyDeoptInfo : public DeoptInfo {
   int deopting_call_return_pc = -1;
   interpreter::Register result_location =
       interpreter::Register::invalid_value();
+  int result_size = 1;
 };
 
 // Dummy type for the initial raw allocation.
@@ -1618,6 +1621,19 @@ class LogicalNot : public FixedInputValueNodeT<1, LogicalNot> {
   void PrintParams(std::ostream&, MaglevGraphLabeller*) const {}
 };
 
+class SetPendingMessage : public FixedInputValueNodeT<1, SetPendingMessage> {
+  using Base = FixedInputValueNodeT<1, SetPendingMessage>;
+
+ public:
+  explicit SetPendingMessage(uint64_t bitfield) : Base(bitfield) {}
+
+  Input& value() { return Node::input(0); }
+
+  void AllocateVreg(MaglevVregAllocationState*);
+  void GenerateCode(MaglevCodeGenState*, const ProcessingState&);
+  void PrintParams(std::ostream&, MaglevGraphLabeller*) const {}
+};
+
 class ToBooleanLogicalNot
     : public FixedInputValueNodeT<1, ToBooleanLogicalNot> {
   using Base = FixedInputValueNodeT<1, ToBooleanLogicalNot>;
@@ -2151,11 +2167,15 @@ class CreateFunctionContext
  public:
   explicit CreateFunctionContext(uint64_t bitfield,
                                  compiler::ScopeInfoRef scope_info,
-                                 uint32_t slot_count)
-      : Base(bitfield), scope_info_(scope_info), slot_count_(slot_count) {}
+                                 uint32_t slot_count, ScopeType scope_type)
+      : Base(bitfield),
+        scope_info_(scope_info),
+        slot_count_(slot_count),
+        scope_type_(scope_type) {}
 
   compiler::ScopeInfoRef scope_info() const { return scope_info_; }
   uint32_t slot_count() const { return slot_count_; }
+  ScopeType scope_type() const { return scope_type_; }
 
   Input& context() { return input(0); }
 
@@ -2169,6 +2189,7 @@ class CreateFunctionContext
  private:
   const compiler::ScopeInfoRef scope_info_;
   const uint32_t slot_count_;
+  ScopeType scope_type_;
 };
 
 class FastCreateClosure : public FixedInputValueNodeT<1, FastCreateClosure> {
@@ -2417,6 +2438,37 @@ class CheckedInternalizedString
   void AllocateVreg(MaglevVregAllocationState*);
   void GenerateCode(MaglevCodeGenState*, const ProcessingState&);
   void PrintParams(std::ostream&, MaglevGraphLabeller*) const {}
+};
+
+class GetTemplateObject : public FixedInputValueNodeT<1, GetTemplateObject> {
+  using Base = FixedInputValueNodeT<1, GetTemplateObject>;
+
+ public:
+  explicit GetTemplateObject(
+      uint64_t bitfield,
+      const compiler::SharedFunctionInfoRef& shared_function_info,
+      const compiler::FeedbackSource& feedback)
+      : Base(bitfield),
+        shared_function_info_(shared_function_info),
+        feedback_(feedback) {}
+
+  // The implementation currently calls runtime.
+  static constexpr OpProperties kProperties = OpProperties::Call();
+
+  Input& description() { return input(0); }
+
+  compiler::SharedFunctionInfoRef shared_function_info() {
+    return shared_function_info_;
+  }
+  compiler::FeedbackSource feedback() const { return feedback_; }
+
+  void AllocateVreg(MaglevVregAllocationState*);
+  void GenerateCode(MaglevCodeGenState*, const ProcessingState&);
+  void PrintParams(std::ostream&, MaglevGraphLabeller*) const {}
+
+ private:
+  compiler::SharedFunctionInfoRef shared_function_info_;
+  const compiler::FeedbackSource feedback_;
 };
 
 class LoadTaggedField : public FixedInputValueNodeT<1, LoadTaggedField> {
@@ -3056,6 +3108,10 @@ class CallRuntime : public ValueNodeT<CallRuntime> {
   Input& arg(int i) { return input(i + kFixedInputCount); }
   void set_arg(int i, ValueNode* node) {
     set_input(i + kFixedInputCount, node);
+  }
+
+  int ReturnCount() {
+    return Runtime::FunctionForId(function_id())->result_size;
   }
 
   void AllocateVreg(MaglevVregAllocationState*);

@@ -583,10 +583,7 @@ DEFINE_NEG_IMPLICATION(jitless, always_sparkplug)
 DEFINE_NEG_IMPLICATION(jitless, maglev)
 #endif  // V8_ENABLE_MAGLEV
 
-#ifndef V8_TARGET_ARCH_ARM
-// Unsupported on arm. See https://crbug.com/v8/8713.
 DEFINE_NEG_IMPLICATION(jitless, interpreted_frames_native_stack)
-#endif
 
 DEFINE_BOOL(assert_types, false,
             "generate runtime type assertions to test the typer")
@@ -1638,6 +1635,8 @@ DEFINE_BOOL(always_turbofan, false, "always try to optimize functions")
 DEFINE_IMPLICATION(always_turbofan, turbofan)
 DEFINE_BOOL(always_osr, false, "always try to OSR functions")
 DEFINE_BOOL(prepare_always_turbofan, false, "prepare for turning on always opt")
+DEFINE_BOOL(deopt_to_baseline, ENABLE_SPARKPLUG,
+            "deoptimize to baseline code when available")
 
 DEFINE_BOOL(trace_serializer, false, "print code serializer trace")
 #ifdef DEBUG
@@ -2189,17 +2188,9 @@ DEFINE_BOOL(vtune_prof_annotate_wasm, false,
 
 DEFINE_BOOL(win64_unwinding_info, true, "Enable unwinding info for Windows/x64")
 
-#ifdef V8_TARGET_ARCH_ARM
-// Unsupported on arm. See https://crbug.com/v8/8713.
-DEFINE_BOOL_READONLY(
-    interpreted_frames_native_stack, false,
-    "Show interpreted frames on the native stack (useful for external "
-    "profilers).")
-#else
 DEFINE_BOOL(interpreted_frames_native_stack, false,
             "Show interpreted frames on the native stack (useful for external "
             "profilers).")
-#endif
 
 DEFINE_BOOL(enable_etw_stack_walking, false,
             "Enable etw stack walking for windows")

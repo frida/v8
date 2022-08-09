@@ -518,7 +518,8 @@ void TurboAssembler::CallRecordWriteStub(Register object, Register slot_address,
 #endif
   } else {
     Builtin builtin = Builtins::GetRecordWriteStub(fp_mode);
-    if (options().inline_offheap_trampolines) {
+    if (options().inline_offheap_trampolines ||
+        options().builtin_calls_as_table_load) {
       CallBuiltin(builtin);
     } else {
       Handle<CodeT> code_target = isolate()->builtins()->code_handle(builtin);
@@ -668,14 +669,6 @@ void MacroAssembler::RecordWrite(Register object, Register slot_address,
   }
 }
 
-void TurboAssembler::Assert(Condition cc, AbortReason reason) {
-  if (FLAG_debug_code) Check(cc, reason);
-}
-
-void TurboAssembler::AssertUnreachable(AbortReason reason) {
-  if (FLAG_debug_code) Abort(reason);
-}
-
 void TurboAssembler::Check(Condition cc, AbortReason reason) {
   Label L;
   j(cc, &L, Label::kNear);
@@ -725,14 +718,21 @@ void TurboAssembler::Abort(AbortReason reason) {
 
   Move(rdx, Smi::FromInt(static_cast<int>(reason)));
 
-  if (!has_frame()) {
+  {
     // We don't actually want to generate a pile of code for this, so just
     // claim there is a stack frame, without generating one.
     FrameScope scope(this, StackFrame::NO_FRAME_TYPE);
-    Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
-  } else {
-    Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
+    if (root_array_available()) {
+      // Generate an indirect call via builtins entry table here in order to
+      // ensure that the interpreter_entry_return_pc_offset is the same for
+      // InterpreterEntryTrampoline and InterpreterEntryTrampolineForProfiling
+      // when FLAG_debug_code is enabled.
+      Call(EntryFromBuiltinAsOperand(Builtin::kAbort));
+    } else {
+      Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
+    }
   }
+
   // Control will not return here.
   int3();
 }
@@ -1916,25 +1916,27 @@ void TurboAssembler::Jump(Address destination, RelocInfo::Mode rmode) {
 }
 
 void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode) {
-  DCHECK_IMPLIES(
-      options().isolate_independent_code,
-      Builtins::IsIsolateIndependentBuiltin(FromCodeT(*code_object)));
-  if (options().inline_offheap_trampolines) {
+  DCHECK_IMPLIES(options().isolate_independent_code,
+                 Builtins::IsIsolateIndependentBuiltin(*code_object));
+  if (options().inline_offheap_trampolines ||
+      options().builtin_calls_as_table_load) {
     Builtin builtin = Builtin::kNoBuiltinId;
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
       TailCallBuiltin(builtin);
       return;
     }
   }
+  DCHECK(RelocInfo::IsCodeTarget(rmode));
+  DCHECK(!options().builtin_calls_as_table_load);
   jmp(code_object, rmode);
 }
 
 void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode,
                           Condition cc) {
-  DCHECK_IMPLIES(
-      options().isolate_independent_code,
-      Builtins::IsIsolateIndependentBuiltin(FromCodeT(*code_object)));
-  if (options().inline_offheap_trampolines) {
+  DCHECK_IMPLIES(options().isolate_independent_code,
+                 Builtins::IsIsolateIndependentBuiltin(*code_object));
+  if (options().inline_offheap_trampolines ||
+      options().builtin_calls_as_table_load) {
     Builtin builtin = Builtin::kNoBuiltinId;
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
       Label skip;
@@ -1944,6 +1946,8 @@ void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode,
       return;
     }
   }
+  DCHECK(RelocInfo::IsCodeTarget(rmode));
+  DCHECK(!options().builtin_calls_as_table_load);
   j(cc, code_object, rmode);
 }
 
@@ -1972,11 +1976,10 @@ void TurboAssembler::Call(Address destination, RelocInfo::Mode rmode) {
 }
 
 void TurboAssembler::Call(Handle<CodeT> code_object, RelocInfo::Mode rmode) {
-  // TODO(v8:11880): avoid roundtrips between cdc and code.
-  DCHECK_IMPLIES(
-      options().isolate_independent_code,
-      Builtins::IsIsolateIndependentBuiltin(FromCodeT(*code_object)));
-  if (options().inline_offheap_trampolines) {
+  DCHECK_IMPLIES(options().isolate_independent_code,
+                 Builtins::IsIsolateIndependentBuiltin(*code_object));
+  if (options().inline_offheap_trampolines ||
+      options().builtin_calls_as_table_load) {
     Builtin builtin = Builtin::kNoBuiltinId;
     if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
       // Inline the trampoline.
@@ -1985,6 +1988,7 @@ void TurboAssembler::Call(Handle<CodeT> code_object, RelocInfo::Mode rmode) {
     }
   }
   DCHECK(RelocInfo::IsCodeTarget(rmode));
+  DCHECK(!options().builtin_calls_as_table_load);
   call(code_object, rmode);
 }
 
@@ -2018,6 +2022,8 @@ void TurboAssembler::CallBuiltin(Builtin builtin) {
   ASM_CODE_COMMENT_STRING(this, CommentForOffHeapTrampoline("call", builtin));
   if (options().short_builtin_calls) {
     call(BuiltinEntry(builtin), RelocInfo::RUNTIME_ENTRY);
+  } else if (options().builtin_calls_as_table_load) {
+    Call(EntryFromBuiltinAsOperand(builtin));
   } else {
     Move(kScratchRegister, BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET);
     call(kScratchRegister);
@@ -2029,6 +2035,8 @@ void TurboAssembler::TailCallBuiltin(Builtin builtin) {
                           CommentForOffHeapTrampoline("tail call", builtin));
   if (options().short_builtin_calls) {
     jmp(BuiltinEntry(builtin), RelocInfo::RUNTIME_ENTRY);
+  } else if (options().builtin_calls_as_table_load) {
+    Jump(EntryFromBuiltinAsOperand(builtin));
   } else {
     Jump(BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET);
   }
@@ -2459,6 +2467,7 @@ Immediate MacroAssembler::ClearedValue() const {
       static_cast<int32_t>(HeapObjectReference::ClearedValue(isolate()).ptr()));
 }
 
+#ifdef V8_ENABLE_DEBUG_CODE
 void TurboAssembler::AssertNotSmi(Register object) {
   if (!FLAG_debug_code) return;
   ASM_CODE_COMMENT(this);
@@ -2585,6 +2594,15 @@ void MacroAssembler::AssertUndefinedOrAllocationSite(Register object) {
   Assert(equal, AbortReason::kExpectedUndefinedOrCell);
   bind(&done_checking);
 }
+
+void TurboAssembler::Assert(Condition cc, AbortReason reason) {
+  if (FLAG_debug_code) Check(cc, reason);
+}
+
+void TurboAssembler::AssertUnreachable(AbortReason reason) {
+  if (FLAG_debug_code) Abort(reason);
+}
+#endif  // V8_ENABLE_DEBUG_CODE
 
 void MacroAssembler::LoadWeakValue(Register in_out, Label* target_if_cleared) {
   cmpl(in_out, Immediate(kClearedWeakHeapObjectLower32));

@@ -108,10 +108,19 @@ namespace internal {
   /* Number of in-use external pointers in the external pointer table */       \
   /* Counted after sweeping the table at the end of mark-compact GC */         \
   HR(external_pointers_count, V8.SandboxedExternalPointersCount, 0,            \
-     kMaxExternalPointers, 101)
+     kMaxExternalPointers, 101)                                                \
+  HR(wasm_num_lazy_compilations_5sec, V8.WasmNumLazyCompilations5Sec, 0,       \
+     200000, 50)                                                               \
+  HR(wasm_num_lazy_compilations_20sec, V8.WasmNumLazyCompilations20Sec, 0,     \
+     200000, 50)                                                               \
+  HR(wasm_num_lazy_compilations_60sec, V8.WasmNumLazyCompilations60Sec, 0,     \
+     200000, 50)                                                               \
+  HR(wasm_num_lazy_compilations_120sec, V8.WasmNumLazyCompilations120Sec, 0,   \
+     200000, 50)
 
 #define NESTED_TIMED_HISTOGRAM_LIST(HT)                                       \
-  /* Timer histograms, not thread safe: HT(name, caption, max, unit) */       \
+  /* Nested timer histograms allow distributions of nested timed results. */  \
+  /* HT(name, caption, max, unit) */                                          \
   /* Garbage collection timers. */                                            \
   HT(gc_idle_notification, V8.GCIdleNotification, 10000, MILLISECOND)         \
   HT(gc_incremental_marking, V8.GCIncrementalMarking, 10000, MILLISECOND)     \
@@ -131,12 +140,7 @@ namespace internal {
   HT(compile_deserialize, V8.CompileDeserializeMicroSeconds, 1000000,         \
      MICROSECOND)                                                             \
   /* Total compilation time incl. caching/parsing */                          \
-  HT(compile_script, V8.CompileScriptMicroSeconds, 1000000, MICROSECOND)      \
-  /* Time for lazily compiling Wasm functions. */                             \
-  HT(wasm_lazy_compile_time, V8.WasmLazyCompileTimeMicroSeconds, 100000000,   \
-     MICROSECOND)                                                             \
-  HT(wasm_compile_after_deserialize,                                          \
-     V8.WasmCompileAfterDeserializeMilliSeconds, 1000000, MILLISECOND)
+  HT(compile_script, V8.CompileScriptMicroSeconds, 1000000, MICROSECOND)
 
 #define NESTED_TIMED_HISTOGRAM_LIST_SLOW(HT)                               \
   /* Total V8 time (including JS and runtime calls, exluding callbacks) */ \
@@ -222,6 +226,10 @@ namespace internal {
      MILLISECOND)                                                              \
   HT(wasm_time_between_catch, V8.WasmTimeBetweenCatchMilliseconds, 1000,       \
      MILLISECOND)                                                              \
+  HT(wasm_lazy_compile_time, V8.WasmLazyCompileTimeMicroSeconds, 100000000,    \
+     MICROSECOND)                                                              \
+  HT(wasm_compile_after_deserialize,                                           \
+     V8.WasmCompileAfterDeserializeMilliSeconds, 1000000, MILLISECOND)         \
   /* Total compilation time incl. caching/parsing for various cache states. */ \
   HT(compile_script_with_produce_cache,                                        \
      V8.CompileScriptMicroSeconds.ProduceCache, 1000000, MICROSECOND)          \
@@ -245,7 +253,23 @@ namespace internal {
   HT(compile_script_on_background,                                             \
      V8.CompileScriptMicroSeconds.BackgroundThread, 1000000, MICROSECOND)      \
   HT(compile_function_on_background,                                           \
-     V8.CompileFunctionMicroSeconds.BackgroundThread, 1000000, MICROSECOND)
+     V8.CompileFunctionMicroSeconds.BackgroundThread, 1000000, MICROSECOND)    \
+  HT(wasm_max_lazy_compilation_time_5sec,                                      \
+     V8.WasmMaxLazyCompilationTime5SecMilliSeconds, 5000, MILLISECOND)         \
+  HT(wasm_max_lazy_compilation_time_20sec,                                     \
+     V8.WasmMaxLazyCompilationTime20SecMilliSeconds, 5000, MILLISECOND)        \
+  HT(wasm_max_lazy_compilation_time_60sec,                                     \
+     V8.WasmMaxLazyCompilationTime60SecMilliSeconds, 5000, MILLISECOND)        \
+  HT(wasm_max_lazy_compilation_time_120sec,                                    \
+     V8.WasmMaxLazyCompilationTime120SecMilliSeconds, 5000, MILLISECOND)       \
+  HT(wasm_sum_lazy_compilation_time_5sec,                                      \
+     V8.WasmSumLazyCompilationTime5SecMilliSeconds, 20000, MILLISECOND)        \
+  HT(wasm_sum_lazy_compilation_time_20sec,                                     \
+     V8.WasmSumLazyCompilationTime20SecMilliSeconds, 20000, MILLISECOND)       \
+  HT(wasm_sum_lazy_compilation_time_60sec,                                     \
+     V8.WasmSumLazyCompilationTime60SecMilliSeconds, 20000, MILLISECOND)       \
+  HT(wasm_sum_lazy_compilation_time_120sec,                                    \
+     V8.WasmSumLazyCompilationTime120SecMilliSeconds, 20000, MILLISECOND)
 
 #define AGGREGATABLE_HISTOGRAM_TIMER_LIST(AHT) \
   AHT(compile_lazy, V8.CompileLazyMicroSeconds)

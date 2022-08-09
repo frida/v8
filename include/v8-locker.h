@@ -122,12 +122,6 @@ class V8_EXPORT Locker {
   static bool IsLocked(Isolate* isolate);
 
   /**
-   * Returns whether or not the locker for a given isolate, is locked by any
-   * thread.
-   */
-  static bool IsLockedByAnyThread(Isolate* isolate);
-
-  /**
    * Returns whether any v8::Locker has ever been used in this process.
    * TODO(cbruni, chromium:1240851): Fix locking checks on a per-thread basis.
    * The current implementation is quite confusing and leads to unexpected

@@ -1060,24 +1060,42 @@ void CreateShallowObjectLiteral::GenerateCode(
 
 void CreateFunctionContext::AllocateVreg(
     MaglevVregAllocationState* vreg_state) {
-  using D = CallInterfaceDescriptorFor<
-      Builtin::kFastNewFunctionContextFunction>::type;
-  static_assert(D::HasContextParameter());
-  UseFixed(context(), D::ContextRegister());
+  DCHECK_LE(slot_count(),
+            static_cast<uint32_t>(
+                ConstructorBuiltins::MaximumFunctionContextSlots()));
+  if (scope_type() == FUNCTION_SCOPE) {
+    using D = CallInterfaceDescriptorFor<
+        Builtin::kFastNewFunctionContextFunction>::type;
+    static_assert(D::HasContextParameter());
+    UseFixed(context(), D::ContextRegister());
+  } else {
+    DCHECK_EQ(scope_type(), ScopeType::EVAL_SCOPE);
+    using D =
+        CallInterfaceDescriptorFor<Builtin::kFastNewFunctionContextEval>::type;
+    static_assert(D::HasContextParameter());
+    UseFixed(context(), D::ContextRegister());
+  }
   DefineAsFixed(vreg_state, this, kReturnRegister0);
 }
 void CreateFunctionContext::GenerateCode(MaglevCodeGenState* code_gen_state,
                                          const ProcessingState& state) {
-  using D = CallInterfaceDescriptorFor<
-      Builtin::kFastNewFunctionContextFunction>::type;
-  DCHECK_LE(slot_count(), ConstructorBuiltins::MaximumFunctionContextSlots());
-  DCHECK_EQ(scope_info().object()->scope_type(), ScopeType::FUNCTION_SCOPE);
-
-  DCHECK_EQ(ToRegister(context()), D::ContextRegister());
-  __ Move(D::GetRegisterParameter(D::kScopeInfo), scope_info().object());
-  __ Move(D::GetRegisterParameter(D::kSlots), Immediate(slot_count()));
-  // TODO(leszeks): Consider inlining this allocation.
-  __ CallBuiltin(Builtin::kFastNewFunctionContextFunction);
+  if (scope_type() == FUNCTION_SCOPE) {
+    using D = CallInterfaceDescriptorFor<
+        Builtin::kFastNewFunctionContextFunction>::type;
+    DCHECK_EQ(ToRegister(context()), D::ContextRegister());
+    __ Move(D::GetRegisterParameter(D::kScopeInfo), scope_info().object());
+    __ Move(D::GetRegisterParameter(D::kSlots), Immediate(slot_count()));
+    // TODO(leszeks): Consider inlining this allocation.
+    __ CallBuiltin(Builtin::kFastNewFunctionContextFunction);
+  } else {
+    DCHECK_EQ(scope_type(), ScopeType::EVAL_SCOPE);
+    using D =
+        CallInterfaceDescriptorFor<Builtin::kFastNewFunctionContextEval>::type;
+    DCHECK_EQ(ToRegister(context()), D::ContextRegister());
+    __ Move(D::GetRegisterParameter(D::kScopeInfo), scope_info().object());
+    __ Move(D::GetRegisterParameter(D::kSlots), Immediate(slot_count()));
+    __ CallBuiltin(Builtin::kFastNewFunctionContextEval);
+  }
 }
 void CreateFunctionContext::PrintParams(
     std::ostream& os, MaglevGraphLabeller* graph_labeller) const {
@@ -1141,6 +1159,22 @@ void CreateRegExpLiteral::GenerateCode(MaglevCodeGenState* code_gen_state,
   __ Move(D::GetRegisterParameter(D::kPattern), pattern().object());
   __ Move(D::GetRegisterParameter(D::kFlags), Smi::FromInt(flags()));
   __ CallBuiltin(Builtin::kCreateRegExpLiteral);
+}
+
+void GetTemplateObject::AllocateVreg(MaglevVregAllocationState* vreg_state) {
+  using D = GetTemplateObjectDescriptor;
+  UseFixed(description(), D::GetRegisterParameter(D::kDescription));
+  DefineAsFixed(vreg_state, this, kReturnRegister0);
+}
+
+void GetTemplateObject::GenerateCode(MaglevCodeGenState* code_gen_state,
+                                     const ProcessingState& state) {
+  using D = GetTemplateObjectDescriptor;
+  __ Move(D::ContextRegister(), code_gen_state->native_context().object());
+  __ Move(D::GetRegisterParameter(D::kMaybeFeedbackVector), feedback().vector);
+  __ Move(D::GetRegisterParameter(D::kSlot), feedback().slot.ToInt());
+  __ Move(D::GetRegisterParameter(D::kShared), shared_function_info_.object());
+  __ CallBuiltin(Builtin::kGetTemplateObject);
 }
 
 void Abort::GenerateCode(MaglevCodeGenState* code_gen_state,
@@ -2279,6 +2313,21 @@ void LogicalNot::GenerateCode(MaglevCodeGenState* code_gen_state,
   } else {
     __ bind(&not_equal_true);
   }
+}
+
+void SetPendingMessage::AllocateVreg(MaglevVregAllocationState*) {
+  UseRegister(value());
+}
+
+void SetPendingMessage::GenerateCode(MaglevCodeGenState* code_gen_state,
+                                     const ProcessingState& state) {
+  Register message = ToRegister(value());
+  Register return_value = ToRegister(result());
+  Isolate* isolate = code_gen_state->isolate();
+  MemOperand message_op = __ ExternalReferenceAsOperand(
+      ExternalReference::address_of_pending_message(isolate), kScratchRegister);
+  __ Move(return_value, message_op);
+  __ movq(message_op, message);
 }
 
 void ToBooleanLogicalNot::AllocateVreg(MaglevVregAllocationState* vreg_state) {

@@ -1138,23 +1138,43 @@ bool IsLazyModule(const WasmModule* module) {
          (FLAG_asm_wasm_lazy_compilation && is_asmjs_module(module));
 }
 
+class CompileLazyTimingScope {
+ public:
+  CompileLazyTimingScope(Counters* counters, NativeModule* native_module)
+      : counters_(counters), native_module_(native_module) {
+    timer_.Start();
+  }
+
+  ~CompileLazyTimingScope() {
+    base::TimeDelta elapsed = timer_.Elapsed();
+    native_module_->AddLazyCompilationTimeSample(elapsed.InMicroseconds());
+    counters_->wasm_lazy_compile_time()->AddTimedSample(elapsed);
+  }
+
+ private:
+  Counters* counters_;
+  NativeModule* native_module_;
+  base::ElapsedTimer timer_;
+};
+
 }  // namespace
 
 bool CompileLazy(Isolate* isolate, Handle<WasmInstanceObject> instance,
                  int func_index, NativeModule** out_native_module) {
   Handle<WasmModuleObject> module_object(instance->module_object(), isolate);
   NativeModule* native_module = module_object->native_module();
-  const WasmModule* module = native_module->module();
-  auto enabled_features = native_module->enabled_features();
   Counters* counters = isolate->counters();
 
   // Put the timer scope around everything, including the {CodeSpaceWriteScope}
   // and its destruction, to measure complete overhead (apart from the runtime
   // function itself, which has constant overhead).
-  base::Optional<TimedHistogramScope> lazy_compile_time_scope;
+  base::Optional<CompileLazyTimingScope> lazy_compile_time_scope;
   if (base::TimeTicks::IsHighResolution()) {
-    lazy_compile_time_scope.emplace(counters->wasm_lazy_compile_time());
+    lazy_compile_time_scope.emplace(counters, native_module);
   }
+
+  const WasmModule* module = native_module->module();
+  auto enabled_features = native_module->enabled_features();
 
   DCHECK(!native_module->lazy_compile_frozen());
 
@@ -1234,6 +1254,7 @@ bool CompileLazy(Isolate* isolate, Handle<WasmInstanceObject> instance,
     instance->feedback_vectors().set(
         declared_function_index(module, func_index), *vector);
   }
+
   return true;
 }
 
@@ -2877,14 +2898,16 @@ bool AsyncStreamingProcessor::ProcessCodeSectionHeader(
 void AsyncStreamingProcessor::ProcessFunctionBody(
     base::Vector<const uint8_t> bytes, uint32_t offset) {
   TRACE_STREAMING("Process function body %d ...\n", num_functions_);
+  uint32_t func_index =
+      decoder_.module()->num_imported_functions + num_functions_;
+  ++num_functions_;
   // In case of {prefix_cache_hit} we still need the function body to be
   // decoded. Otherwise a later cache miss cannot be handled.
-  decoder_.DecodeFunctionBody(
-      num_functions_, static_cast<uint32_t>(bytes.length()), offset, false);
+  decoder_.DecodeFunctionBody(func_index, static_cast<uint32_t>(bytes.length()),
+                              offset, false);
 
   if (prefix_cache_hit_) {
     // Don't compile yet if we might have a cache hit.
-    ++num_functions_;
     return;
   }
 
@@ -2898,8 +2921,6 @@ void AsyncStreamingProcessor::ProcessFunctionBody(
 
   const WasmModule* module = decoder_.module();
   auto enabled_features = job_->enabled_features_;
-  uint32_t func_index =
-      num_functions_ + decoder_.module()->num_imported_functions;
   DCHECK_EQ(module->origin, kWasmOrigin);
   const bool lazy_module = job_->wasm_lazy_compilation_;
   CompileStrategy strategy =
@@ -2923,7 +2944,6 @@ void AsyncStreamingProcessor::ProcessFunctionBody(
   auto* compilation_state = Impl(job_->native_module_->compilation_state());
   compilation_state->AddCompilationUnit(compilation_unit_builder_.get(),
                                         func_index);
-  ++num_functions_;
 }
 
 void AsyncStreamingProcessor::CommitCompilationUnits() {

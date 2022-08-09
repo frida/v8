@@ -243,8 +243,7 @@ class WasmGCTester {
                         CWasmArgumentsPacker* packer) {
     WasmCodeRefScope code_ref_scope;
     NativeModule* native_module = instance_->module_object().native_module();
-    WasmCode* code = native_module->GetCode(function_index);
-    Address wasm_call_target = code->instruction_start();
+    Address wasm_call_target = instance_->GetCallTarget(function_index);
     Handle<Object> object_ref = instance_;
     Handle<CodeT> c_wasm_entry =
         compiler::CompileCWasmEntry(isolate_, sig, native_module->module());
@@ -1534,22 +1533,27 @@ WASM_COMPILED_EXEC_TEST(CallRef) {
   tester.CheckResult(caller, 47, 5);
 }
 
-// Test that calling a function expecting any ref accepts nullref argument.
-WASM_COMPILED_EXEC_TEST(CallNullRefImplicitConversion) {
-  const ValueType null_ref_types[] = {
-      kWasmFuncRef,
-      kWasmEqRef,
-      kWasmI31Ref.AsNullable(),
-      kWasmDataRef.AsNullable(),
-      kWasmArrayRef.AsNullable(),
-      kWasmAnyRef,
-      refNull(0),  // struct
-      refNull(1),  // array
-      refNull(2),  // signature
+// Test that calling a function expecting any ref accepts the abstract null
+// type argument (nullref, nullfuncref, nullexternref).
+WASM_COMPILED_EXEC_TEST(CallAbstractNullTypeImplicitConversion) {
+  const struct {
+    ValueType super_type;
+    ValueTypeCode sub_type_code;
+  } null_ref_types[] = {
+      {kWasmFuncRef, kNoFuncCode},
+      {kWasmEqRef, kNoneCode},
+      {kWasmI31Ref.AsNullable(), kNoneCode},
+      {kWasmDataRef.AsNullable(), kNoneCode},
+      {kWasmArrayRef.AsNullable(), kNoneCode},
+      {kWasmAnyRef, kNoneCode},
+      {kWasmExternRef, kNoExternCode},
+      {refNull(0), kNoneCode},    // struct
+      {refNull(1), kNoneCode},    // array
+      {refNull(2), kNoFuncCode},  // signature
   };
 
-  for (ValueType ref_type : null_ref_types) {
-    CHECK(ref_type.is_nullable());
+  for (auto [super_type, sub_type_code] : null_ref_types) {
+    CHECK(super_type.is_nullable());
     WasmGCTester tester(execution_tier);
     byte struct_idx = tester.DefineStruct({F(wasm::kWasmI32, true)});
     CHECK_EQ(struct_idx, 0);
@@ -1559,13 +1563,13 @@ WASM_COMPILED_EXEC_TEST(CallNullRefImplicitConversion) {
     byte signature_idx = tester.DefineSignature(&dummySig);
     CHECK_EQ(signature_idx, 2);
 
-    ValueType ref_sig_types[] = {kWasmI32, ref_type};
+    ValueType ref_sig_types[] = {kWasmI32, super_type};
     FunctionSig sig_ref(1, 1, ref_sig_types);
     byte callee = tester.DefineFunction(
         &sig_ref, {}, {WASM_REF_IS_NULL(WASM_LOCAL_GET(0)), kExprEnd});
     byte caller = tester.DefineFunction(
         tester.sigs.i_v(), {},
-        {WASM_CALL_FUNCTION(callee, WASM_REF_NULL(kNoneCode)), kExprEnd});
+        {WASM_CALL_FUNCTION(callee, WASM_REF_NULL(sub_type_code)), kExprEnd});
 
     tester.CompileModule();
     tester.CheckResult(caller, 1);
@@ -1724,7 +1728,7 @@ WASM_COMPILED_EXEC_TEST(AbstractTypeChecks) {
 
   byte kBrOnDataTaken =
       BR_ON(DATA, Data, WASM_ARRAY_NEW_DEFAULT(array_index, WASM_I32V(10)));
-  byte kBrOnDataNotTaken = BR_ON(DATA, Data, WASM_REF_FUNC(function_index));
+  byte kBrOnDataNotTaken = BR_ON(DATA, Data, WASM_REF_NULL(kNoneCode));
   byte kBrOnArrayTaken =
       BR_ON(ARRAY, Array, WASM_ARRAY_NEW_DEFAULT(array_index, WASM_I32V(10)));
   byte kBrOnArrayNotTaken = BR_ON(ARRAY, Array, WASM_I31_NEW(WASM_I32V(42)));
@@ -1746,7 +1750,7 @@ WASM_COMPILED_EXEC_TEST(AbstractTypeChecks) {
 
   byte kBrOnNonDataNotTaken =
       BR_ON_NON(DATA, Data, WASM_ARRAY_NEW_DEFAULT(array_index, WASM_I32V(10)));
-  byte kBrOnNonDataTaken = BR_ON_NON(DATA, Data, WASM_REF_FUNC(function_index));
+  byte kBrOnNonDataTaken = BR_ON_NON(DATA, Data, WASM_REF_NULL(kNoneCode));
   byte kBrOnNonArrayNotTaken = BR_ON_NON(
       ARRAY, Array, WASM_ARRAY_NEW_DEFAULT(array_index, WASM_I32V(10)));
   byte kBrOnNonArrayTaken =

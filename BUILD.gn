@@ -836,6 +836,12 @@ if (cppgc_enable_caged_heap) {
 
   # Always enable young generation compile time flag if caged heap is enabled.
   cppgc_enable_young_generation = true
+
+  if (is_linux || is_mac || is_win) {
+    # Always enable on desktop but avoid on ChromeOS for now (for stability
+    # reasons).
+    cppgc_enable_pointer_compression = true
+  }
 }
 if (cppgc_enable_young_generation) {
   enabled_external_cppgc_defines += [ "CPPGC_YOUNG_GENERATION" ]
@@ -1109,9 +1115,6 @@ config("toolchain") {
   }
   if (v8_current_cpu == "arm64") {
     defines += [ "V8_TARGET_ARCH_ARM64" ]
-    if ((target_os == "mac" || target_os == "ios") && arm_version >= 83) {
-      defines += [ "V8_TARGET_PTRAUTH" ]
-    }
     if (current_cpu == "arm64") {
       # This will enable PAC+BTI in code generation and static code.
       if (v8_control_flow_integrity &&
@@ -5427,7 +5430,6 @@ v8_component("v8_libbase") {
     "src/base/ieee754.h",
     "src/base/immediate-crash.h",
     "src/base/iterator.h",
-    "src/base/lazy-instance.cc",
     "src/base/lazy-instance.h",
     "src/base/logging.cc",
     "src/base/logging.h",
@@ -5456,8 +5458,6 @@ v8_component("v8_libbase") {
     "src/base/overflowing-math.h",
     "src/base/page-allocator.cc",
     "src/base/page-allocator.h",
-    "src/base/platform/threading-backend.cc",
-    "src/base/platform/threading-backend.h",
     "src/base/platform/condition-variable.cc",
     "src/base/platform/condition-variable.h",
     "src/base/platform/elapsed-timer.h",
@@ -5556,16 +5556,6 @@ v8_component("v8_libbase") {
     ]
 
     libs = [ "dl" ]
-  } else if (current_os == "freebsd") {
-    sources += [
-      "src/base/debug/stack_trace_posix.cc",
-      "src/base/platform/platform-freebsd.cc",
-    ]
-
-    libs = [
-      "execinfo",
-      "pthread",
-    ]
   } else if (is_android) {
     if (current_toolchain == host_toolchain) {
       libs = [
@@ -5661,7 +5651,7 @@ v8_component("v8_libbase") {
         [ "//build/config/clang:llvm-symbolizer_data($host_toolchain)" ]
   }
 
-  # TODO(infra): Add support for qnx, openbsd, netbsd, and solaris.
+  # TODO(infra): Add support for qnx, freebsd, openbsd, netbsd, and solaris.
 }
 
 v8_component("v8_libplatform") {
@@ -5823,7 +5813,7 @@ v8_source_set("v8_heap_base") {
       sources += [ "src/heap/base/asm/ppc/push_registers_asm.cc" ]
     } else if (current_cpu == "s390x") {
       sources += [ "src/heap/base/asm/s390/push_registers_asm.cc" ]
-    } else if (current_cpu == "mips" || current_cpu == "mipsel") {
+    } else if (current_cpu == "mipsel") {
       sources += [ "src/heap/base/asm/mips/push_registers_asm.cc" ]
     } else if (current_cpu == "mips64el") {
       sources += [ "src/heap/base/asm/mips64/push_registers_asm.cc" ]

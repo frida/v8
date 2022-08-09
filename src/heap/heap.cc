@@ -5836,6 +5836,7 @@ void Heap::SetUpSpaces(LinearAllocationArea& new_allocation_info,
     Heap* shared_heap = isolate()->shared_isolate()->heap();
 
     shared_old_space_ = shared_heap->old_space();
+    shared_lo_space_ = shared_heap->lo_space();
     shared_old_allocator_.reset(
         new ConcurrentAllocator(main_thread_local_heap(), shared_old_space_));
 
@@ -6799,11 +6800,6 @@ void Heap::SetBuiltinsConstantsTable(FixedArray cache) {
 
 void Heap::SetDetachedContexts(WeakArrayList detached_contexts) {
   set_detached_contexts(detached_contexts);
-}
-
-void Heap::SetInterpreterEntryTrampolineForProfiling(Code code) {
-  DCHECK_EQ(Builtin::kInterpreterEntryTrampoline, code.builtin_id());
-  set_interpreter_entry_trampoline_for_profiling(code);
 }
 
 void Heap::PostFinalizationRegistryCleanupTaskIfNeeded() {

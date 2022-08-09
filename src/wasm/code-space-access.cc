@@ -4,8 +4,6 @@
 
 #include "src/wasm/code-space-access.h"
 
-#include "src/base/lazy-instance.h"
-#include "src/base/platform/platform.h"
 #include "src/common/code-memory-access-inl.h"
 #include "src/wasm/wasm-code-manager.h"
 #include "src/wasm/wasm-engine.h"
@@ -15,8 +13,6 @@ namespace internal {
 namespace wasm {
 
 namespace {
-base::LazyInstance<base::ThreadLocalPointer<NativeModule>>::type
-    current_native_module = LAZY_INSTANCE_INITIALIZER;
 // For PKU and if MAP_JIT is available, the CodeSpaceWriteScope does not
 // actually make use of the supplied {NativeModule}. In fact, there are
 // situations where we can't provide a specific {NativeModule} to the scope. For
@@ -29,35 +25,33 @@ NativeModule* GetDummyNativeModule() {
 }
 }  // namespace
 
+thread_local NativeModule* CodeSpaceWriteScope::current_native_module_ =
+    nullptr;
+
 // TODO(jkummerow): Background threads could permanently stay in
 // writable mode; only the main thread has to switch back and forth.
 CodeSpaceWriteScope::CodeSpaceWriteScope(NativeModule* native_module)
-    : previous_native_module_(current_native_module.Pointer()->Get()) {
+    : previous_native_module_(current_native_module_) {
   if (!native_module) {
     // Passing in a {nullptr} is OK if we don't use that pointer anyway.
     // Internally, we need a non-nullptr though to know whether a scope is
-    // already open from looking at {current_native_module}.
+    // already open from looking at {current_native_module_}.
     DCHECK(!SwitchingPerNativeModule());
     native_module = GetDummyNativeModule();
   }
   if (previous_native_module_ == native_module) return;
-  current_native_module.Pointer()->Set(native_module);
+  current_native_module_ = native_module;
   if (previous_native_module_ == nullptr || SwitchingPerNativeModule()) {
     SetWritable();
   }
 }
 
 CodeSpaceWriteScope::~CodeSpaceWriteScope() {
-  auto current = current_native_module.Pointer();
-  if (previous_native_module_ == current->Get()) return;
+  if (previous_native_module_ == current_native_module_) return;
   if (previous_native_module_ == nullptr || SwitchingPerNativeModule()) {
     SetExecutable();
   }
-  current->Set(previous_native_module_);
-}
-
-bool CodeSpaceWriteScope::IsInScope() {
-  return current_native_module.Pointer()->Get() != nullptr;
+  current_native_module_ = previous_native_module_;
 }
 
 #if V8_HAS_PTHREAD_JIT_WRITE_PROTECT
@@ -80,7 +74,7 @@ void CodeSpaceWriteScope::SetWritable() {
   if (WasmCodeManager::MemoryProtectionKeysEnabled()) {
     RwxMemoryWriteScope::SetWritable();
   } else if (FLAG_wasm_write_protect_code_memory) {
-    current_native_module.Pointer()->Get()->AddWriter();
+    current_native_module_->AddWriter();
   }
 }
 
@@ -90,7 +84,7 @@ void CodeSpaceWriteScope::SetExecutable() {
     DCHECK(FLAG_wasm_memory_protection_keys);
     RwxMemoryWriteScope::SetExecutable();
   } else if (FLAG_wasm_write_protect_code_memory) {
-    current_native_module.Pointer()->Get()->RemoveWriter();
+    current_native_module_->RemoveWriter();
   }
 }
 

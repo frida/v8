@@ -150,11 +150,8 @@ void TurboAssembler::Jump(Handle<Code> code, RelocInfo::Mode rmode,
     // This branch is taken only for specific cctests, where we force isolate
     // creation at runtime. At this point, Code space isn't restricted to a
     // size s.t. pc-relative calls may be used.
-    UseScratchRegisterScope temps(this);
-    Register scratch = temps.Acquire();
-    int offset = IsolateData::BuiltinEntrySlotOffset(code->builtin_id());
-    ldr(scratch, MemOperand(kRootRegister, offset));
-    Jump(scratch, cond);
+    ldr(ip, EntryFromBuiltinAsOperand(code->builtin_id()));
+    Jump(ip, cond);
     return;
   } else if (options().inline_offheap_trampolines && target_is_builtin) {
     // Inline the trampoline.
@@ -230,8 +227,11 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode,
   Builtin builtin = Builtin::kNoBuiltinId;
   bool target_is_builtin =
       isolate()->builtins()->IsBuiltinHandle(code, &builtin);
-
-  if (target_is_builtin && options().use_pc_relative_calls_and_jumps) {
+  if (target_is_builtin && options().builtin_calls_as_table_load) {
+    ldr(ip, EntryFromBuiltinAsOperand(builtin));
+    Call(ip, cond);
+    return;
+  } else if (target_is_builtin && options().use_pc_relative_calls_and_jumps) {
     int32_t code_target_index = AddCodeTarget(code);
     bl(code_target_index * kInstrSize, cond, RelocInfo::RELATIVE_CODE_TARGET);
     return;
@@ -239,8 +239,7 @@ void TurboAssembler::Call(Handle<Code> code, RelocInfo::Mode rmode,
     // This branch is taken only for specific cctests, where we force isolate
     // creation at runtime. At this point, Code space isn't restricted to a
     // size s.t. pc-relative calls may be used.
-    int offset = IsolateData::BuiltinEntrySlotOffset(code->builtin_id());
-    ldr(ip, MemOperand(kRootRegister, offset));
+    ldr(ip, EntryFromBuiltinAsOperand(builtin));
     Call(ip, cond);
     return;
   } else if (target_is_builtin && options().inline_offheap_trampolines) {
@@ -290,11 +289,15 @@ MemOperand TurboAssembler::EntryFromBuiltinAsOperand(Builtin builtin) {
 
 void TurboAssembler::CallBuiltin(Builtin builtin, Condition cond) {
   ASM_CODE_COMMENT_STRING(this, CommentForOffHeapTrampoline("call", builtin));
-  DCHECK(Builtins::IsBuiltinId(builtin));
   // Use ip directly instead of using UseScratchRegisterScope, as we do not
   // preserve scratch registers across calls.
-  mov(ip, Operand(BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET));
-  Call(ip, cond);
+  if (options().builtin_calls_as_table_load) {
+    LoadEntryFromBuiltin(builtin, ip);
+    Call(ip, cond);
+  } else {
+    mov(ip, Operand(BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET));
+    Call(ip, cond);
+  }
 }
 
 void TurboAssembler::LoadCodeObjectEntry(Register destination,
@@ -734,7 +737,8 @@ void TurboAssembler::CallRecordWriteStub(Register object, Register slot_address,
 #endif
   } else {
     Builtin builtin = Builtins::GetRecordWriteStub(fp_mode);
-    if (options().inline_offheap_trampolines) {
+    if (options().inline_offheap_trampolines ||
+        options().builtin_calls_as_table_load) {
       CallBuiltin(builtin);
     } else {
       Handle<Code> code_target = isolate()->builtins()->code_handle(builtin);
@@ -2013,117 +2017,13 @@ void MacroAssembler::EmitDecrementCounter(StatsCounter* counter, int value,
   }
 }
 
+#ifdef V8_ENABLE_DEBUG_CODE
 void TurboAssembler::Assert(Condition cond, AbortReason reason) {
   if (FLAG_debug_code) Check(cond, reason);
 }
 
 void TurboAssembler::AssertUnreachable(AbortReason reason) {
   if (FLAG_debug_code) Abort(reason);
-}
-
-void TurboAssembler::Check(Condition cond, AbortReason reason) {
-  Label L;
-  b(cond, &L);
-  Abort(reason);
-  // will not return here
-  bind(&L);
-}
-
-void TurboAssembler::Abort(AbortReason reason) {
-  ASM_CODE_COMMENT(this);
-  Label abort_start;
-  bind(&abort_start);
-  if (FLAG_code_comments) {
-    const char* msg = GetAbortReason(reason);
-    RecordComment("Abort message: ");
-    RecordComment(msg);
-  }
-
-  // Avoid emitting call to builtin if requested.
-  if (trap_on_abort()) {
-    stop();
-    return;
-  }
-
-  if (should_abort_hard()) {
-    // We don't care if we constructed a frame. Just pretend we did.
-    FrameScope assume_frame(this, StackFrame::NO_FRAME_TYPE);
-    Move32BitImmediate(r0, Operand(static_cast<int>(reason)));
-    PrepareCallCFunction(1, 0, r1);
-    Move(r1, ExternalReference::abort_with_reason());
-    // Use Call directly to avoid any unneeded overhead. The function won't
-    // return anyway.
-    Call(r1);
-    return;
-  }
-
-  Move(r1, Smi::FromInt(static_cast<int>(reason)));
-
-  // Disable stub call restrictions to always allow calls to abort.
-  if (!has_frame()) {
-    // We don't actually want to generate a pile of code for this, so just
-    // claim there is a stack frame, without generating one.
-    FrameScope scope(this, StackFrame::NO_FRAME_TYPE);
-    Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
-  } else {
-    Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
-  }
-  // will not return here
-}
-
-void TurboAssembler::LoadMap(Register destination, Register object) {
-  ldr(destination, FieldMemOperand(object, HeapObject::kMapOffset));
-}
-
-void MacroAssembler::LoadGlobalProxy(Register dst) {
-  ASM_CODE_COMMENT(this);
-  LoadNativeContextSlot(dst, Context::GLOBAL_PROXY_INDEX);
-}
-
-void MacroAssembler::LoadNativeContextSlot(Register dst, int index) {
-  ASM_CODE_COMMENT(this);
-  LoadMap(dst, cp);
-  ldr(dst, FieldMemOperand(
-               dst, Map::kConstructorOrBackPointerOrNativeContextOffset));
-  ldr(dst, MemOperand(dst, Context::SlotOffset(index)));
-}
-
-void TurboAssembler::InitializeRootRegister() {
-  ASM_CODE_COMMENT(this);
-  ExternalReference isolate_root = ExternalReference::isolate_root(isolate());
-  mov(kRootRegister, Operand(isolate_root));
-}
-
-void MacroAssembler::SmiTag(Register reg, SBit s) {
-  add(reg, reg, Operand(reg), s);
-}
-
-void MacroAssembler::SmiTag(Register dst, Register src, SBit s) {
-  add(dst, src, Operand(src), s);
-}
-
-void MacroAssembler::SmiTst(Register value) {
-  tst(value, Operand(kSmiTagMask));
-}
-
-void TurboAssembler::JumpIfSmi(Register value, Label* smi_label) {
-  tst(value, Operand(kSmiTagMask));
-  b(eq, smi_label);
-}
-
-void TurboAssembler::JumpIfEqual(Register x, int32_t y, Label* dest) {
-  cmp(x, Operand(y));
-  b(eq, dest);
-}
-
-void TurboAssembler::JumpIfLessThan(Register x, int32_t y, Label* dest) {
-  cmp(x, Operand(y));
-  b(lt, dest);
-}
-
-void MacroAssembler::JumpIfNotSmi(Register value, Label* not_smi_label) {
-  tst(value, Operand(kSmiTagMask));
-  b(ne, not_smi_label);
 }
 
 void MacroAssembler::AssertNotSmi(Register object) {
@@ -2228,6 +2128,118 @@ void MacroAssembler::AssertUndefinedOrAllocationSite(Register object,
   CompareInstanceType(scratch, scratch, ALLOCATION_SITE_TYPE);
   Assert(eq, AbortReason::kExpectedUndefinedOrCell);
   bind(&done_checking);
+}
+#endif  // V8_ENABLE_DEBUG_CODE
+
+void TurboAssembler::Check(Condition cond, AbortReason reason) {
+  Label L;
+  b(cond, &L);
+  Abort(reason);
+  // will not return here
+  bind(&L);
+}
+
+void TurboAssembler::Abort(AbortReason reason) {
+  ASM_CODE_COMMENT(this);
+  Label abort_start;
+  bind(&abort_start);
+  if (FLAG_code_comments) {
+    const char* msg = GetAbortReason(reason);
+    RecordComment("Abort message: ");
+    RecordComment(msg);
+  }
+
+  // Avoid emitting call to builtin if requested.
+  if (trap_on_abort()) {
+    stop();
+    return;
+  }
+
+  if (should_abort_hard()) {
+    // We don't care if we constructed a frame. Just pretend we did.
+    FrameScope assume_frame(this, StackFrame::NO_FRAME_TYPE);
+    Move32BitImmediate(r0, Operand(static_cast<int>(reason)));
+    PrepareCallCFunction(1, 0, r1);
+    Move(r1, ExternalReference::abort_with_reason());
+    // Use Call directly to avoid any unneeded overhead. The function won't
+    // return anyway.
+    Call(r1);
+    return;
+  }
+
+  Move(r1, Smi::FromInt(static_cast<int>(reason)));
+
+  {
+    // We don't actually want to generate a pile of code for this, so just
+    // claim there is a stack frame, without generating one.
+    FrameScope scope(this, StackFrame::NO_FRAME_TYPE);
+    if (root_array_available()) {
+      // Generate an indirect call via builtins entry table here in order to
+      // ensure that the interpreter_entry_return_pc_offset is the same for
+      // InterpreterEntryTrampoline and InterpreterEntryTrampolineForProfiling
+      // when FLAG_debug_code is enabled.
+      LoadEntryFromBuiltin(Builtin::kAbort, ip);
+      Call(ip);
+    } else {
+      Call(BUILTIN_CODE(isolate(), Abort), RelocInfo::CODE_TARGET);
+    }
+  }
+  // will not return here
+}
+
+void TurboAssembler::LoadMap(Register destination, Register object) {
+  ldr(destination, FieldMemOperand(object, HeapObject::kMapOffset));
+}
+
+void MacroAssembler::LoadGlobalProxy(Register dst) {
+  ASM_CODE_COMMENT(this);
+  LoadNativeContextSlot(dst, Context::GLOBAL_PROXY_INDEX);
+}
+
+void MacroAssembler::LoadNativeContextSlot(Register dst, int index) {
+  ASM_CODE_COMMENT(this);
+  LoadMap(dst, cp);
+  ldr(dst, FieldMemOperand(
+               dst, Map::kConstructorOrBackPointerOrNativeContextOffset));
+  ldr(dst, MemOperand(dst, Context::SlotOffset(index)));
+}
+
+void TurboAssembler::InitializeRootRegister() {
+  ASM_CODE_COMMENT(this);
+  ExternalReference isolate_root = ExternalReference::isolate_root(isolate());
+  mov(kRootRegister, Operand(isolate_root));
+}
+
+void MacroAssembler::SmiTag(Register reg, SBit s) {
+  add(reg, reg, Operand(reg), s);
+}
+
+void MacroAssembler::SmiTag(Register dst, Register src, SBit s) {
+  add(dst, src, Operand(src), s);
+}
+
+void MacroAssembler::SmiTst(Register value) {
+  tst(value, Operand(kSmiTagMask));
+}
+
+void TurboAssembler::JumpIfSmi(Register value, Label* smi_label) {
+  tst(value, Operand(kSmiTagMask));
+  b(eq, smi_label);
+}
+
+void TurboAssembler::JumpIfEqual(Register x, int32_t y, Label* dest) {
+  cmp(x, Operand(y));
+  b(eq, dest);
+}
+
+void TurboAssembler::JumpIfLessThan(Register x, int32_t y, Label* dest) {
+  cmp(x, Operand(y));
+  b(lt, dest);
+}
+
+void MacroAssembler::JumpIfNotSmi(Register value, Label* not_smi_label) {
+  tst(value, Operand(kSmiTagMask));
+  b(ne, not_smi_label);
 }
 
 void TurboAssembler::CheckFor32DRegs(Register scratch) {

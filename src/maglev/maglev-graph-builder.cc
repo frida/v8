@@ -6,6 +6,7 @@
 
 #include "src/base/optional.h"
 #include "src/base/v8-fallthrough.h"
+#include "src/builtins/builtins-constructor.h"
 #include "src/codegen/interface-descriptors-inl.h"
 #include "src/common/globals.h"
 #include "src/compiler/compilation-dependencies.h"
@@ -1761,8 +1762,42 @@ void MaglevGraphBuilder::VisitCallRuntime() {
   SetAccumulator(AddNode(call_runtime));
 }
 
-MAGLEV_UNIMPLEMENTED_BYTECODE(CallRuntimeForPair)
-MAGLEV_UNIMPLEMENTED_BYTECODE(CallJSRuntime)
+void MaglevGraphBuilder::VisitCallJSRuntime() {
+  // Get the function to call from the native context.
+  compiler::NativeContextRef native_context = broker()->target_native_context();
+  ValueNode* context = GetConstant(native_context);
+  uint32_t slot = iterator_.GetNativeContextIndexOperand(0);
+  ValueNode* callee = AddNewNode<LoadTaggedField>(
+      {context}, NativeContext::OffsetOfElementAt(slot));
+  // Call the function.
+  interpreter::RegisterList args = iterator_.GetRegisterListOperand(1);
+  int kTheReceiver = 1;
+  size_t input_count =
+      args.register_count() + Call::kFixedInputCount + kTheReceiver;
+
+  Call* call = CreateNewNode<Call>(
+      input_count, ConvertReceiverMode::kNullOrUndefined, callee, GetContext());
+  int arg_index = 0;
+  call->set_arg(arg_index++, GetRootConstant(RootIndex::kUndefinedValue));
+  for (int i = 0; i < args.register_count(); ++i) {
+    call->set_arg(arg_index++, GetTaggedValue(args[i]));
+  }
+  SetAccumulator(AddNode(call));
+}
+
+void MaglevGraphBuilder::VisitCallRuntimeForPair() {
+  Runtime::FunctionId function_id = iterator_.GetRuntimeIdOperand(0);
+  interpreter::RegisterList args = iterator_.GetRegisterListOperand(1);
+  ValueNode* context = GetContext();
+
+  size_t input_count = args.register_count() + CallRuntime::kFixedInputCount;
+  CallRuntime* call_runtime =
+      AddNewNode<CallRuntime>(input_count, function_id, context);
+  for (int i = 0; i < args.register_count(); ++i) {
+    call_runtime->set_arg(i, GetTaggedValue(args[i]));
+  }
+  StoreRegisterPair(iterator_.GetRegisterOperand(3), call_runtime);
+}
 
 void MaglevGraphBuilder::VisitInvokeIntrinsic() {
   // InvokeIntrinsic <function_id> <first_arg> <arg_count>
@@ -2139,7 +2174,23 @@ void MaglevGraphBuilder::VisitCloneObject() {
                                                            feedback_source));
 }
 
-MAGLEV_UNIMPLEMENTED_BYTECODE(GetTemplateObject)
+void MaglevGraphBuilder::VisitGetTemplateObject() {
+  // GetTemplateObject <descriptor_idx> <literal_idx>
+  compiler::SharedFunctionInfoRef shared_function_info =
+      compilation_unit_->shared_function_info();
+  ValueNode* description = GetConstant(GetRefOperand<HeapObject>(0));
+  FeedbackSlot slot = GetSlotOperand(1);
+  compiler::FeedbackSource feedback_source{feedback(), slot};
+
+  const compiler::ProcessedFeedback& feedback =
+      broker()->GetFeedbackForTemplateObject(feedback_source);
+  if (feedback.IsInsufficient()) {
+    return SetAccumulator(AddNewNode<GetTemplateObject>(
+        {description}, shared_function_info, feedback_source));
+  }
+  compiler::JSArrayRef template_object = feedback.AsTemplateObject().value();
+  SetAccumulator(GetConstant(template_object));
+}
 
 void MaglevGraphBuilder::VisitCreateClosure() {
   compiler::SharedFunctionInfoRef shared_function_info =
@@ -2178,11 +2229,22 @@ void MaglevGraphBuilder::VisitCreateCatchContext() {
 void MaglevGraphBuilder::VisitCreateFunctionContext() {
   compiler::ScopeInfoRef info = GetRefOperand<ScopeInfo>(0);
   uint32_t slot_count = iterator_.GetUnsignedImmediateOperand(1);
-  SetAccumulator(
-      AddNewNode<CreateFunctionContext>({GetContext()}, info, slot_count));
+  SetAccumulator(AddNewNode<CreateFunctionContext>(
+      {GetContext()}, info, slot_count, ScopeType::FUNCTION_SCOPE));
 }
 
-MAGLEV_UNIMPLEMENTED_BYTECODE(CreateEvalContext)
+void MaglevGraphBuilder::VisitCreateEvalContext() {
+  compiler::ScopeInfoRef info = GetRefOperand<ScopeInfo>(0);
+  uint32_t slot_count = iterator_.GetUnsignedImmediateOperand(1);
+  if (slot_count <= static_cast<uint32_t>(
+                        ConstructorBuiltins::MaximumFunctionContextSlots())) {
+    SetAccumulator(AddNewNode<CreateFunctionContext>(
+        {GetContext()}, info, slot_count, ScopeType::EVAL_SCOPE));
+  } else {
+    SetAccumulator(
+        BuildCallRuntime(Runtime::kNewFunctionContext, {GetConstant(info)}));
+  }
+}
 
 void MaglevGraphBuilder::VisitCreateWithContext() {
   // TODO(v8:7700): Inline allocation when context is small.
@@ -2497,7 +2559,10 @@ void MaglevGraphBuilder::VisitForInStep() {
   SetAccumulator(AddNewInt32BinaryOperationNode<Operation::kAdd>({index, one}));
 }
 
-MAGLEV_UNIMPLEMENTED_BYTECODE(SetPendingMessage)
+void MaglevGraphBuilder::VisitSetPendingMessage() {
+  ValueNode* message = GetAccumulatorTagged();
+  SetAccumulator(AddNewNode<SetPendingMessage>({message}));
+}
 
 void MaglevGraphBuilder::VisitThrow() {
   ValueNode* exception = GetAccumulatorTagged();

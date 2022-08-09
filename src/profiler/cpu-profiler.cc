@@ -488,12 +488,7 @@ class CpuProfilersManager {
   base::Mutex mutex_;
 };
 
-base::LazyInstance<CpuProfilersManager>::type manager_instance =
-    LAZY_INSTANCE_INITIALIZER;
-
-CpuProfilersManager* GetProfilersManager() {
-  return manager_instance.Pointer();
-}
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(CpuProfilersManager, GetProfilersManager)
 
 }  // namespace
 

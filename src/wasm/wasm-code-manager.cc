@@ -1718,6 +1718,20 @@ void NativeModule::UpdateCPUDuration(size_t cpu_duration, ExecutionTier tier) {
   }
 }
 
+void NativeModule::AddLazyCompilationTimeSample(int64_t sample_in_micro_sec) {
+  num_lazy_compilations_.fetch_add(1, std::memory_order_relaxed);
+  sum_lazy_compilation_time_in_micro_sec_.fetch_add(sample_in_micro_sec,
+                                                    std::memory_order_relaxed);
+  int64_t max =
+      max_lazy_compilation_time_in_micro_sec_.load(std::memory_order_relaxed);
+  while (sample_in_micro_sec > max &&
+         !max_lazy_compilation_time_in_micro_sec_.compare_exchange_weak(
+             max, sample_in_micro_sec, std::memory_order_relaxed,
+             std::memory_order_relaxed)) {
+    // Repeat until we set the new maximum sucessfully.
+  }
+}
+
 void NativeModule::TransferNewOwnedCodeLocked() const {
   allocation_mutex_.AssertHeld();
   DCHECK(!new_owned_code_.empty());
@@ -2547,26 +2561,24 @@ WasmCode* WasmCodeManager::LookupCode(Address pc) const {
 }
 
 namespace {
-base::LazyInstance<base::ThreadLocalPointer<WasmCodeRefScope>>::type
-    current_code_refs_scope = LAZY_INSTANCE_INITIALIZER;
+thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
 }  // namespace
 
 WasmCodeRefScope::WasmCodeRefScope()
-    : previous_scope_(current_code_refs_scope.Pointer()->Get()) {
-  current_code_refs_scope.Pointer()->Set(this);
+    : previous_scope_(current_code_refs_scope) {
+  current_code_refs_scope = this;
 }
 
 WasmCodeRefScope::~WasmCodeRefScope() {
-  auto current = current_code_refs_scope.Pointer();
-  DCHECK_EQ(this, current->Get());
-  current->Set(previous_scope_);
+  DCHECK_EQ(this, current_code_refs_scope);
+  current_code_refs_scope = previous_scope_;
   WasmCode::DecrementRefCount(base::VectorOf(code_ptrs_));
 }
 
 // static
 void WasmCodeRefScope::AddRef(WasmCode* code) {
   DCHECK_NOT_NULL(code);
-  WasmCodeRefScope* current_scope = current_code_refs_scope.Pointer()->Get();
+  WasmCodeRefScope* current_scope = current_code_refs_scope;
   DCHECK_NOT_NULL(current_scope);
   current_scope->code_ptrs_.push_back(code);
   code->IncRef();
