@@ -5,7 +5,11 @@
 #include "src/snapshot/snapshot-utils.h"
 
 #include "src/base/sanitizer/msan.h"
+#ifdef USE_SYSTEM_ZLIB
+#include <zlib.h>
+#else
 #include "third_party/zlib/zlib.h"
+#endif
 
 namespace v8 {
 namespace internal {
