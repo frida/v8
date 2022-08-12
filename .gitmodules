@@ -1,0 +1,30 @@
+[submodule "third_party/abseil-cpp/src"]
+	path = third_party/abseil-cpp/src
+	url = https://github.com/abseil/abseil-cpp.git
+[submodule "third_party/simdutf/src"]
+	path = third_party/simdutf/src
+	url = https://chromium.googlesource.com/chromium/src/third_party/simdutf
+[submodule "third_party/highway/src"]
+	path = third_party/highway/src
+	url = https://github.com/google/highway.git
+[submodule "third_party/dragonbox/src"]
+	path = third_party/dragonbox/src
+	url = https://github.com/jk-jeon/dragonbox.git
+[submodule "third_party/fast_float/src"]
+	path = third_party/fast_float/src
+	url = https://github.com/fastfloat/fast_float.git
+[submodule "third_party/fp16/src"]
+	path = third_party/fp16/src
+	url = https://github.com/Maratyszcza/FP16.git
+[submodule "third_party/jinja2"]
+	path = third_party/jinja2
+	url = https://chromium.googlesource.com/chromium/src/third_party/jinja2.git
+[submodule "third_party/markupsafe"]
+	path = third_party/markupsafe
+	url = https://chromium.googlesource.com/chromium/src/third_party/markupsafe.git
+[submodule "third_party/zlib"]
+	path = third_party/zlib
+	url = https://chromium.googlesource.com/chromium/src/third_party/zlib.git
+[submodule "third_party/llvm-libc/src"]
+	path = third_party/llvm-libc/src
+	url = https://chromium.googlesource.com/external/github.com/llvm/llvm-project/libc.git
