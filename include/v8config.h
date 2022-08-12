@@ -236,7 +236,7 @@ path. Add it with -I<path> to the command line
 # define V8_TARGET_OS_STRING "linux"
 #elif defined(V8_TARGET_OS_MACOS)
 # define V8_TARGET_OS_STRING "macos"
-#elif defined(V8_TARGET_OS_WINDOWS)
+#elif defined(V8_TARGET_OS_WIN)
 # define V8_TARGET_OS_STRING "windows"
 #else
 # define V8_TARGET_OS_STRING "unknown"
