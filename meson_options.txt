@@ -1,0 +1,102 @@
+option('embedder_string',
+  type: 'string',
+  value: '',
+  description: 'Embedder string'
+)
+
+option('debugging_features',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Enable debugging features'
+)
+
+option('checks',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Enable checks'
+)
+
+option('slow_dchecks',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Enable slow dchecks'
+)
+
+option('advanced_bigint_algorithms',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable advanced BigInt algorithms, costing about 10-30 KB binary size depending on platform'
+)
+
+option('pointer_compression',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable pointer compression'
+)
+
+option('pointer_compression_shared_cage',
+  type: 'feature',
+  value: 'auto',
+  description: 'Compress pointers in shared cage'
+)
+
+option('31bit_smis_on_64bit_arch',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Use 31-bit SMIs on 64-bit architectures'
+)
+
+option('shared_ro_heap',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable sharing read-only space across isolates'
+)
+
+option('cppgc_caged_heap',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable heap reservation of size 4GB'
+)
+
+option('cppgc_young_generation',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable young generation in cppgc'
+)
+
+option('cppgc_pointer_compression',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable pointer compression in cppgc'
+)
+
+option('i18n',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Internationalization support'
+)
+
+option('maglev',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Maglev mid-tier optimizing compiler'
+)
+
+option('wasm',
+  type: 'feature',
+  value: 'auto',
+  description: 'WebAssembly'
+)
+
+option('system_instrumentation',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Enable OS-dependent event tracing'
+)
+
+option('arm_fpu',
+  type: 'combo',
+  choices: ['auto', 'none-or-vfpv2', 'vfpv3-d16', 'vfpv3', 'neon'],
+  value: 'auto',
+  description: 'ARM FPU flavor'
+)
