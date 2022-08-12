@@ -7,6 +7,10 @@
 // and testing/gmock, instead of directly including files in
 // third_party/googletest.
 
-#if !defined(GOOGLE3)
+#if defined(V8_DISABLE_TESTS)
+#ifndef FRIEND_TEST
+#define FRIEND_TEST(test_case_name, test_name)
+#endif
+#elif !defined(GOOGLE3)
 #include "third_party/googletest/src/googletest/include/gtest/gtest_prod.h"
 #endif
