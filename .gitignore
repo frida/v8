@@ -68,6 +68,7 @@
 /perf.data.old
 /src/inspector/build/closure-compiler
 /src/inspector/build/closure-compiler.tar.gz
+/subprojects/zlib
 /test/benchmarks/data
 /test/benchmarks/JetStream3
 /test/fuzzer/wasm_corpus/
