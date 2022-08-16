@@ -462,11 +462,18 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
 
 namespace {
 
+typedef DWORD (NTAPI *AddGrowableFunctionTableFunc) (
+    PVOID* dynamic_table,
+    PRUNTIME_FUNCTION function_table,
+    DWORD entry_count,
+    DWORD maximum_entry_count,
+    ULONG_PTR range_base,
+    ULONG_PTR range_end);
+typedef VOID (NTAPI *DeleteGrowableFunctionTableFunc) (PVOID table);
+
 V8_DECLARE_ONCE(load_ntdll_unwinding_functions_once);
-static decltype(
-    &::RtlAddGrowableFunctionTable) add_growable_function_table_func = nullptr;
-static decltype(
-    &::RtlDeleteGrowableFunctionTable) delete_growable_function_table_func =
+static AddGrowableFunctionTableFunc add_growable_function_table_func = nullptr;
+static DeleteGrowableFunctionTableFunc delete_growable_function_table_func =
     nullptr;
 
 void LoadNtdllUnwindingFunctionsOnce() {
@@ -477,12 +484,12 @@ void LoadNtdllUnwindingFunctionsOnce() {
 
   // This fails on Windows 7.
   add_growable_function_table_func =
-      reinterpret_cast<decltype(&::RtlAddGrowableFunctionTable)>(
+      reinterpret_cast<AddGrowableFunctionTableFunc>(
           ::GetProcAddress(ntdll_module, "RtlAddGrowableFunctionTable"));
   DCHECK_IMPLIES(IsWindows8OrGreater(), add_growable_function_table_func);
 
   delete_growable_function_table_func =
-      reinterpret_cast<decltype(&::RtlDeleteGrowableFunctionTable)>(
+      reinterpret_cast<DeleteGrowableFunctionTableFunc>(
           ::GetProcAddress(ntdll_module, "RtlDeleteGrowableFunctionTable"));
   DCHECK_IMPLIES(IsWindows8OrGreater(), delete_growable_function_table_func);
 }
