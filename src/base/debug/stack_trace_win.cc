@@ -25,6 +25,13 @@
 #include "src/base/logging.h"
 #include "src/base/macros.h"
 
+#if NTDDI_VERSION == NTDDI_WINXP
+extern "C" {
+NTSYSAPI WORD NTAPI RtlCaptureStackBackTrace(DWORD FramesToSkip,
+    DWORD FramesToCapture, PVOID* BackTrace, PDWORD BackTraceHash);
+}
+#endif
+
 namespace v8 {
 namespace base {
 namespace debug {
