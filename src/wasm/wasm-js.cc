@@ -140,10 +140,12 @@ bool WasmStreaming::SetCompiledModuleBytes(const uint8_t* bytes, size_t size) {
   return impl_->SetCompiledModuleBytes(base::VectorOf(bytes, size));
 }
 
+START_ALLOW_USE_DEPRECATED()
 void WasmStreaming::SetClient(std::shared_ptr<Client> client) {
   TRACE_EVENT0("v8.wasm", "wasm.WasmStreaming.SetClient");
   impl_->SetClient(client);
 }
+END_ALLOW_USE_DEPRECATED()
 
 void WasmStreaming::SetMoreFunctionsCanBeSerializedCallback(
     std::function<void(CompiledWasmModule)> callback) {
