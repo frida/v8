@@ -355,7 +355,8 @@ path. Add it with -I<path> to the command line
 # define V8_HAS_ATTRIBUTE_WARN_UNUSED_RESULT \
     (__has_attribute(warn_unused_result))
 
-# define V8_HAS_CPP_ATTRIBUTE_NODISCARD (V8_HAS_CPP_ATTRIBUTE(nodiscard))
+# define V8_HAS_CPP_ATTRIBUTE_NODISCARD \
+    (__clang_major__ >= 13 && V8_HAS_CPP_ATTRIBUTE(nodiscard))
 # define V8_HAS_CPP_ATTRIBUTE_NO_UNIQUE_ADDRESS \
     (V8_HAS_CPP_ATTRIBUTE(no_unique_address))
 
