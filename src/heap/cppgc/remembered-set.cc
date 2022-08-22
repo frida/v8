@@ -27,7 +27,7 @@ void InvalidateRememberedSlots(std::set<void*>& slots, void* begin, void* end) {
   slots.erase(from, to);
 #if defined(ENABLE_SLOW_DCHECKS)
   // Check that no remembered slots are referring to the freed area.
-  DCHECK(std::none_of(slots.begin(), slots.end(), [begin, end](void* slot) {
+  bool result = std::none_of(slots.begin(), slots.end(), [begin, end](void* slot) {
     void* value = nullptr;
 #if defined(CPPGC_POINTER_COMPRESSION)
     if constexpr (slot_type == SlotType::kCompressed)
@@ -38,7 +38,8 @@ void InvalidateRememberedSlots(std::set<void*>& slots, void* begin, void* end) {
     value = *reinterpret_cast<void**>(slot);
 #endif  // !defined(CPPGC_POINTER_COMPRESSION)
     return begin <= value && value < end;
-  }));
+  });
+  DCHECK(result);
 #endif  // defined(ENABLE_SLOW_DCHECKS)
 }
 
