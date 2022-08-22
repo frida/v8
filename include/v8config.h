@@ -168,6 +168,7 @@ path. Add it with -I<path> to the command line
 // Operating system detection (target)
 //
 //  V8_TARGET_OS_ANDROID
+//  V8_TARGET_OS_FREEBSD
 //  V8_TARGET_OS_FUCHSIA
 //  V8_TARGET_OS_IOS
 //  V8_TARGET_OS_LINUX
@@ -180,6 +181,7 @@ path. Add it with -I<path> to the command line
 
 // The target OS is provided, just check that at least one known value is set.
 # if !defined(V8_TARGET_OS_ANDROID) \
+  && !defined(V8_TARGET_OS_FREEBSD) \
   && !defined(V8_TARGET_OS_FUCHSIA) \
   && !defined(V8_TARGET_OS_IOS) \
   && !defined(V8_TARGET_OS_LINUX) \
@@ -191,6 +193,7 @@ path. Add it with -I<path> to the command line
 #else  // V8_HAVE_TARGET_OS
 
 # if defined(V8_TARGET_OS_ANDROID) \
+  || defined(V8_TARGET_OS_FREEBSD) \
   || defined(V8_TARGET_OS_FUCHSIA) \
   || defined(V8_TARGET_OS_IOS) \
   || defined(V8_TARGET_OS_LINUX) \
@@ -202,6 +205,10 @@ path. Add it with -I<path> to the command line
 // Fall back to the detected host OS.
 #ifdef V8_OS_ANDROID
 # define V8_TARGET_OS_ANDROID
+#endif
+
+#ifdef V8_OS_FREEBSD
+# define V8_TARGET_OS_FREEBSD
 #endif
 
 #ifdef V8_OS_FUCHSIA
@@ -228,6 +235,8 @@ path. Add it with -I<path> to the command line
 
 #if defined(V8_TARGET_OS_ANDROID)
 # define V8_TARGET_OS_STRING "android"
+#elif defined(V8_TARGET_OS_FREEBSD)
+# define V8_TARGET_OS_STRING "freebsd"
 #elif defined(V8_TARGET_OS_FUCHSIA)
 # define V8_TARGET_OS_STRING "fuchsia"
 #elif defined(V8_TARGET_OS_IOS)
