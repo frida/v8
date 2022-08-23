@@ -488,11 +488,14 @@ foreach d : external_defines
   endif
 endforeach
 
-warning_args_generic = [
+compiler_args_generic = [
   '-Wno-builtin-assume-aligned-alignment',
   '-Wno-non-virtual-dtor',
 ]
-warning_args_for_compiler = {
+compiler_args_for_compiler = {
+  'clang': [
+    '-fno-aligned-allocation',
+  ],
   'gcc': [
     '-Wno-comment',
     '-Wno-int-in-bool-context',
@@ -520,15 +523,15 @@ warning_args_for_compiler = {
   ],
 }
 
-host_warning_args = cpp.get_supported_arguments(warning_args_generic) + warning_args_for_compiler.get(cpp.get_id(), [])
-build_warning_args = cpp_native.get_supported_arguments(warning_args_generic) + warning_args_for_compiler.get(cpp_native.get_id(), [])
+host_compiler_args = cpp.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp.get_id(), [])
+build_compiler_args = cpp_native.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp_native.get_id(), [])
 
 add_project_arguments(
-  config_args + host_warning_args,
+  config_args + host_compiler_args,
   language: 'cpp'
 )
 add_project_arguments(
-  config_args + build_warning_args,
+  config_args + build_compiler_args,
   language: 'cpp',
   native: true
 )
