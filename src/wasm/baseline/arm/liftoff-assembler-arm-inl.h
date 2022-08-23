@@ -1002,7 +1002,7 @@ void LiftoffAssembler::StoreTaggedPointer(
 }
 
 void LiftoffAssembler::Load(LiftoffRegister dst, Register src_addr,
-                            Register offset_reg, uint32_t offset_imm,
+                            Register offset_reg, uintptr_t offset_imm,
                             LoadType type, uint32_t* trapping_load_pc,
                             bool /* is_load_mem */, bool /* i64_offset */,
                             bool needs_shift) {
@@ -1014,7 +1014,7 @@ void LiftoffAssembler::Load(LiftoffRegister dst, Register src_addr,
 }
 
 void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
-                             uint32_t offset_imm, LiftoffRegister src,
+                             uintptr_t offset_imm, LiftoffRegister src,
                              StoreType type, LiftoffRegList pinned,
                              uint32_t* trapping_store_pc,
                              bool /* is_store_mem */, bool /* i64_offset */) {
@@ -1292,7 +1292,7 @@ inline void AtomicOp64(
 }  // namespace liftoff
 
 void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
-                                  Register offset_reg, uint32_t offset_imm,
+                                  Register offset_reg, uintptr_t offset_imm,
                                   LoadType type, uint32_t* trapping_load_pc,
                                   AtomicMemoryOrder /* memory_order */,
                                   LiftoffRegList /* pinned */,
@@ -1326,7 +1326,7 @@ void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
 }
 
 void LiftoffAssembler::AtomicStore(Register dst_addr, Register offset_reg,
-                                   uint32_t offset_imm, LiftoffRegister src,
+                                   uintptr_t offset_imm, LiftoffRegister src,
                                    StoreType type, uint32_t* trapping_store_pc,
                                    AtomicMemoryOrder memory_order,
                                    LiftoffRegList pinned, bool /* i64_offset */,
@@ -1364,7 +1364,7 @@ void LiftoffAssembler::AtomicStoreTaggedPointer(
 }
 
 void LiftoffAssembler::AtomicAdd(Register dst_addr, Register offset_reg,
-                                 uint32_t offset_imm, LiftoffRegister value,
+                                 uintptr_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type,
                                  uint32_t* trapping_load_pc,
                                  bool /* i64_offset */,
@@ -1379,7 +1379,7 @@ void LiftoffAssembler::AtomicAdd(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicSub(Register dst_addr, Register offset_reg,
-                                 uint32_t offset_imm, LiftoffRegister value,
+                                 uintptr_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type,
                                  uint32_t* trapping_load_pc,
                                  bool /* i64_offset */,
@@ -1394,7 +1394,7 @@ void LiftoffAssembler::AtomicSub(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicAnd(Register dst_addr, Register offset_reg,
-                                 uint32_t offset_imm, LiftoffRegister value,
+                                 uintptr_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type,
                                  uint32_t* trapping_load_pc,
                                  bool /* i64_offset */,
@@ -1409,7 +1409,7 @@ void LiftoffAssembler::AtomicAnd(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicOr(Register dst_addr, Register offset_reg,
-                                uint32_t offset_imm, LiftoffRegister value,
+                                uintptr_t offset_imm, LiftoffRegister value,
                                 LiftoffRegister result, StoreType type,
                                 uint32_t* trapping_load_pc,
                                 bool /* i64_offset */,
@@ -1424,7 +1424,7 @@ void LiftoffAssembler::AtomicOr(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicXor(Register dst_addr, Register offset_reg,
-                                 uint32_t offset_imm, LiftoffRegister value,
+                                 uintptr_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type,
                                  uint32_t* trapping_load_pc,
                                  bool /* i64_offset */,
@@ -1439,7 +1439,7 @@ void LiftoffAssembler::AtomicXor(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicExchange(Register dst_addr, Register offset_reg,
-                                      uint32_t offset_imm,
+                                      uintptr_t offset_imm,
                                       LiftoffRegister value,
                                       LiftoffRegister result, StoreType type,
                                       uint32_t* trapping_load_pc,
@@ -1558,7 +1558,7 @@ inline void AtomicI64CompareExchange(LiftoffAssembler* lasm,
 }  // namespace liftoff
 
 void LiftoffAssembler::AtomicCompareExchange(
-    Register dst_addr, Register offset_reg, uint32_t offset_imm,
+    Register dst_addr, Register offset_reg, uintptr_t offset_imm,
     LiftoffRegister expected, LiftoffRegister new_value, LiftoffRegister result,
     StoreType type, uint32_t* trapping_load_pc, bool /* i64_offset */,
     Endianness /* endianness */) {
