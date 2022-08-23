@@ -28,6 +28,12 @@ option('advanced_bigint_algorithms',
   description: 'Enable advanced BigInt algorithms, costing about 10-30 KB binary size depending on platform'
 )
 
+option('snapshot_compression',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable snapshot compression'
+)
+
 option('pointer_compression',
   type: 'feature',
   value: 'auto',

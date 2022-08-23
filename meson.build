@@ -280,6 +280,11 @@ if enable_advanced_bigint_algorithms
   config_args += '-DV8_ADVANCED_BIGINT_ALGORITHMS'
 endif
 
+enable_snapshot_compression = get_option('snapshot_compression').allowed()
+if enable_snapshot_compression
+  config_args += '-DV8_SNAPSHOT_COMPRESSION'
+endif
+
 if get_option('pointer_compression').auto()
   enable_pointer_compression = host_is_64bit and host_os not in ['macos', 'ios']
 else
