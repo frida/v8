@@ -184,13 +184,14 @@ class RegExpParserState : public ZoneObject {
 
 template <class CharT>
 class RegExpParserImpl final {
- private:
+ public:
   RegExpParserImpl(const CharT* input, int input_length, RegExpFlags flags,
                    uintptr_t stack_limit, Zone* zone,
                    const DisallowGarbageCollection& no_gc);
 
   bool Parse(RegExpCompileData* result);
 
+ private:
   RegExpTree* ParsePattern();
   RegExpTree* ParseDisjunction();
   RegExpTree* ParseGroup();
@@ -345,14 +346,6 @@ class RegExpParserImpl final {
   bool has_named_captures_;  // Only valid after we have scanned for captures.
   bool failed_;
   const uintptr_t stack_limit_;
-
-  friend bool RegExpParser::ParseRegExpFromHeapString(Isolate*, Zone*,
-                                                      Handle<String>,
-                                                      RegExpFlags,
-                                                      RegExpCompileData*);
-  friend bool RegExpParser::VerifyRegExpSyntax<CharT>(
-      Zone*, uintptr_t, const CharT*, int, RegExpFlags, RegExpCompileData*,
-      const DisallowGarbageCollection&);
 };
 
 template <class CharT>
