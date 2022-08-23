@@ -724,7 +724,7 @@ if enable_wasm
   ]
 endif
 
-base_portable_arch_sources = {
+base_backend_sources = {
   'ia32': [
     'codegen' / 'ia32' / 'assembler-ia32.cc',
     'codegen' / 'ia32' / 'cpu-ia32.cc',
@@ -827,7 +827,7 @@ base_msvc_asm_sources = {
 base_arch_sources = {}
 if is_clang_or_non_windows
   foreach arch : ['ia32', 'x64', 'arm', 'arm64']
-    base_arch_sources += { arch: base_portable_arch_sources[arch] + base_generic_asm_sources[arch] }
+    base_arch_sources += { arch: base_backend_sources[host_arch] + base_generic_asm_sources[arch] }
   endforeach
 else
   foreach arch : msvc_required_archs
@@ -841,7 +841,7 @@ else
         command: command,
       )
     endforeach
-    base_arch_sources += { arch: base_portable_arch_sources[arch] + objects }
+    base_arch_sources += { arch: base_backend_sources[host_arch] + objects }
   endforeach
 endif
 
