@@ -3,7 +3,11 @@
 // found in the LICENSE file.
 
 // CPU specific code for arm independent of OS goes here.
-#ifdef __arm__
+
+#if V8_TARGET_ARCH_ARM
+
+#include "src/codegen/cpu-features.h"
+
 #ifdef __QNXNTO__
 #include <sys/mman.h>  // for cache flushing.
 #undef MAP_TYPE
@@ -17,11 +21,6 @@
 #else
 #include <sys/syscall.h>  // for cache flushing.
 #endif
-#endif
-
-#if V8_TARGET_ARCH_ARM
-
-#include "src/codegen/cpu-features.h"
 
 namespace v8 {
 namespace internal {
