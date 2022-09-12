@@ -18,6 +18,11 @@ mksnapshot = executable('mksnapshot', sources,
 )
 
 bin_extension = (build_os == 'win') ? '.exe' : ''
+if meson.can_run_host_binaries()
+  bin_subdir = f'@host_os_frida@-@host_arch_frida@'
+else
+  bin_subdir = f'@build_os_frida@-@build_arch_frida@'
+endif
 
 custom_target('mksnapshot-installed',
   input: mksnapshot,
@@ -30,6 +35,6 @@ custom_target('mksnapshot-installed',
     '--strip-option', get_option('strip').to_string(),
   ],
   install: true,
-  install_dir: get_option('bindir') / f'@build_os_frida@-@build_arch_frida@',
+  install_dir: get_option('bindir') / bin_subdir,
   install_mode: 'rwxr-xr-x',
 )
