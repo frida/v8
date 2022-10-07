@@ -71,9 +71,11 @@ path. Add it with -I<path> to the command line
 //  V8_OS_FREEBSD       - FreeBSD
 //  V8_OS_FUCHSIA       - Fuchsia
 //  V8_OS_LINUX         - Linux (Android, ChromeOS, Linux, ...)
-//  V8_OS_DARWIN        - Darwin (macOS, iOS)
+//  V8_OS_DARWIN        - Darwin (macOS, iOS, watchOS, tvOS)
 //  V8_OS_MACOS         - macOS
 //  V8_OS_IOS           - iOS
+//  V8_OS_WATCHOS       - watchOS
+//  V8_OS_TVOS          - tvOS
 //  V8_OS_NETBSD        - NetBSD
 //  V8_OS_OPENBSD       - OpenBSD
 //  V8_OS_POSIX         - POSIX compatible (mostly everything except Windows)
@@ -93,13 +95,21 @@ path. Add it with -I<path> to the command line
 # define V8_OS_POSIX 1
 # define V8_OS_BSD 1
 # define V8_OS_DARWIN 1
-# if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
-#  define V8_OS_IOS 1
-#  define V8_OS_STRING "ios"
-# else
+# if defined(TARGET_OS_OSX) && TARGET_OS_OSX
 #  define V8_OS_MACOS 1
 #  define V8_OS_STRING "macos"
-# endif  // defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+# elif defined(TARGET_OS_IOS) && TARGET_OS_IOS
+#  define V8_OS_IOS 1
+#  define V8_OS_STRING "ios"
+# elif defined(TARGET_OS_WATCH) && TARGET_OS_WATCH
+#  define V8_OS_WATCHOS 1
+#  define V8_OS_STRING "watchos"
+# elif defined(TARGET_OS_TV) && TARGET_OS_TV
+#  define V8_OS_TVOS 1
+#  define V8_OS_STRING "tvos"
+# else
+#  error Unsupported Apple OS.
+# endif
 
 #elif defined(__CYGWIN__)
 # define V8_OS_CYGWIN 1
@@ -171,6 +181,8 @@ path. Add it with -I<path> to the command line
 //  V8_TARGET_OS_FREEBSD
 //  V8_TARGET_OS_FUCHSIA
 //  V8_TARGET_OS_IOS
+//  V8_TARGET_OS_WATCHOS
+//  V8_TARGET_OS_TVOS
 //  V8_TARGET_OS_LINUX
 //  V8_TARGET_OS_MACOS
 //  V8_TARGET_OS_WIN
@@ -184,6 +196,8 @@ path. Add it with -I<path> to the command line
   && !defined(V8_TARGET_OS_FREEBSD) \
   && !defined(V8_TARGET_OS_FUCHSIA) \
   && !defined(V8_TARGET_OS_IOS) \
+  && !defined(V8_TARGET_OS_WATCHOS) \
+  && !defined(V8_TARGET_OS_TVOS) \
   && !defined(V8_TARGET_OS_LINUX) \
   && !defined(V8_TARGET_OS_MACOS) \
   && !defined(V8_TARGET_OS_WIN)
@@ -196,6 +210,8 @@ path. Add it with -I<path> to the command line
   || defined(V8_TARGET_OS_FREEBSD) \
   || defined(V8_TARGET_OS_FUCHSIA) \
   || defined(V8_TARGET_OS_IOS) \
+  || defined(V8_TARGET_OS_WATCHOS) \
+  || defined(V8_TARGET_OS_TVOS) \
   || defined(V8_TARGET_OS_LINUX) \
   || defined(V8_TARGET_OS_MACOS) \
   || defined(V8_TARGET_OS_WIN)
@@ -217,6 +233,14 @@ path. Add it with -I<path> to the command line
 
 #ifdef V8_OS_IOS
 # define V8_TARGET_OS_IOS
+#endif
+
+#ifdef V8_OS_WATCHOS
+# define V8_TARGET_OS_WATCHOS
+#endif
+
+#ifdef V8_OS_TVOS
+# define V8_TARGET_OS_TVOS
 #endif
 
 #ifdef V8_OS_LINUX
@@ -241,6 +265,10 @@ path. Add it with -I<path> to the command line
 # define V8_TARGET_OS_STRING "fuchsia"
 #elif defined(V8_TARGET_OS_IOS)
 # define V8_TARGET_OS_STRING "ios"
+#elif defined(V8_TARGET_OS_WATCHOS)
+# define V8_TARGET_OS_STRING "watchos"
+#elif defined(V8_TARGET_OS_TVOS)
+# define V8_TARGET_OS_STRING "tvos"
 #elif defined(V8_TARGET_OS_LINUX)
 # define V8_TARGET_OS_STRING "linux"
 #elif defined(V8_TARGET_OS_MACOS)
