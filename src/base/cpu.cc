@@ -756,7 +756,10 @@ CPU::CPU()
     delete[] features;
   }
 #elif V8_OS_DARWIN
-#if V8_OS_IOS
+#if V8_OS_MACOS
+  // ARM64 Macs always have JSCVT.
+  has_jscvt_ = true;
+#else
   int64_t feat_jscvt = 0;
   size_t feat_jscvt_size = sizeof(feat_jscvt);
   if (sysctlbyname("hw.optional.arm.FEAT_JSCVT", &feat_jscvt, &feat_jscvt_size,
@@ -765,10 +768,7 @@ CPU::CPU()
   } else {
     has_jscvt_ = feat_jscvt;
   }
-#else
-  // ARM64 Macs always have JSCVT.
-  has_jscvt_ = true;
-#endif  // V8_OS_IOS
+#endif  // !V8_OS_MACOS
 #endif  // V8_OS_WIN
 
 #elif V8_HOST_ARCH_PPC || V8_HOST_ARCH_PPC64

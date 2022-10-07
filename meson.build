@@ -18,40 +18,41 @@ python = import('python').find_installation().path()
 build_os = build_machine.system()
 host_os = host_machine.system()
 
-target_conditionals_prefix = '#include <TargetConditionals.h>'
-is_macos_src = target_conditionals_prefix + '''
-#if !TARGET_OS_OSX
-# error Not macOS
-#endif
-'''
-is_ios_src = target_conditionals_prefix + '''
-#if !TARGET_OS_IOS
-# error Not iOS
-#endif
-'''
-
-if build_os == 'windows'
-  build_os = 'win'
-elif build_os == 'darwin'
-  if cpp_native.compiles(is_macos_src, name: 'compiling on macOS')
-    build_os = 'macos'
-  elif cpp_native.compiles(is_ios_src, name: 'compiling on iOS')
-    build_os = 'ios'
+apple_os_flavors = [
+  ['macOS',   'OSX'],
+  ['iOS',     'IOS'],
+  ['watchOS', 'WATCH'],
+  ['tvOS',    'TV'],
+]
+foreach machine : ['build', 'host']
+  compiler = (machine == 'build') ? cpp_native : cpp
+  os = get_variable(machine + '_os')
+  if os == 'windows'
+    os = 'win'
+  elif os == 'darwin'
+    foreach candidate : apple_os_flavors
+      name = candidate[0]
+      constant = candidate[1]
+      if compiler.compiles('''
+                           #include <TargetConditionals.h>
+                           #if !TARGET_OS_@0@
+                           # error Nope
+                           #endif
+                           '''.format(constant),
+                           name: 'compiling @0@ @1@'.format((machine == 'build') ? 'on' : 'for',
+                                                            name))
+        os = name.to_lower()
+        break
+      endif
+    endforeach
+    if os == 'darwin'
+      error(f'Unable to detect @machine@ machine Apple OS flavor')
+    endif
+  elif os == 'linux' and compiler.has_header('android/api-level.h')
+    os = 'android'
   endif
-elif build_os == 'linux' and cpp_native.has_header('android/api-level.h')
-  build_os = 'android'
-endif
-if host_os == 'windows'
-  host_os = 'win'
-elif host_os == 'darwin'
-  if cpp.compiles(is_macos_src, name: 'compiling for macOS')
-    host_os = 'macos'
-  elif cpp.compiles(is_ios_src, name: 'compiling for iOS')
-    host_os = 'ios'
-  endif
-elif host_os == 'linux' and cpp.has_header('android/api-level.h')
-  host_os = 'android'
-endif
+  set_variable(machine + '_os', os)
+endforeach
 host_os_nick = (host_os == 'macos') ? 'mac' : host_os
 
 v8_arch_from_cpu_family = {
@@ -298,7 +299,7 @@ if enable_snapshot_compression
 endif
 
 if get_option('pointer_compression').auto()
-  enable_pointer_compression = host_is_64bit and host_os not in ['macos', 'ios']
+  enable_pointer_compression = host_is_64bit and host_os not in ['macos', 'ios', 'watchos', 'tvos']
 else
   enable_pointer_compression = get_option('pointer_compression').enabled()
 endif

@@ -59,6 +59,14 @@ libbase_os_sources = {
     'debug' / 'stack_trace_posix.cc',
     'platform' / 'platform-darwin.cc',
   ],
+  'watchos': libbase_posix_sources + [
+    'debug' / 'stack_trace_posix.cc',
+    'platform' / 'platform-darwin.cc',
+  ],
+  'tvos': libbase_posix_sources + [
+    'debug' / 'stack_trace_posix.cc',
+    'platform' / 'platform-darwin.cc',
+  ],
   'android': libbase_posix_sources + [
     'debug' / 'stack_trace_android.cc',
     'platform' / 'platform-linux.cc',
