@@ -82,9 +82,10 @@ path. Add it with -I<path> to the command line
 //  V8_OS_FREEBSD       - FreeBSD
 //  V8_OS_FUCHSIA       - Fuchsia
 //  V8_OS_LINUX         - Linux (Android, ChromeOS, Linux, ...)
-//  V8_OS_DARWIN        - Darwin (macOS, iOS)
+//  V8_OS_DARWIN        - Darwin (macOS, iOS, watchOS, tvOS)
 //  V8_OS_MACOS         - macOS
 //  V8_OS_IOS           - iOS
+//  V8_OS_WATCHOS       - watchOS (also sets V8_OS_IOS)
 //  V8_OS_TVOS          - tvOS (also sets V8_OS_IOS)
 //  V8_OS_NETBSD        - NetBSD
 //  V8_OS_OPENBSD       - OpenBSD
@@ -109,6 +110,9 @@ path. Add it with -I<path> to the command line
 # if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
 #  define V8_OS_IOS 1
 #  define V8_OS_STRING "ios"
+#  if defined(TARGET_OS_WATCH) && TARGET_OS_WATCH
+#   define V8_OS_WATCHOS 1
+#  endif
 #  if defined(TARGET_OS_TV) && TARGET_OS_TV
 #   define V8_OS_TVOS 1
 #  endif
@@ -192,6 +196,7 @@ path. Add it with -I<path> to the command line
 //  V8_TARGET_OS_FREEBSD
 //  V8_TARGET_OS_FUCHSIA
 //  V8_TARGET_OS_IOS
+//  V8_TARGET_OS_WATCHOS (also sets V8_TARGET_OS_IOS)
 //  V8_TARGET_OS_TVOS (also sets V8_TARGET_OS_IOS)
 //  V8_TARGET_OS_LINUX
 //  V8_TARGET_OS_MACOS
@@ -207,6 +212,7 @@ path. Add it with -I<path> to the command line
   && !defined(V8_TARGET_OS_FREEBSD) \
   && !defined(V8_TARGET_OS_FUCHSIA) \
   && !defined(V8_TARGET_OS_IOS) \
+  && !defined(V8_TARGET_OS_WATCHOS) \
   && !defined(V8_TARGET_OS_TVOS) \
   && !defined(V8_TARGET_OS_LINUX) \
   && !defined(V8_TARGET_OS_MACOS) \
@@ -221,6 +227,7 @@ path. Add it with -I<path> to the command line
   || defined(V8_TARGET_OS_FREEBSD) \
   || defined(V8_TARGET_OS_FUCHSIA) \
   || defined(V8_TARGET_OS_IOS) \
+  || defined(V8_TARGET_OS_WATCHOS) \
   || defined(V8_TARGET_OS_TVOS) \
   || defined(V8_TARGET_OS_LINUX) \
   || defined(V8_TARGET_OS_MACOS) \
@@ -244,6 +251,10 @@ path. Add it with -I<path> to the command line
 
 #ifdef V8_OS_IOS
 # define V8_TARGET_OS_IOS
+#endif
+
+#ifdef V8_OS_WATCHOS
+# define V8_TARGET_OS_WATCHOS
 #endif
 
 #ifdef V8_OS_TVOS
