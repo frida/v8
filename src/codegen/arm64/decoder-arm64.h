@@ -29,6 +29,7 @@ namespace internal {
   V(TestBranch)                         \
   V(ConditionalBranch)                  \
   V(System)                             \
+  V(PointerAuthentication)              \
   V(Exception)                          \
   V(LoadStorePairPostIndex)             \
   V(LoadStorePairOffset)                \

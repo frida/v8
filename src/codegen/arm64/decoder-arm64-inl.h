@@ -480,8 +480,12 @@ void Decoder<V>::DecodeDataProcessing(Instruction* instr) {
                 V::VisitDataProcessing2Source(instr);
               }
             } else {
-              if ((instr->Bits(20, 16) != 0) || (instr->Bits(15, 10) > 8) ||
-                  (instr->Mask(0xFFFFFC00) == 0x5AC00C00)) {
+              if ((instr->InstructionBits() & PointerAuthenticationFMask) ==
+                  PointerAuthenticationFixed) {
+                V::VisitPointerAuthentication(instr);
+              } else if ((instr->Bits(20, 16) != 0) ||
+                         (instr->Bits(15, 10) > 8) ||
+                         (instr->Mask(0xFFFFFC00) == 0x5AC00C00)) {
                 V::VisitUnallocated(instr);
               } else {
                 V::VisitDataProcessing1Source(instr);
