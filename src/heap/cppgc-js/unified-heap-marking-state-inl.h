@@ -14,6 +14,7 @@
 #include "src/heap/cppgc-js/unified-heap-marking-state.h"
 #include "src/heap/heap.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/marking-state-inl.h"
 #include "src/heap/marking-worklist-inl.h"
 
 namespace v8 {
@@ -43,10 +44,6 @@ void UnifiedHeapMarkingState::MarkAndPush(
   // non-empty `TracedReferenceBase` when `CppHeap` is in detached mode.
 
   Object object = BasicTracedReferenceExtractor::GetObjectForMarking(reference);
-  MarkAndPush(object);
-}
-
-void UnifiedHeapMarkingState::MarkAndPush(Object object) {
   if (!object.IsHeapObject()) {
     // The embedder is not aware of whether numbers are materialized as heap
     // objects are just passed around as Smis. This branch also filters out

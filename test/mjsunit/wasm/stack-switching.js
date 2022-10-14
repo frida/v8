@@ -3,7 +3,11 @@
 // found in the LICENSE file.
 
 // Flags: --allow-natives-syntax --experimental-wasm-stack-switching
-// Flags: --experimental-wasm-type-reflection --expose-gc
+// Flags: --expose-gc --wasm-stack-switching-stack-size=100
+// Flags: --experimental-wasm-typed-funcref
+
+// We pick a small stack size to run the stack overflow test quickly, but big
+// enough to run all the tests.
 
 load("test/mjsunit/wasm/wasm-module-builder.js");
 
@@ -19,7 +23,6 @@ function ToPromising(wasm_export) {
   let sig = WebAssembly.Function.type(wasm_export);
   assertTrue(sig.parameters.length > 0);
   assertEquals('externref', sig.parameters[0]);
-  assertEquals(1, sig.results.length);
   let wrapper_sig = {
     parameters: sig.parameters.slice(1),
     results: ['externref']
@@ -465,4 +468,111 @@ function TestNestedSuspenders(suspend) {
 (function TestNestedSuspendersNoSuspend() {
   print(arguments.callee.name);
   TestNestedSuspenders(false);
+})();
+
+(function Regress13231() {
+  print(arguments.callee.name);
+  // Check that a promising function with no return is allowed.
+  let builder = new WasmModuleBuilder();
+  let sig_v_r = makeSig([kWasmExternRef], []);
+  builder.addFunction("export", sig_v_r).addBody([]).exportFunc();
+  let instance = builder.instantiate();
+  let export_wrapper = ToPromising(instance.exports.export);
+  let export_sig = WebAssembly.Function.type(export_wrapper);
+  assertEquals([], export_sig.parameters);
+  assertEquals(['externref'], export_sig.results);
+})();
+
+(function TestStackOverflow() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  builder.addFunction("test", kSig_i_r)
+      .addBody([
+          kExprLocalGet, 0,
+          kExprCallFunction, 0
+          ]).exportFunc();
+  let instance = builder.instantiate();
+  let wrapper = ToPromising(instance.exports.test);
+  assertThrows(wrapper, RangeError, /Maximum call stack size exceeded/);
+})();
+
+(function TestBadSuspender() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let import_index = builder.addImport('m', 'import', kSig_i_r);
+  builder.addFunction("test", kSig_i_r)
+      .addBody([
+          kExprLocalGet, 0,
+          kExprCallFunction, import_index, // suspend
+      ]).exportFunc();
+  builder.addFunction("return_suspender", kSig_r_r)
+      .addBody([
+          kExprLocalGet, 0
+      ]).exportFunc();
+  let js_import = new WebAssembly.Function(
+      {parameters: ['externref'], results: ['i32']},
+      () => Promise.resolve(42),
+      {suspending: 'first'});
+  let instance = builder.instantiate({m: {import: js_import}});
+  let suspender = ToPromising(instance.exports.return_suspender)();
+  for (s of [suspender, null, undefined, {}]) {
+    assertThrows(() => instance.exports.test(s),
+        WebAssembly.RuntimeError,
+        /invalid suspender object for suspend/);
+  }
+})();
+
+(function SuspendCallRef() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let funcref_type = builder.addType(kSig_i_r);
+  let table = builder.addTable(wasmRefNullType(funcref_type), 1)
+                         .exportAs('table');
+  builder.addFunction("test", kSig_i_r)
+      .addBody([
+          kExprLocalGet, 0,
+          kExprI32Const, 0, kExprTableGet, table.index,
+          kExprCallRef, funcref_type,
+      ]).exportFunc();
+  let instance = builder.instantiate();
+
+  let funcref = new WebAssembly.Function(
+      {parameters: ['externref'], results: ['i32']},
+      () => Promise.resolve(42),
+      {suspending: 'first'});
+  instance.exports.table.set(0, funcref);
+
+  let exp = new WebAssembly.Function(
+      {parameters: [], results: ['externref']},
+      instance.exports.test,
+      {promising: 'first'});
+  assertPromiseResult(exp(), v => assertEquals(42, v));
+})();
+
+(function SuspendCallIndirect() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let functype = builder.addType(kSig_i_r);
+  let table = builder.addTable(kWasmFuncRef, 10, 10);
+  let callee = builder.addImport('m', 'f', kSig_i_r);
+  builder.addActiveElementSegment(table, wasmI32Const(0), [callee]);
+  builder.addFunction("test", kSig_i_r)
+      .addBody([
+          kExprLocalGet, 0,
+          kExprI32Const, 0,
+          kExprCallIndirect, functype, table.index,
+      ]).exportFunc();
+
+  let create_promise = new WebAssembly.Function(
+      {parameters: ['externref'], results: ['i32']},
+      () => Promise.resolve(42),
+      {suspending: 'first'});
+
+  let instance = builder.instantiate({m: {f: create_promise}});
+
+  let exp = new WebAssembly.Function(
+      {parameters: [], results: ['externref']},
+      instance.exports.test,
+      {promising: 'first'});
+  assertPromiseResult(exp(), v => assertEquals(42, v));
 })();

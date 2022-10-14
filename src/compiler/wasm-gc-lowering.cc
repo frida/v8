@@ -54,19 +54,24 @@ Reduction WasmGCLowering::Reduce(Node* node) {
       return ReduceRttCanon(node);
     case IrOpcode::kTypeGuard:
       return ReduceTypeGuard(node);
+    case IrOpcode::kWasmExternInternalize:
+      return ReduceWasmExternInternalize(node);
+    case IrOpcode::kWasmExternExternalize:
+      return ReduceWasmExternExternalize(node);
     default:
       return NoChange();
   }
 }
 
-Node* WasmGCLowering::Null() {
+Node* WasmGCLowering::RootNode(RootIndex index) {
   Node* isolate_root = gasm_.LoadImmutable(
       MachineType::Pointer(), instance_node_,
       WasmInstanceObject::kIsolateRootOffset - kHeapObjectTag);
-  return gasm_.LoadImmutable(
-      MachineType::Pointer(), isolate_root,
-      IsolateData::root_slot_offset(RootIndex::kNullValue));
+  return gasm_.LoadImmutable(MachineType::Pointer(), isolate_root,
+                             IsolateData::root_slot_offset(index));
 }
+
+Node* WasmGCLowering::Null() { return RootNode(RootIndex::kNullValue); }
 
 // TODO(manoskouk): Use the Callbacks infrastructure from wasm-compiler.h to
 // unify all check/cast implementations.
@@ -87,9 +92,14 @@ Reduction WasmGCLowering::ReduceWasmTypeCheck(Node* node) {
   auto end_label = gasm_.MakeLabel(MachineRepresentation::kWord32);
 
   if (object_can_be_null) {
+    const int kResult = config.null_succeeds ? 1 : 0;
     gasm_.GotoIf(gasm_.TaggedEqual(object, Null()), &end_label,
-                 BranchHint::kFalse, gasm_.Int32Constant(0));
+                 BranchHint::kFalse, gasm_.Int32Constant(kResult));
   }
+
+  // TODO(7748): In some cases the Smi check is redundant. If we had information
+  // about the source type, we could skip it in those cases.
+  gasm_.GotoIf(gasm_.IsI31(object), &end_label, gasm_.Int32Constant(0));
 
   Node* map = gasm_.LoadMap(object);
 
@@ -144,9 +154,17 @@ Reduction WasmGCLowering::ReduceWasmTypeCast(Node* node) {
   auto end_label = gasm_.MakeLabel();
 
   if (object_can_be_null) {
-    gasm_.GotoIf(gasm_.TaggedEqual(object, Null()), &end_label,
-                 BranchHint::kFalse);
+    Node* is_null = gasm_.TaggedEqual(object, Null());
+    if (config.null_succeeds) {
+      gasm_.GotoIf(is_null, &end_label, BranchHint::kFalse);
+    } else {
+      gasm_.TrapIf(is_null, TrapId::kTrapIllegalCast);
+    }
   }
+
+  // TODO(7748): Only perform SMI check if source type may contain i31, any or
+  // extern.
+  gasm_.TrapIf(gasm_.IsI31(object), TrapId::kTrapIllegalCast);
 
   Node* map = gasm_.LoadMap(object);
 
@@ -234,6 +252,70 @@ Reduction WasmGCLowering::ReduceTypeGuard(Node* node) {
   ReplaceWithValue(node, alias);
   node->Kill();
   return Replace(alias);
+}
+
+Reduction WasmGCLowering::ReduceWasmExternInternalize(Node* node) {
+  DCHECK_EQ(node->opcode(), IrOpcode::kWasmExternInternalize);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+  Node* object = NodeProperties::GetValueInput(node, 0);
+  gasm_.InitializeEffectControl(effect, control);
+  auto end = gasm_.MakeLabel(MachineRepresentation::kTaggedPointer);
+
+  if (!v8_flags.wasm_gc_js_interop) {
+    Node* context = gasm_.LoadImmutable(
+        MachineType::TaggedPointer(), instance_node_,
+        WasmInstanceObject::kNativeContextOffset - kHeapObjectTag);
+    Node* obj = gasm_.CallBuiltin(
+        Builtin::kWasmGetOwnProperty, Operator::kEliminatable, object,
+        RootNode(RootIndex::kwasm_wrapped_object_symbol), context);
+    // Invalid object wrappers (i.e. any other JS object that doesn't have the
+    // magic hidden property) will return {undefined}. Map that to {object}.
+    Node* is_undefined =
+        gasm_.TaggedEqual(obj, RootNode(RootIndex::kUndefinedValue));
+    gasm_.GotoIf(is_undefined, &end, object);
+    gasm_.Goto(&end, obj);
+  } else {
+    gasm_.Goto(&end, object);
+  }
+  gasm_.Bind(&end);
+  Node* replacement = end.PhiAt(0);
+  ReplaceWithValue(node, replacement, gasm_.effect(), gasm_.control());
+  node->Kill();
+  return Replace(replacement);
+}
+
+Reduction WasmGCLowering::ReduceWasmExternExternalize(Node* node) {
+  DCHECK_EQ(node->opcode(), IrOpcode::kWasmExternExternalize);
+  Node* effect = NodeProperties::GetEffectInput(node);
+  Node* control = NodeProperties::GetControlInput(node);
+  Node* object = NodeProperties::GetValueInput(node, 0);
+  gasm_.InitializeEffectControl(effect, control);
+
+  auto end = gasm_.MakeLabel(MachineRepresentation::kTaggedPointer);
+  if (!v8_flags.wasm_gc_js_interop) {
+    auto wrap = gasm_.MakeLabel();
+    gasm_.GotoIf(gasm_.IsI31(object), &end, object);
+    gasm_.GotoIf(gasm_.IsDataRefMap(gasm_.LoadMap(object)), &wrap);
+    // This includes the case where {node == null}.
+    gasm_.Goto(&end, object);
+
+    gasm_.Bind(&wrap);
+    Node* context = gasm_.LoadImmutable(
+        MachineType::TaggedPointer(), instance_node_,
+        WasmInstanceObject::kNativeContextOffset - kHeapObjectTag);
+    Node* wrapped = gasm_.CallBuiltin(Builtin::kWasmAllocateObjectWrapper,
+                                      Operator::kEliminatable, object, context);
+    gasm_.Goto(&end, wrapped);
+  } else {
+    gasm_.Goto(&end, object);
+  }
+
+  gasm_.Bind(&end);
+  Node* replacement = end.PhiAt(0);
+  ReplaceWithValue(node, replacement, gasm_.effect(), gasm_.control());
+  node->Kill();
+  return Replace(replacement);
 }
 
 }  // namespace compiler

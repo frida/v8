@@ -52,6 +52,9 @@
 
 #if V8_OS_DARWIN
 #include <mach/mach.h>
+#include <malloc/malloc.h>
+#else
+#include <malloc.h>
 #endif
 
 #if V8_OS_LINUX
@@ -114,7 +117,7 @@ const int kMmapFd = VM_MAKE_TAG(255);
 const int kMmapFd = -1;
 #endif  // !V8_OS_DARWIN
 
-#if V8_OS_DARWIN && V8_HOST_ARCH_ARM64
+#if defined(V8_TARGET_OS_MACOS) && V8_HOST_ARCH_ARM64
 // During snapshot generation in cross builds, sysconf() runs on the Intel
 // host and returns host page size, while the snapshot needs to use the
 // target page size.
@@ -153,15 +156,6 @@ void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
                PageType page_type) {
   int prot = GetProtectionFromMemoryPermission(access);
   int flags = GetFlagsForMemoryPermission(access, page_type);
-#if V8_OS_DARWIN && V8_TARGET_ARCH_ARM64 && defined(__x86_64__)
-  // XXX: This logic is simple and leaky as it is only used for mksnapshot.
-  size_t alignment = 16384;
-  void* result = mmap(hint, size + alignment, prot, flags, kMmapFd,
-                      kMmapFdOffset);
-  if (result == MAP_FAILED) return nullptr;
-  return reinterpret_cast<void*>(
-      RoundUp(reinterpret_cast<uintptr_t>(result), alignment));
-#else
   void* result = mmap(hint, size, prot, flags, kMmapFd, kMmapFdOffset);
   if (result == MAP_FAILED) return nullptr;
 #if ENABLE_HUGEPAGE
@@ -180,7 +174,6 @@ void* Allocate(void* hint, size_t size, OS::MemoryPermission access,
 #endif
 
   return result;
-#endif
 }
 
 #endif  // !V8_OS_FUCHSIA
@@ -205,16 +198,6 @@ int GetProtectionFromMemoryPermission(OS::MemoryPermission access) {
   }
   UNREACHABLE();
 }
-
-#if V8_OS_DARWIN
-#ifdef __arm__
-
-bool OS::ArmUsingHardFloat() {
-  return false;
-}
-
-#endif
-#endif
 
 #if V8_OS_LINUX || V8_OS_FREEBSD
 #ifdef __arm__
@@ -272,9 +255,7 @@ void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
 #endif  // !V8_OS_FUCHSIA
 
 int OS::ActivationFrameAlignment() {
-#if V8_OS_DARWIN && V8_TARGET_ARCH_ARM
-  return 4;
-#elif V8_TARGET_ARCH_ARM
+#if V8_TARGET_ARCH_ARM
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
@@ -294,7 +275,7 @@ int OS::ActivationFrameAlignment() {
 
 // static
 size_t OS::AllocatePageSize() {
-#if V8_OS_DARWIN && V8_HOST_ARCH_ARM64
+#if defined(V8_TARGET_OS_MACOS) && V8_HOST_ARCH_ARM64
   return kAppleArmPageSize;
 #else
   static size_t page_size = static_cast<size_t>(sysconf(_SC_PAGESIZE));
@@ -529,6 +510,14 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
 #endif
 
   return ret == 0;
+}
+
+// static
+void OS::SetDataReadOnly(void* address, size_t size) {
+  DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
+  DCHECK_EQ(0, size % CommitPageSize());
+
+  CHECK_EQ(0, mprotect(address, size, PROT_READ));
 }
 
 // static

@@ -409,29 +409,29 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
     .addLocals(kWasmI32, 1)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprRefTestStatic, sub_struct,
+      kGCPrefix, kExprRefTestDeprecated, sub_struct,
 
       // These casts have to be preserved.
       kExprLocalGet, 0,
-      kGCPrefix, kExprRefCastStatic, mid_struct,
-      kGCPrefix, kExprRefCastStatic, sub_struct,
+      kGCPrefix, kExprRefCast, mid_struct,
+      kGCPrefix, kExprRefCast, sub_struct,
       kGCPrefix, kExprStructGet, sub_struct, 1,
       ...addToLocal,
 
       kExprIf, kWasmVoid,
         // Both these casts should be optimized away.
         kExprLocalGet, 0,
-        kGCPrefix, kExprRefCastStatic, mid_struct,
-        kGCPrefix, kExprRefCastStatic, sub_struct,
+        kGCPrefix, kExprRefCast, mid_struct,
+        kGCPrefix, kExprRefCast, sub_struct,
         kGCPrefix, kExprStructGet, sub_struct, 1,
         ...addToLocal,
 
         kExprBlock, kWasmRefNull, super_struct,
           kExprLocalGet, 0,
           // This should also get optimized away.
-          kGCPrefix, kExprBrOnCastStaticFail, 0, mid_struct,
+          kGCPrefix, kExprBrOnCastFail, 0, mid_struct,
           // So should this, despite being represented by a TypeGuard alias.
-          kGCPrefix, kExprRefCastStatic, sub_struct,
+          kGCPrefix, kExprRefCast, sub_struct,
           kGCPrefix, kExprStructGet, sub_struct, 1,
           ...addToLocal,
           kExprLocalGet, 0,  // Due to the branch result type.
@@ -440,13 +440,13 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
       kExprElse,
         // This (always trapping) cast should be preserved.
         kExprLocalGet, 0,
-        kGCPrefix, kExprRefCastStatic, sub_struct,
+        kGCPrefix, kExprRefCast, sub_struct,
         kGCPrefix, kExprStructGet, sub_struct, 1,
         ...addToLocal,
       kExprEnd,
       // This cast should be preserved.
       kExprLocalGet, 0,
-      kGCPrefix, kExprRefCastStatic, sub_struct,
+      kGCPrefix, kExprRefCast, sub_struct,
       kGCPrefix, kExprStructGet, sub_struct, 1,
       kExprLocalGet, 1, kExprI32Add
     ])
@@ -468,8 +468,9 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
     .addBody([
       // Cast from struct_a to struct_b via common base type struct_super.
       kExprLocalGet, 0,
-      kGCPrefix, kExprRefCastStatic, struct_super,
-      kGCPrefix, kExprRefCastStatic, struct_b, // annotated as 'ref null none'
+      // TODO(7748): Replace cast op with "ref.cast null".
+      kGCPrefix, kExprRefCastDeprecated, struct_super,
+      kGCPrefix, kExprRefCastDeprecated, struct_b, // annotated as 'ref null none'
       kExprRefIsNull,
     ]);
 
@@ -514,7 +515,8 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
       // local.get 0 is known to be null until end of block.
       kExprLocalGet, 0,
       // This cast is a no-op and shold be optimized away.
-      kGCPrefix, kExprRefCastStatic, struct_b,
+      // TODO(7748): Replace with "ref.cast null".
+      kGCPrefix, kExprRefCastDeprecated, struct_b,
       kExprEnd,
       kExprRefIsNull,
     ]);
@@ -527,4 +529,36 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
   let instance = builder.instantiate({});
   assertEquals(1, instance.exports.main());
+})();
+
+(function AssertNullAfterCastIncompatibleTypes() {
+  print(arguments.callee.name);
+  let builder = new WasmModuleBuilder();
+  let struct_super = builder.addStruct([makeField(kWasmI32, true)]);
+  let struct_b = builder.addStruct([makeField(kWasmI32, true)], struct_super);
+  let struct_a = builder.addStruct(
+    [makeField(kWasmI32, true), makeField(kWasmI32, true)], struct_super);
+  let callee_sig = makeSig([wasmRefNullType(struct_super)], [kWasmI32]);
+
+  builder.addFunction("mkStruct", makeSig([], [kWasmExternRef]))
+    .addBody([kGCPrefix, kExprStructNewDefault, struct_a,
+              kGCPrefix, kExprExternExternalize])
+    .exportFunc();
+
+  let callee = builder.addFunction("callee", callee_sig)
+    .addBody([
+       kExprLocalGet, 0, kGCPrefix, kExprRefCast, struct_b,
+       kExprRefAsNonNull,
+       kGCPrefix, kExprStructGet, struct_b, 0]);
+
+  builder.addFunction("main", makeSig([kWasmExternRef], [kWasmI32]))
+    .addBody([kExprLocalGet, 0, kGCPrefix, kExprExternInternalize,
+              kGCPrefix, kExprRefAsStruct,
+              kGCPrefix, kExprRefCast, struct_a,
+              kExprCallFunction, callee.index])
+    .exportFunc();
+
+  let instance = builder.instantiate({});
+  assertTraps(kTrapIllegalCast,
+              () => instance.exports.main(instance.exports.mkStruct()));
 })();

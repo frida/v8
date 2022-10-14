@@ -12,14 +12,18 @@ export abstract class Phase {
   }
 
   public isGraph(): boolean {
-    return this.type == PhaseType.Graph ||
-      this.type == PhaseType.TurboshaftGraph;
+    return this.type == PhaseType.Graph || this.type == PhaseType.TurboshaftGraph;
+  }
+
+  public isDynamic(): boolean {
+    return this.isGraph() || this.type == PhaseType.Schedule || this.type == PhaseType.Sequence;
   }
 }
 
 export enum PhaseType {
   Graph = "graph",
   TurboshaftGraph = "turboshaft_graph",
+  TurboshaftCustomData = "turboshaft_custom_data",
   Disassembly = "disassembly",
   Instructions = "instructions",
   Sequence = "sequence",

@@ -39,7 +39,6 @@
 #endif
 #include "src/base/vector.h"
 #include "src/codegen/assembler-inl.h"
-#include "src/codegen/string-constants.h"
 #include "src/deoptimizer/deoptimizer.h"
 #include "src/diagnostics/disassembler.h"
 #include "src/execution/isolate.h"
@@ -68,18 +67,21 @@ AssemblerOptions AssemblerOptions::Default(Isolate* isolate) {
 
   // So here we enable simulator specific code if not generating the snapshot or
   // if we are but we are targetting the simulator *only*.
-  options.enable_simulator_code = !serializer || FLAG_target_is_simulator;
+  options.enable_simulator_code = !serializer || v8_flags.target_is_simulator;
 #endif
-  options.inline_offheap_trampolines &= !generating_embedded_builtin;
+
 #if V8_TARGET_ARCH_X64 || V8_TARGET_ARCH_ARM64
   options.code_range_base = isolate->heap()->code_range_base();
 #endif
-  options.short_builtin_calls =
+  bool short_builtin_calls =
       isolate->is_short_builtin_calls_enabled() &&
       !generating_embedded_builtin &&
       (options.code_range_base != kNullAddress) &&
-      // Serialization of RUNTIME_ENTRY reloc infos is not supported yet.
+      // Serialization of NEAR_BUILTIN_ENTRY reloc infos is not supported yet.
       !serializer;
+  if (short_builtin_calls) {
+    options.builtin_call_jump_mode = BuiltinCallJumpMode::kPCRelative;
+  }
   return options;
 }
 
@@ -130,10 +132,37 @@ class ExternalAssemblerBufferImpl : public AssemblerBuffer {
     FATAL("Cannot grow external assembler buffer");
   }
 
+  void* operator new(std::size_t count);
+  void operator delete(void* ptr) noexcept;
+
  private:
   byte* const start_;
   const int size_;
 };
+
+static thread_local std::aligned_storage_t<sizeof(ExternalAssemblerBufferImpl),
+                                           alignof(ExternalAssemblerBufferImpl)>
+    tls_singleton_storage;
+
+static thread_local bool tls_singleton_taken{false};
+
+void* ExternalAssemblerBufferImpl::operator new(std::size_t count) {
+  DCHECK_EQ(count, sizeof(ExternalAssemblerBufferImpl));
+  if (V8_LIKELY(!tls_singleton_taken)) {
+    tls_singleton_taken = true;
+    return &tls_singleton_storage;
+  }
+  return ::operator new(count);
+}
+
+void ExternalAssemblerBufferImpl::operator delete(void* ptr) noexcept {
+  if (V8_LIKELY(ptr == &tls_singleton_storage)) {
+    DCHECK(tls_singleton_taken);
+    tls_singleton_taken = false;
+    return;
+  }
+  ::operator delete(ptr);
+}
 
 }  // namespace
 
@@ -200,17 +229,10 @@ unsigned CpuFeatures::supported_ = 0;
 unsigned CpuFeatures::icache_line_size_ = 0;
 unsigned CpuFeatures::dcache_line_size_ = 0;
 
-HeapObjectRequest::HeapObjectRequest(double heap_number, int offset)
-    : kind_(kHeapNumber), offset_(offset) {
-  value_.heap_number = heap_number;
-  DCHECK(!IsSmiDouble(value_.heap_number));
-}
-
-HeapObjectRequest::HeapObjectRequest(const StringConstantBase* string,
-                                     int offset)
-    : kind_(kStringConstant), offset_(offset) {
-  value_.string = string;
-  DCHECK_NOT_NULL(value_.string);
+HeapNumberRequest::HeapNumberRequest(double heap_number, int offset)
+    : offset_(offset) {
+  value_ = heap_number;
+  DCHECK(!IsSmiDouble(value_));
 }
 
 // Platform specific but identical code for all the platforms.
@@ -237,9 +259,9 @@ void Assembler::DataAlign(int m) {
   }
 }
 
-void AssemblerBase::RequestHeapObject(HeapObjectRequest request) {
+void AssemblerBase::RequestHeapNumber(HeapNumberRequest request) {
   request.set_offset(pc_offset());
-  heap_object_requests_.push_front(request);
+  heap_number_requests_.push_front(request);
 }
 
 int AssemblerBase::AddCodeTarget(Handle<CodeT> target) {
@@ -282,7 +304,7 @@ Handle<HeapObject> AssemblerBase::GetEmbeddedObject(
 
 
 int Assembler::WriteCodeComments() {
-  if (!FLAG_code_comments) return 0;
+  if (!v8_flags.code_comments) return 0;
   CHECK_IMPLIES(code_comments_writer_.entry_count() > 0,
                 options().emit_code_comments);
   if (code_comments_writer_.entry_count() == 0) return 0;

@@ -81,10 +81,9 @@ Handle<WasmModuleObject> CompileReferenceModule(Zone* zone, Isolate* isolate,
   constexpr base::Vector<const char> kNoSourceUrl;
   Handle<Script> script =
       GetWasmEngine()->GetOrCreateScript(isolate, native_module, kNoSourceUrl);
-  Handle<FixedArray> export_wrappers = isolate->factory()->NewFixedArray(
-      static_cast<int>(module->functions.size()));
-  return WasmModuleObject::New(isolate, std::move(native_module), script,
-                               export_wrappers);
+  isolate->heap()->EnsureWasmCanonicalRttsSize(module->MaxCanonicalTypeIndex() +
+                                               1);
+  return WasmModuleObject::New(isolate, std::move(native_module), script);
 }
 
 void InterpretAndExecuteModule(i::Isolate* isolate,
@@ -232,14 +231,20 @@ std::string HeapTypeToJSByteEncoding(HeapType heap_type) {
       return "kEqRefCode";
     case HeapType::kI31:
       return "kI31RefCode";
-    case HeapType::kData:
-      return "kDataRefCode";
+    case HeapType::kStruct:
+      return "kStructRefCode";
     case HeapType::kArray:
       return "kArrayRefCode";
     case HeapType::kAny:
       return "kAnyRefCode";
     case HeapType::kExtern:
       return "kExternRefCode";
+    case HeapType::kNone:
+      return "kNullRefCode";
+    case HeapType::kNoFunc:
+      return "kNullFuncRefCode";
+    case HeapType::kNoExtern:
+      return "kNullExternRefCode";
     case HeapType::kBottom:
       UNREACHABLE();
     default:
@@ -255,14 +260,20 @@ std::string HeapTypeToConstantName(HeapType heap_type) {
       return "kWasmEqRef";
     case HeapType::kI31:
       return "kWasmI31Ref";
-    case HeapType::kData:
-      return "kWasmDataRef";
+    case HeapType::kStruct:
+      return "kWasmStructRef";
     case HeapType::kArray:
       return "kWasmArrayRef";
     case HeapType::kExtern:
       return "kWasmExternRef";
     case HeapType::kAny:
       return "kWasmAnyRef";
+    case HeapType::kNone:
+      return "kWasmNullRef";
+    case HeapType::kNoFunc:
+      return "kWasmNullFuncRef";
+    case HeapType::kNoExtern:
+      return "kWasmNullExternRef";
     case HeapType::kBottom:
       UNREACHABLE();
     default:
@@ -298,7 +309,7 @@ std::string ValueTypeToConstantName(ValueType type) {
           return "kWasmAnyRef";
         case HeapType::kBottom:
           UNREACHABLE();
-        case HeapType::kData:
+        case HeapType::kStruct:
         case HeapType::kArray:
         case HeapType::kI31:
         default:
@@ -433,7 +444,7 @@ class InitExprInterface {
                      const ArrayIndexImmediate<validate>& imm,
                      const base::Vector<Value>& elements, const Value& rtt,
                      Value* result) {
-    os_ << "kGCPrefix, kExprArrayNewFixedStatic, " << index(imm.index)
+    os_ << "kGCPrefix, kExprArrayNewFixed, " << index(imm.index)
         << index(static_cast<uint32_t>(elements.size()));
   }
 
@@ -455,7 +466,7 @@ class InitExprInterface {
 
   void StringConst(FullDecoder* decoder,
                    const StringConstImmediate<validate>& imm, Value* result) {
-    os_ << "kGCPrefix, kExprStringConst, " << index(imm.index);
+    os_ << "...GCInstr(kExprStringConst), " << index(imm.index);
   }
 
   void DoReturn(FullDecoder* decoder, uint32_t /*drop_values*/) { os_ << "]"; }
@@ -670,15 +681,15 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
        << " /* sig */)\n";
 
     // Add locals.
-    BodyLocalDecls decls(&tmp_zone);
+    BodyLocalDecls decls;
     DecodeLocalDecls(enabled_features, &decls, module, func_code.begin(),
-                     func_code.end());
-    if (!decls.type_list.empty()) {
+                     func_code.end(), &tmp_zone);
+    if (decls.num_locals) {
       os << "  ";
-      for (size_t pos = 0, count = 1, locals = decls.type_list.size();
-           pos < locals; pos += count, count = 1) {
-        ValueType type = decls.type_list[pos];
-        while (pos + count < locals && decls.type_list[pos + count] == type) {
+      for (size_t pos = 0, count = 1, locals = decls.num_locals; pos < locals;
+           pos += count, count = 1) {
+        ValueType type = decls.local_types[pos];
+        while (pos + count < locals && decls.local_types[pos + count] == type) {
           ++count;
         }
         os << ".addLocals(" << ValueTypeToConstantName(type) << ", " << count
@@ -715,7 +726,7 @@ void OneTimeEnableStagedWasmFeatures(v8::Isolate* isolate) {
   struct EnableStagedWasmFeatures {
     explicit EnableStagedWasmFeatures(v8::Isolate* isolate) {
 #define ENABLE_STAGED_FEATURES(feat, desc, val) \
-  FLAG_experimental_wasm_##feat = true;
+  v8_flags.experimental_wasm_##feat = true;
       FOREACH_WASM_STAGING_FEATURE_FLAG(ENABLE_STAGED_FEATURES)
 #undef ENABLE_STAGED_FEATURES
       isolate->InstallConditionalFeatures(isolate->GetCurrentContext());
@@ -785,8 +796,8 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
 #else
   bool liftoff_as_reference = false;
 #endif
-  FlagScope<bool> turbo_mid_tier_regalloc(&FLAG_turbo_force_mid_tier_regalloc,
-                                          configuration_byte == 0);
+  FlagScope<bool> turbo_mid_tier_regalloc(
+      &v8_flags.turbo_force_mid_tier_regalloc, configuration_byte == 0);
 
   if (!GenerateModule(i_isolate, &zone, data, &buffer, liftoff_as_reference)) {
     return;
@@ -797,7 +808,7 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   ErrorThrower interpreter_thrower(i_isolate, "Interpreter");
   ModuleWireBytes wire_bytes(buffer.begin(), buffer.end());
 
-  if (require_valid && FLAG_wasm_fuzzer_gen_test) {
+  if (require_valid && v8_flags.wasm_fuzzer_gen_test) {
     GenerateTestCase(i_isolate, wire_bytes, true);
   }
 
@@ -806,16 +817,17 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   {
     // Explicitly enable Liftoff, disable tiering and set the tier_mask. This
     // way, we deterministically test a combination of Liftoff and Turbofan.
-    FlagScope<bool> liftoff(&FLAG_liftoff, true);
-    FlagScope<bool> no_tier_up(&FLAG_wasm_tier_up, false);
-    FlagScope<int> tier_mask_scope(&FLAG_wasm_tier_mask_for_testing, tier_mask);
-    FlagScope<int> debug_mask_scope(&FLAG_wasm_debug_mask_for_testing,
+    FlagScope<bool> liftoff(&v8_flags.liftoff, true);
+    FlagScope<bool> no_tier_up(&v8_flags.wasm_tier_up, false);
+    FlagScope<int> tier_mask_scope(&v8_flags.wasm_tier_mask_for_testing,
+                                   tier_mask);
+    FlagScope<int> debug_mask_scope(&v8_flags.wasm_debug_mask_for_testing,
                                     debug_mask);
     compiled_module = GetWasmEngine()->SyncCompile(
         i_isolate, enabled_features, &interpreter_thrower, wire_bytes);
   }
   bool compiles = !compiled_module.is_null();
-  if (!require_valid && FLAG_wasm_fuzzer_gen_test) {
+  if (!require_valid && v8_flags.wasm_fuzzer_gen_test) {
     GenerateTestCase(i_isolate, wire_bytes, compiles);
   }
 

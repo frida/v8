@@ -22,9 +22,7 @@ namespace {
 CounterMap* kCurrentCounterMap = nullptr;
 }  // namespace
 
-IsolateWrapper::IsolateWrapper(CountersMode counters_mode,
-                               IsolateSharedMode shared_mode,
-                               v8::Isolate* shared_isolate_if_client)
+IsolateWrapper::IsolateWrapper(CountersMode counters_mode)
     : array_buffer_allocator_(
           v8::ArrayBuffer::Allocator::NewDefaultAllocator()) {
   CHECK_NULL(kCurrentCounterMap);
@@ -48,17 +46,7 @@ IsolateWrapper::IsolateWrapper(CountersMode counters_mode,
     };
   }
 
-  if (shared_mode == kSharedIsolate) {
-    isolate_ = reinterpret_cast<v8::Isolate*>(
-        internal::Isolate::NewShared(create_params));
-  } else {
-    if (shared_mode == kClientIsolate) {
-      CHECK_NOT_NULL(shared_isolate_if_client);
-      create_params.experimental_attach_to_shared_isolate =
-          shared_isolate_if_client;
-    }
-    isolate_ = v8::Isolate::New(create_params);
-  }
+  isolate_ = v8::Isolate::New(create_params);
   CHECK_NOT_NULL(isolate());
 }
 
@@ -80,7 +68,7 @@ namespace internal {
 SaveFlags::SaveFlags() {
   // For each flag, save the current flag value.
 #define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) \
-  SAVED_##nam = FLAG_##nam.value();
+  SAVED_##nam = v8_flags.nam.value();
 #include "src/flags/flag-definitions.h"
 #undef FLAG_MODE_APPLY
 }
@@ -89,8 +77,8 @@ SaveFlags::~SaveFlags() {
   // For each flag, set back the old flag value if it changed (don't write the
   // flag if it didn't change, to keep TSAN happy).
 #define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) \
-  if (SAVED_##nam != FLAG_##nam.value()) {           \
-    FLAG_##nam = SAVED_##nam;                        \
+  if (SAVED_##nam != v8_flags.nam.value()) {         \
+    v8_flags.nam = SAVED_##nam;                      \
   }
 #include "src/flags/flag-definitions.h"  // NOLINT
 #undef FLAG_MODE_APPLY
@@ -103,15 +91,19 @@ ManualGCScope::ManualGCScope(i::Isolate* isolate) {
   if (isolate && isolate->heap()->incremental_marking()->IsMarking()) {
     isolate->heap()->CollectGarbage(i::OLD_SPACE,
                                     i::GarbageCollectionReason::kTesting);
+    // Make sure there is no concurrent sweeping running in the background.
+    isolate->heap()->CompleteSweepingFull();
   }
 
-  i::FLAG_concurrent_marking = false;
-  i::FLAG_concurrent_sweeping = false;
-  i::FLAG_stress_incremental_marking = false;
-  i::FLAG_stress_concurrent_allocation = false;
+  i::v8_flags.concurrent_marking = false;
+  i::v8_flags.concurrent_sweeping = false;
+  i::v8_flags.concurrent_minor_mc_marking = false;
+  i::v8_flags.concurrent_minor_mc_sweeping = false;
+  i::v8_flags.stress_incremental_marking = false;
+  i::v8_flags.stress_concurrent_allocation = false;
   // Parallel marking has a dependency on concurrent marking.
-  i::FLAG_parallel_marking = false;
-  i::FLAG_detect_ineffective_gcs_near_heap_limit = false;
+  i::v8_flags.parallel_marking = false;
+  i::v8_flags.detect_ineffective_gcs_near_heap_limit = false;
 }
 
 }  // namespace internal

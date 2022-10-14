@@ -5,17 +5,21 @@
 #ifndef V8_BASE_PLATFORM_MUTEX_H_
 #define V8_BASE_PLATFORM_MUTEX_H_
 
-#include "include/v8-platform.h"
-#include "src/base/base-export.h"
-#include "src/base/lazy-instance.h"
-#include "src/base/optional.h"
-#if V8_OS_WIN
-#include "src/base/win32-headers.h"
-#endif
-#include "src/base/logging.h"
+#include <shared_mutex>
+
+#include "include/v8config.h"
 
 #if V8_OS_POSIX
 #include <pthread.h>
+#endif
+
+#include "src/base/base-export.h"
+#include "src/base/lazy-instance.h"
+#include "src/base/logging.h"
+#include "src/base/optional.h"
+
+#if V8_OS_WIN
+#include "src/base/win32-headers.h"
 #endif
 
 #if V8_OS_STARBOARD
@@ -26,6 +30,8 @@
 
 namespace v8 {
 namespace base {
+
+class ConditionVariable;
 
 // ----------------------------------------------------------------------------
 // Mutex - a replacement for std::mutex
@@ -63,11 +69,27 @@ class V8_BASE_EXPORT Mutex final {
   // successfully locked.
   bool TryLock() V8_WARN_UNUSED_RESULT;
 
+  // The implementation-defined native handle type.
+#if V8_OS_POSIX
+  using NativeHandle = pthread_mutex_t;
+#elif V8_OS_WIN
+  using NativeHandle = V8_SRWLOCK;
+#elif V8_OS_STARBOARD
+  using NativeHandle = SbMutex;
+#endif
+
+  NativeHandle& native_handle() {
+    return native_handle_;
+  }
+  const NativeHandle& native_handle() const {
+    return native_handle_;
+  }
+
   V8_INLINE void AssertHeld() const { DCHECK_EQ(1, level_); }
   V8_INLINE void AssertUnheld() const { DCHECK_EQ(0, level_); }
 
  private:
-  std::unique_ptr<MutexImpl> impl_;
+  NativeHandle native_handle_;
 #ifdef DEBUG
   int level_;
 #endif
@@ -87,7 +109,6 @@ class V8_BASE_EXPORT Mutex final {
   }
 
   friend class ConditionVariable;
-  friend class NativeConditionVariable;
 };
 
 // POD Mutex initialized lazily (i.e. the first time Pointer() is called).
@@ -153,7 +174,16 @@ class V8_BASE_EXPORT RecursiveMutex final {
   V8_INLINE void AssertHeld() const { DCHECK_LT(0, level_); }
 
  private:
-  std::unique_ptr<MutexImpl> impl_;
+  // The implementation-defined native handle type.
+#if V8_OS_POSIX
+  using NativeHandle = pthread_mutex_t;
+#elif V8_OS_WIN
+  using NativeHandle = V8_CRITICAL_SECTION;
+#elif V8_OS_STARBOARD
+  using NativeHandle = starboard::RecursiveMutex;
+#endif
+
+  NativeHandle native_handle_;
 #ifdef DEBUG
   int level_;
 #endif
@@ -177,11 +207,11 @@ using LazyRecursiveMutex =
 #define LAZY_RECURSIVE_MUTEX_INITIALIZER LAZY_STATIC_INSTANCE_INITIALIZER
 
 // ----------------------------------------------------------------------------
-// SharedMutex - a replacement for std::shared_mutex
+// SharedMutex - a wrapper around std::shared_mutex
 //
 // This class is a synchronization primitive that can be used to protect shared
 // data from being simultaneously accessed by multiple threads. In contrast to
-// other mutex types which facilitate exclusive access, a shared_mutex has two
+// other mutex types which facilitate exclusive access, a SharedMutex has two
 // levels of access:
 // - shared: several threads can share ownership of the same mutex.
 // - exclusive: only one thread can own the mutex.
@@ -192,10 +222,9 @@ using LazyRecursiveMutex =
 
 class V8_BASE_EXPORT SharedMutex final {
  public:
-  SharedMutex();
+  SharedMutex() = default;
   SharedMutex(const SharedMutex&) = delete;
   SharedMutex& operator=(const SharedMutex&) = delete;
-  ~SharedMutex();
 
   // Acquires shared ownership of the {SharedMutex}. If another thread is
   // holding the mutex in exclusive ownership, a call to {LockShared()} will
@@ -241,7 +270,10 @@ class V8_BASE_EXPORT SharedMutex final {
   bool TryLockExclusive() V8_WARN_UNUSED_RESULT;
 
  private:
-  std::unique_ptr<SharedMutexImpl> impl_;
+  // {base::SharedMutex} wraps a {std::shared_mutex}, but executes additional
+  // checks in debug mode.
+  // TODO(13256): Use std::shared_mutex directly.
+  std::shared_mutex native_handle_;
 };
 
 // -----------------------------------------------------------------------------
@@ -330,94 +362,6 @@ class V8_NODISCARD SharedMutexGuardIf final {
 
  private:
   base::Optional<SharedMutexGuard<kIsShared, Behavior>> mutex_;
-};
-
-
-// -----------------------------------------------------------------------------
-// Default implementations
-
-class V8_BASE_EXPORT NativeMutex final : public MutexImpl {
- public:
-  NativeMutex();
-  NativeMutex(const NativeMutex&) = delete;
-  NativeMutex& operator=(const NativeMutex&) = delete;
-  ~NativeMutex();
-
-  void Lock() override;
-  void Unlock() override;
-  bool TryLock() override;
-
-#if V8_OS_POSIX
-  using NativeHandle = pthread_mutex_t;
-#elif V8_OS_WIN
-  using NativeHandle = V8_CRITICAL_SECTION;
-#elif V8_OS_STARBOARD
-  using NativeHandle = SbMutex;
-#endif
-
-  NativeHandle& native_handle() {
-    return native_handle_;
-  }
-  const NativeHandle& native_handle() const {
-    return native_handle_;
-  }
-
- private:
-  NativeHandle native_handle_;
-};
-
-class V8_BASE_EXPORT NativeRecursiveMutex final : public MutexImpl {
- public:
-  NativeRecursiveMutex();
-  NativeRecursiveMutex(const NativeRecursiveMutex&) = delete;
-  NativeRecursiveMutex& operator=(const NativeRecursiveMutex&) = delete;
-  ~NativeRecursiveMutex();
-
-  void Lock() override;
-  void Unlock() override;
-  bool TryLock() override;
-
-#if V8_OS_POSIX
-  using NativeHandle = pthread_mutex_t;
-#elif V8_OS_WIN
-  using NativeHandle = V8_CRITICAL_SECTION;
-#elif V8_OS_STARBOARD
-  using NativeHandle = starboard::RecursiveMutex;
-#endif
-
- private:
-  NativeHandle native_handle_;
-};
-
-class V8_BASE_EXPORT NativeSharedMutex final : public SharedMutexImpl {
- public:
-  NativeSharedMutex();
-  NativeSharedMutex(const NativeSharedMutex&) = delete;
-  NativeSharedMutex& operator=(const NativeSharedMutex&) = delete;
-  ~NativeSharedMutex();
-
-  void LockShared() override;
-  void LockExclusive() override;
-  void UnlockShared() override;
-  void UnlockExclusive() override;
-  bool TryLockShared() override;
-  bool TryLockExclusive() override;
-
-#if V8_OS_DARWIN
-  // pthread_rwlock_t is broken on MacOS when signals are being sent to the
-  // process (see https://crbug.com/v8/11399). Until Apple fixes that in the OS,
-  // we have to fall back to a non-shared mutex.
-  using NativeHandle = pthread_mutex_t;
-#elif V8_OS_POSIX
-  using NativeHandle = pthread_rwlock_t;
-#elif V8_OS_WIN
-  using NativeHandle = V8_CRITICAL_SECTION;
-#elif V8_OS_STARBOARD
-  using NativeHandle = starboard::RWLock;
-#endif
-
- private:
-  NativeHandle native_handle_;
 };
 
 }  // namespace base

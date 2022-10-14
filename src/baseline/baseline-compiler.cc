@@ -53,8 +53,6 @@
 #include "src/baseline/riscv/baseline-compiler-riscv-inl.h"
 #elif V8_TARGET_ARCH_MIPS64
 #include "src/baseline/mips64/baseline-compiler-mips64-inl.h"
-#elif V8_TARGET_ARCH_MIPS
-#include "src/baseline/mips/baseline-compiler-mips-inl.h"
 #elif V8_TARGET_ARCH_LOONG64
 #include "src/baseline/loong64/baseline-compiler-loong64-inl.h"
 #else
@@ -246,6 +244,16 @@ void MoveArgumentsForBuiltin(BaselineAssembler* masm, Args... args) {
 }  // namespace detail
 
 namespace {
+
+AssemblerOptions BaselineAssemblerOptions(Isolate* isolate) {
+  AssemblerOptions options = AssemblerOptions::Default(isolate);
+  options.builtin_call_jump_mode =
+      isolate->is_short_builtin_calls_enabled()
+          ? BuiltinCallJumpMode::kPCRelative
+          : kFallbackBuiltinCallJumpModeForBaseline;
+  return options;
+}
+
 // Rough upper-bound estimate. Copying the data is most likely more expensive
 // than pre-allocating a large enough buffer.
 #ifdef V8_TARGET_ARCH_IA32
@@ -272,8 +280,10 @@ BaselineCompiler::BaselineCompiler(
       stats_(local_isolate->runtime_call_stats()),
       shared_function_info_(shared_function_info),
       bytecode_(bytecode),
-      masm_(local_isolate->GetMainThreadIsolateUnsafe(),
-            CodeObjectRequired::kNo, AllocateBuffer(bytecode)),
+      masm_(
+          local_isolate->GetMainThreadIsolateUnsafe(),
+          BaselineAssemblerOptions(local_isolate->GetMainThreadIsolateUnsafe()),
+          CodeObjectRequired::kNo, AllocateBuffer(bytecode)),
       basm_(&masm_),
       iterator_(bytecode_),
       zone_(local_isolate->allocator(), ZONE_NAME),
@@ -390,8 +400,11 @@ int32_t BaselineCompiler::Int(int operand_index) {
 uint32_t BaselineCompiler::Index(int operand_index) {
   return iterator().GetIndexOperand(operand_index);
 }
-uint32_t BaselineCompiler::Flag(int operand_index) {
-  return iterator().GetFlagOperand(operand_index);
+uint32_t BaselineCompiler::Flag8(int operand_index) {
+  return iterator().GetFlag8Operand(operand_index);
+}
+uint32_t BaselineCompiler::Flag16(int operand_index) {
+  return iterator().GetFlag16Operand(operand_index);
 }
 uint32_t BaselineCompiler::RegisterCount(int operand_index) {
   return iterator().GetRegisterCountOperand(operand_index);
@@ -408,8 +421,11 @@ Smi BaselineCompiler::IndexAsSmi(int operand_index) {
 Smi BaselineCompiler::IntAsSmi(int operand_index) {
   return Smi::FromInt(Int(operand_index));
 }
-Smi BaselineCompiler::FlagAsSmi(int operand_index) {
-  return Smi::FromInt(Flag(operand_index));
+Smi BaselineCompiler::Flag8AsSmi(int operand_index) {
+  return Smi::FromInt(Flag8(operand_index));
+}
+Smi BaselineCompiler::Flag16AsSmi(int operand_index) {
+  return Smi::FromInt(Flag16(operand_index));
 }
 
 MemOperand BaselineCompiler::FeedbackVector() {
@@ -482,13 +498,13 @@ void BaselineCompiler::VisitSingleBytecode() {
   if (label.GetPointer()) __ Bind(label.GetPointer());
   // Mark position as valid jump target unconditionnaly when the deoptimizer can
   // jump to baseline code. This is required when CFI is enabled.
-  if (FLAG_deopt_to_baseline || label.IsIndirectJumpTarget()) {
+  if (v8_flags.deopt_to_baseline || label.IsIndirectJumpTarget()) {
     __ JumpTarget();
   }
 
 #ifdef V8_CODE_COMMENTS
   std::ostringstream str;
-  if (FLAG_code_comments) {
+  if (v8_flags.code_comments) {
     iterator().PrintTo(str);
   }
   ASM_CODE_COMMENT_STRING(&masm_, str.str());
@@ -509,7 +525,7 @@ void BaselineCompiler::VisitSingleBytecode() {
     // isn't registered as writing to it. We can't do this for jumps or switches
     // though, since the control flow would not match the control flow of this
     // scope.
-    if (FLAG_debug_code &&
+    if (v8_flags.debug_code &&
         !interpreter::Bytecodes::WritesAccumulator(bytecode) &&
         !interpreter::Bytecodes::IsJump(bytecode) &&
         !interpreter::Bytecodes::IsSwitch(bytecode)) {
@@ -533,7 +549,7 @@ void BaselineCompiler::VisitSingleBytecode() {
 }
 
 void BaselineCompiler::VerifyFrame() {
-  if (FLAG_debug_code) {
+  if (v8_flags.debug_code) {
     ASM_CODE_COMMENT(&masm_);
     __ RecordComment(" -- Verify frame size");
     VerifyFrameSize();
@@ -558,7 +574,7 @@ void BaselineCompiler::VerifyFrame() {
 
 #ifdef V8_TRACE_UNOPTIMIZED
 void BaselineCompiler::TraceBytecode(Runtime::FunctionId function_id) {
-  if (!FLAG_trace_baseline_exec) return;
+  if (!v8_flags.trace_baseline_exec) return;
   ASM_CODE_COMMENT_STRING(&masm_,
                           function_id == Runtime::kTraceUnoptimizedBytecodeEntry
                               ? "Trace bytecode entry"
@@ -588,7 +604,7 @@ void BaselineCompiler::UpdateInterruptBudgetAndJumpToLabel(
 
     if (weight < 0) {
       SaveAccumulatorScope accumulator_scope(&basm_);
-      CallRuntime(Runtime::kBytecodeBudgetInterruptWithStackCheck,
+      CallRuntime(Runtime::kBytecodeBudgetInterruptWithStackCheck_Sparkplug,
                   __ FunctionOperand());
     }
   }
@@ -796,7 +812,7 @@ void BaselineCompiler::VisitLdaLookupGlobalSlotInsideTypeof() {
 }
 
 void BaselineCompiler::VisitStaLookupSlot() {
-  uint32_t flags = Flag(1);
+  uint32_t flags = Flag8(1);
   Runtime::FunctionId function_id;
   if (flags & interpreter::StoreLookupSlotFlags::LanguageModeBit::kMask) {
     function_id = Runtime::kStoreLookupSlot_Strict;
@@ -946,17 +962,9 @@ void BaselineCompiler::VisitDefineKeyedOwnPropertyInLiteral() {
               RegisterOperand(0),               // object
               RegisterOperand(1),               // name
               kInterpreterAccumulatorRegister,  // value
-              FlagAsSmi(2),                     // flags
+              Flag8AsSmi(2),                    // flags
               FeedbackVector(),                 // feedback vector
               IndexAsTagged(3));                // slot
-}
-
-void BaselineCompiler::VisitCollectTypeProfile() {
-  SaveAccumulatorScope accumulator_scope(&basm_);
-  CallRuntime(Runtime::kCollectTypeProfile,
-              IntAsSmi(0),                      // position
-              kInterpreterAccumulatorRegister,  // value
-              FeedbackVector());                // feedback vector
 }
 
 void BaselineCompiler::VisitAdd() {
@@ -1140,6 +1148,13 @@ void BaselineCompiler::VisitGetSuperConstructor() {
   Register prototype = scratch_scope.AcquireScratch();
   __ LoadPrototype(prototype, kInterpreterAccumulatorRegister);
   StoreRegister(0, prototype);
+}
+
+void BaselineCompiler::VisitFindNonDefaultConstructorOrConstruct() {
+  SaveAccumulatorScope accumulator_scope(&basm_);
+  CallBuiltin<Builtin::kFindNonDefaultConstructorOrConstruct>(
+      RegisterOperand(0), RegisterOperand(1));
+  StoreRegisterPair(2, kReturnRegister0, kReturnRegister1);
 }
 
 namespace {
@@ -1398,9 +1413,9 @@ void BaselineCompiler::VisitIntrinsicAsyncGeneratorResolve(
   CallBuiltin<Builtin::kAsyncGeneratorResolve>(args);
 }
 
-void BaselineCompiler::VisitIntrinsicAsyncGeneratorYield(
+void BaselineCompiler::VisitIntrinsicAsyncGeneratorYieldWithAwait(
     interpreter::RegisterList args) {
-  CallBuiltin<Builtin::kAsyncGeneratorYield>(args);
+  CallBuiltin<Builtin::kAsyncGeneratorYieldWithAwait>(args);
 }
 
 void BaselineCompiler::VisitConstruct() {
@@ -1539,7 +1554,7 @@ void BaselineCompiler::VisitTestTypeOf() {
   BaselineAssembler::ScratchRegisterScope scratch_scope(&basm_);
 
   auto literal_flag =
-      static_cast<interpreter::TestTypeOfFlags::LiteralFlag>(Flag(0));
+      static_cast<interpreter::TestTypeOfFlags::LiteralFlag>(Flag8(0));
 
   Label done;
   switch (literal_flag) {
@@ -1738,11 +1753,11 @@ void BaselineCompiler::VisitCreateRegExpLiteral() {
       FeedbackVector(),         // feedback vector
       IndexAsTagged(1),         // slot
       Constant<HeapObject>(0),  // pattern
-      FlagAsSmi(2));            // flags
+      Flag16AsSmi(2));          // flags
 }
 
 void BaselineCompiler::VisitCreateArrayLiteral() {
-  uint32_t flags = Flag(2);
+  uint32_t flags = Flag8(2);
   int32_t flags_raw = static_cast<int32_t>(
       interpreter::CreateArrayLiteralFlags::FlagsBits::decode(flags));
   if (flags &
@@ -1772,7 +1787,7 @@ void BaselineCompiler::VisitCreateEmptyArrayLiteral() {
 }
 
 void BaselineCompiler::VisitCreateObjectLiteral() {
-  uint32_t flags = Flag(2);
+  uint32_t flags = Flag8(2);
   int32_t flags_raw = static_cast<int32_t>(
       interpreter::CreateObjectLiteralFlags::FlagsBits::decode(flags));
   if (flags &
@@ -1796,7 +1811,7 @@ void BaselineCompiler::VisitCreateEmptyObjectLiteral() {
 }
 
 void BaselineCompiler::VisitCloneObject() {
-  uint32_t flags = Flag(1);
+  uint32_t flags = Flag8(1);
   int32_t raw_flags =
       interpreter::CreateObjectLiteralFlags::FlagsBits::decode(flags);
   CallBuiltin<Builtin::kCloneObjectICBaseline>(
@@ -1821,7 +1836,7 @@ void BaselineCompiler::VisitCreateClosure() {
   LoadClosureFeedbackArray(feedback_cell);
   __ LoadFixedArrayElement(feedback_cell, feedback_cell, Index(1));
 
-  uint32_t flags = Flag(2);
+  uint32_t flags = Flag8(2);
   if (interpreter::CreateClosureFlags::FastNewClosureBit::decode(flags)) {
     CallBuiltin<Builtin::kFastNewClosureBaseline>(
         Constant<SharedFunctionInfo>(0), feedback_cell);
@@ -1888,7 +1903,7 @@ void BaselineCompiler::VisitCreateRestParameter() {
 
 void BaselineCompiler::VisitJumpLoop() {
   Label osr_armed, osr_not_armed;
-  using D = BaselineOnStackReplacementDescriptor;
+  using D = OnStackReplacementDescriptor;
   Register feedback_vector = Register::no_reg();
   Register osr_state = Register::no_reg();
   const int loop_depth = iterator().GetImmediateOperand(1);
@@ -2192,8 +2207,8 @@ void BaselineCompiler::VisitSwitchOnGeneratorState() {
   __ JumpIfRoot(generator_object, RootIndex::kUndefinedValue, &fallthrough);
 
   Register continuation = scratch_scope.AcquireScratch();
-  __ LoadTaggedAnyField(continuation, generator_object,
-                        JSGeneratorObject::kContinuationOffset);
+  __ LoadTaggedSignedFieldAndUntag(continuation, generator_object,
+                                   JSGeneratorObject::kContinuationOffset);
   __ StoreTaggedSignedField(
       generator_object, JSGeneratorObject::kContinuationOffset,
       Smi::FromInt(JSGeneratorObject::kGeneratorExecuting));
@@ -2214,7 +2229,6 @@ void BaselineCompiler::VisitSwitchOnGeneratorState() {
     for (interpreter::JumpTableTargetOffset offset : offsets) {
       labels[offset.case_value] = EnsureLabel(offset.target_offset);
     }
-    __ SmiUntag(continuation);
     __ Switch(continuation, 0, labels.get(), offsets.size());
     // We should never fall through this switch.
     // TODO(v8:11429,leszeks): Maybe remove the fallthrough check in the Switch?

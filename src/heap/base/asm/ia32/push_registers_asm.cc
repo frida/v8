@@ -21,11 +21,7 @@ asm(
 #ifdef _WIN32
     ".globl _PushAllRegistersAndIterateStack            \n"
     "_PushAllRegistersAndIterateStack:                  \n"
-#elif defined(__APPLE__)
-    ".globl _PushAllRegistersAndIterateStack            \n"
-    ".private_extern _PushAllRegistersAndIterateStack   \n"
-    "_PushAllRegistersAndIterateStack:                  \n"
-#else   // !__APPLE__
+#else   // !_WIN32
     ".globl PushAllRegistersAndIterateStack             \n"
     ".type PushAllRegistersAndIterateStack, %function   \n"
     ".hidden PushAllRegistersAndIterateStack            \n"

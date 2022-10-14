@@ -49,14 +49,15 @@ class Graph;
 // are expected to be tagged/untagged. Add more verification later.
 class MaglevGraphVerifier {
  public:
-  void PreProcessGraph(MaglevCompilationInfo* compilation_info, Graph* graph) {
+  explicit MaglevGraphVerifier(MaglevCompilationInfo* compilation_info) {
     if (compilation_info->has_graph_labeller()) {
       graph_labeller_ = compilation_info->graph_labeller();
     }
   }
 
-  void PostProcessGraph(MaglevCompilationInfo*, Graph* graph) {}
-  void PreProcessBasicBlock(MaglevCompilationInfo*, BasicBlock* block) {}
+  void PreProcessGraph(Graph* graph) {}
+  void PostProcessGraph(Graph* graph) {}
+  void PreProcessBasicBlock(BasicBlock* block) {}
 
   void CheckValueInputIs(NodeBase* node, int i, ValueRepresentation expected) {
     ValueNode* input = node->input(i).node();
@@ -85,6 +86,7 @@ class MaglevGraphVerifier {
       case Opcode::kCreateObjectLiteral:
       case Opcode::kCreateShallowObjectLiteral:
       case Opcode::kCreateRegExpLiteral:
+      case Opcode::kDebugBreak:
       case Opcode::kDeopt:
       case Opcode::kFloat64Constant:
       case Opcode::kGapMove:
@@ -94,6 +96,7 @@ class MaglevGraphVerifier {
       case Opcode::kJump:
       case Opcode::kJumpFromInlined:
       case Opcode::kJumpLoop:
+      case Opcode::kJumpLoopPrologue:
       case Opcode::kJumpToInlined:
       case Opcode::kRegisterInput:
       case Opcode::kRootConstant:
@@ -120,6 +123,7 @@ class MaglevGraphVerifier {
       case Opcode::kCheckString:
       case Opcode::kCheckSymbol:
       case Opcode::kCheckedInternalizedString:
+      case Opcode::kCheckedObjectToIndex:
       // TODO(victorgomes): Can we check that the input is Boolean?
       case Opcode::kBranchIfToBooleanTrue:
       case Opcode::kBranchIfRootConstant:
@@ -129,9 +133,11 @@ class MaglevGraphVerifier {
       case Opcode::kCreateFunctionContext:
       case Opcode::kCreateClosure:
       case Opcode::kFastCreateClosure:
+      case Opcode::kGeneratorRestoreRegister:
       case Opcode::kGetTemplateObject:
       case Opcode::kLogicalNot:
       case Opcode::kSetPendingMessage:
+      case Opcode::kStringLength:
       case Opcode::kToBooleanLogicalNot:
       case Opcode::kTestUndetectable:
       case Opcode::kTestTypeOf:
@@ -144,11 +150,13 @@ class MaglevGraphVerifier {
         break;
       case Opcode::kSwitch:
       case Opcode::kCheckedSmiTag:
+      case Opcode::kUnsafeSmiTag:
       case Opcode::kChangeInt32ToFloat64:
         DCHECK_EQ(node->input_count(), 1);
         CheckValueInputIs(node, 0, ValueRepresentation::kInt32);
         break;
       case Opcode::kFloat64Box:
+      case Opcode::kCheckedTruncateFloat64ToInt32:
         DCHECK_EQ(node->input_count(), 1);
         CheckValueInputIs(node, 0, ValueRepresentation::kFloat64);
         break;
@@ -173,6 +181,7 @@ class MaglevGraphVerifier {
       case Opcode::kGenericLessThan:
       case Opcode::kGenericLessThanOrEqual:
       case Opcode::kGenericStrictEqual:
+      case Opcode::kGetIterator:
       case Opcode::kTaggedEqual:
       case Opcode::kTaggedNotEqual:
       case Opcode::kStoreGlobal:
@@ -210,6 +219,7 @@ class MaglevGraphVerifier {
         CheckValueInputIs(node, 2, ValueRepresentation::kTagged);
         CheckValueInputIs(node, 3, ValueRepresentation::kTagged);
         break;
+      case Opcode::kAssertInt32:
       case Opcode::kInt32AddWithOverflow:
       case Opcode::kInt32SubtractWithOverflow:
       case Opcode::kInt32MultiplyWithOverflow:
@@ -258,12 +268,21 @@ class MaglevGraphVerifier {
       case Opcode::kCallWithSpread:
       case Opcode::kConstruct:
       case Opcode::kConstructWithSpread:
+      case Opcode::kGeneratorStore:
       case Opcode::kForInNext:
       case Opcode::kPhi:
         // All inputs should be tagged.
         for (int i = 0; i < node->input_count(); i++) {
           CheckValueInputIs(node, i, ValueRepresentation::kTagged);
         }
+        break;
+      case Opcode::kCheckJSArrayBounds:
+      case Opcode::kCheckJSObjectElementsBounds:
+      case Opcode::kLoadTaggedElement:
+      case Opcode::kLoadDoubleElement:
+        DCHECK_EQ(node->input_count(), 2);
+        CheckValueInputIs(node, 0, ValueRepresentation::kTagged);
+        CheckValueInputIs(node, 1, ValueRepresentation::kInt32);
         break;
       case Opcode::kCallBuiltin: {
         CallBuiltin* call_builtin = node->Cast<CallBuiltin>();
@@ -276,9 +295,22 @@ class MaglevGraphVerifier {
                             ValueRepresentation::kTagged);
           count--;
         }
-        // Check rest of the inputs.
-        for (int i = 0; i < count; ++i) {
-          MachineType type = descriptor.GetParameterType(i);
+
+// {all_input_count} includes the feedback slot and vector.
+#ifdef DEBUG
+        int all_input_count = count + (call_builtin->has_feedback() ? 2 : 0);
+        if (descriptor.AllowVarArgs()) {
+          DCHECK_GE(all_input_count, descriptor.GetParameterCount());
+        } else {
+          DCHECK_EQ(all_input_count, descriptor.GetParameterCount());
+        }
+#endif
+        int i = 0;
+        // Check the rest of inputs.
+        for (; i < count; ++i) {
+          MachineType type = i < descriptor.GetParameterCount()
+                                 ? descriptor.GetParameterType(i)
+                                 : MachineType::AnyTagged();
           CheckValueInputIs(call_builtin, i, ToValueRepresentation(type));
         }
         break;

@@ -116,22 +116,6 @@ void BaselineAssembler::JumpIfImmediate(Condition cc, Register left, int right,
                                         Label::Distance distance) {
   JumpIf(cc, left, Operand(right), target, distance);
 }
-void BaselineAssembler::CallBuiltin(Builtin builtin) {
-  ASM_CODE_COMMENT_STRING(masm_,
-                          __ CommentForOffHeapTrampoline("call", builtin));
-  Register temp = t6;
-  __ LoadEntryFromBuiltin(builtin, temp);
-  __ Call(temp);
-}
-
-void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
-  ASM_CODE_COMMENT_STRING(masm_,
-                          __ CommentForOffHeapTrampoline("tail call", builtin));
-  Register temp = t6;
-  __ LoadEntryFromBuiltin(builtin, temp);
-  __ Jump(temp);
-}
-
 void BaselineAssembler::TestAndBranch(Register value, int mask, Condition cc,
                                       Label* target, Label::Distance) {
   ScratchRegisterScope temps(this);
@@ -158,7 +142,7 @@ void BaselineAssembler::JumpIfInstanceType(Condition cc, Register map,
                                            Label* target, Label::Distance) {
   ScratchRegisterScope temps(this);
   Register type = temps.AcquireScratch();
-  if (FLAG_debug_code) {
+  if (v8_flags.debug_code) {
     __ AssertNotSmi(map);
     __ GetObjectType(map, type, type);
     __ Assert(eq, AbortReason::kUnexpectedValue, type, Operand(MAP_TYPE));
@@ -345,6 +329,12 @@ void BaselineAssembler::LoadTaggedPointerField(Register output, Register source,
 void BaselineAssembler::LoadTaggedSignedField(Register output, Register source,
                                               int offset) {
   __ LoadTaggedSignedField(output, FieldMemOperand(source, offset));
+}
+void BaselineAssembler::LoadTaggedSignedFieldAndUntag(Register output,
+                                                      Register source,
+                                                      int offset) {
+  LoadTaggedSignedField(output, source, offset);
+  SmiUntag(output);
 }
 void BaselineAssembler::LoadTaggedAnyField(Register output, Register source,
                                            int offset) {
@@ -577,7 +567,7 @@ void BaselineAssembler::EmitReturn(MacroAssembler* masm) {
     __ LoadContext(kContextRegister);
     __ LoadFunction(kJSFunctionRegister);
     __ masm()->Push(kJSFunctionRegister);
-    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt, 1);
+    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
 
     __ masm()->Pop(params_size, kInterpreterAccumulatorRegister);
     __ masm()->SmiUntag(params_size);
@@ -612,7 +602,7 @@ void BaselineAssembler::EmitReturn(MacroAssembler* masm) {
 
 inline void EnsureAccumulatorPreservedScope::AssertEqualToAccumulator(
     Register reg) {
-  assembler_->masm()->Assert(eq, AbortReason::kUnexpectedValue, reg,
+  assembler_->masm()->Assert(eq, AbortReason::kAccumulatorClobbered, reg,
                              Operand(kInterpreterAccumulatorRegister));
 }
 }  // namespace baseline

@@ -512,6 +512,9 @@ class InspectorExtension : public InspectorIsolateData::SetupGlobalTask {
     inspector->Set(isolate, "callbackForTests",
                    v8::FunctionTemplate::New(
                        isolate, &InspectorExtension::CallbackForTests));
+    inspector->Set(isolate, "runNestedMessageLoop",
+                   v8::FunctionTemplate::New(
+                       isolate, &InspectorExtension::RunNestedMessageLoop));
     global->Set(isolate, "inspector", inspector);
   }
 
@@ -788,13 +791,22 @@ class InspectorExtension : public InspectorIsolateData::SetupGlobalTask {
         callback->Call(context, v8::Undefined(isolate), 0, nullptr);
     args.GetReturnValue().Set(result.ToLocalChecked());
   }
+
+  static void RunNestedMessageLoop(
+      const v8::FunctionCallbackInfo<v8::Value>& args) {
+    v8::Isolate* isolate = args.GetIsolate();
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    InspectorIsolateData* data = InspectorIsolateData::FromContext(context);
+
+    data->task_runner()->RunMessageLoop(true);
+  }
 };
 
 int InspectorTestMain(int argc, char* argv[]) {
   v8::V8::InitializeICUDefaultLocation(argv[0]);
   std::unique_ptr<Platform> platform(platform::NewDefaultPlatform());
   v8::V8::InitializePlatform(platform.get());
-  FLAG_abort_on_contradictory_flags = true;
+  v8_flags.abort_on_contradictory_flags = true;
   v8::V8::SetFlagsFromCommandLine(&argc, argv, true);
   v8::V8::InitializeExternalStartupData(argv[0]);
   v8::V8::Initialize();

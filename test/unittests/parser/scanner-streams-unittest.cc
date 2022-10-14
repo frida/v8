@@ -760,7 +760,8 @@ TEST_F(ScannerStreamsTest, TestOverlongAndInvalidSequences) {
 
 TEST_F(ScannerStreamsTest, RelocatingCharacterStream) {
   // This test relies on the invariant that the scavenger will move objects
-  if (i::FLAG_single_generation) return;
+  if (i::v8_flags.single_generation) return;
+  i::v8_flags.manual_evacuation_candidates_selection = true;
   v8::internal::ManualGCScope manual_gc_scope(i_isolate());
   v8::HandleScope scope(isolate());
 
@@ -783,8 +784,12 @@ TEST_F(ScannerStreamsTest, RelocatingCharacterStream) {
   CHECK_EQ('b', two_byte_string_stream->Advance());
   CHECK_EQ(size_t{2}, two_byte_string_stream->pos());
   i::String raw = *two_byte_string;
-  i_isolate()->heap()->CollectGarbage(i::NEW_SPACE,
-                                      i::GarbageCollectionReason::kUnknown);
+  // 1st GC moves `two_byte_string` to old space and 2nd GC evacuates it within
+  // old space.
+  CollectGarbage(i::OLD_SPACE);
+  i::Page::FromHeapObject(*two_byte_string)
+      ->SetFlag(i::MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  CollectGarbage(i::OLD_SPACE);
   // GC moved the string.
   CHECK_NE(raw, *two_byte_string);
   CHECK_EQ('c', two_byte_string_stream->Advance());
@@ -793,7 +798,8 @@ TEST_F(ScannerStreamsTest, RelocatingCharacterStream) {
 
 TEST_F(ScannerStreamsTest, RelocatingUnbufferedCharacterStream) {
   // This test relies on the invariant that the scavenger will move objects
-  if (i::FLAG_single_generation) return;
+  if (i::v8_flags.single_generation) return;
+  i::v8_flags.manual_evacuation_candidates_selection = true;
   v8::internal::ManualGCScope manual_gc_scope(i_isolate());
   v8::HandleScope scope(isolate());
 
@@ -819,8 +825,12 @@ TEST_F(ScannerStreamsTest, RelocatingUnbufferedCharacterStream) {
   CHECK_EQ(size_t{3}, two_byte_string_stream->pos());
 
   i::String raw = *two_byte_string;
-  i_isolate()->heap()->CollectGarbage(i::NEW_SPACE,
-                                      i::GarbageCollectionReason::kUnknown);
+  // 1st GC moves `two_byte_string` to old space and 2nd GC evacuates it within
+  // old space.
+  CollectGarbage(i::OLD_SPACE);
+  i::Page::FromHeapObject(*two_byte_string)
+      ->SetFlag(i::MemoryChunk::FORCE_EVACUATION_CANDIDATE_FOR_TESTING);
+  CollectGarbage(i::OLD_SPACE);
   // GC moved the string and buffer was updated to the correct location.
   CHECK_NE(raw, *two_byte_string);
 

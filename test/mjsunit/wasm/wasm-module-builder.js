@@ -123,8 +123,11 @@ let kWasmExternRef = -0x11;
 let kWasmAnyRef = -0x12;
 let kWasmEqRef = -0x13;
 let kWasmI31Ref = -0x16;
-let kWasmDataRef = -0x19;
+let kWasmNullExternRef = -0x17;
+let kWasmNullFuncRef = -0x18;
+let kWasmStructRef = -0x19;
 let kWasmArrayRef = -0x1a;
+let kWasmNullRef = -0x1b;
 let kWasmStringRef = -0x1c;
 let kWasmStringViewWtf8 = -0x1d;
 let kWasmStringViewWtf16 = -0x1e;
@@ -138,8 +141,11 @@ let kExternRefCode = kWasmExternRef & kLeb128Mask;
 let kAnyRefCode = kWasmAnyRef & kLeb128Mask;
 let kEqRefCode = kWasmEqRef & kLeb128Mask;
 let kI31RefCode = kWasmI31Ref & kLeb128Mask;
-let kDataRefCode = kWasmDataRef & kLeb128Mask;
+let kNullExternRefCode = kWasmNullExternRef & kLeb128Mask;
+let kNullFuncRefCode = kWasmNullFuncRef & kLeb128Mask;
+let kStructRefCode = kWasmStructRef & kLeb128Mask;
 let kArrayRefCode = kWasmArrayRef & kLeb128Mask;
+let kNullRefCode = kWasmNullRef & kLeb128Mask;
 let kStringRefCode = kWasmStringRef & kLeb128Mask;
 let kStringViewWtf8Code = kWasmStringViewWtf8 & kLeb128Mask;
 let kStringViewWtf16Code = kWasmStringViewWtf16 & kLeb128Mask;
@@ -264,7 +270,7 @@ const kWasmOpcodes = {
   'CallIndirect': 0x11,
   'ReturnCall': 0x12,
   'ReturnCallIndirect': 0x13,
-  'CallRef': 0x14,
+  'CallRef': 0x17,  // TODO(7748): Temporary. Switch back to 0x14.
   'ReturnCallRef': 0x15,
   'Delegate': 0x18,
   'Drop': 0x1a,
@@ -469,6 +475,16 @@ for (let prefix in kPrefixOpcodes) {
   defineWasmOpcode(`k${prefix}Prefix`, kPrefixOpcodes[prefix]);
 }
 
+// Use these for multi-byte instructions (opcode > 0x7F needing two LEB bytes):
+function SimdInstr(opcode) {
+  if (opcode <= 0x7F) return [kSimdPrefix, opcode];
+  return [kSimdPrefix, 0x80 | (opcode & 0x7F), opcode >> 7];
+}
+function GCInstr(opcode) {
+  if (opcode <= 0x7F) return [kGCPrefix, opcode];
+  return [kGCPrefix, 0x80 | (opcode & 0x7F), opcode >> 7];
+}
+
 // GC opcodes
 let kExprStructGet = 0x03;
 let kExprStructGetS = 0x04;
@@ -480,47 +496,60 @@ let kExprArrayGet = 0x13;
 let kExprArrayGetS = 0x14;
 let kExprArrayGetU = 0x15;
 let kExprArraySet = 0x16;
-let kExprArrayLen = 0x17;
+let kExprArrayLenDeprecated = 0x17;
 let kExprArrayCopy = 0x18;
-let kExprArrayNewFixedStatic = 0x1a;
+let kExprArrayLen = 0x19;
+let kExprArrayNewFixed = 0x1a;
 let kExprArrayNew = 0x1b;
 let kExprArrayNewDefault = 0x1c;
-let kExprArrayNewDataStatic = 0x1d;
-let kExprArrayNewElemStatic = 0x1f;
+let kExprArrayNewData = 0x1d;
+let kExprArrayNewElem = 0x1f;
 let kExprI31New = 0x20;
 let kExprI31GetS = 0x21;
 let kExprI31GetU = 0x22;
-let kExprRefTestStatic = 0x44;
-let kExprRefCastStatic = 0x45;
-let kExprBrOnCastStatic = 0x46;
-let kExprBrOnCastStaticFail = 0x47;
-let kExprRefCastNopStatic = 0x48;
+let kExprRefTest = 0x40;
+let kExprRefTestNull = 0x48;
+let kExprRefTestDeprecated = 0x44;
+let kExprRefCast = 0x41;
+let kExprRefCastDeprecated = 0x45;
+let kExprBrOnCast = 0x46;
+let kExprBrOnCastFail = 0x47;
+let kExprRefCastNop = 0x4c;
 let kExprRefIsData = 0x51;
 let kExprRefIsI31 = 0x52;
 let kExprRefIsArray = 0x53;
-let kExprRefAsData = 0x59;
+let kExprRefAsStruct = 0x59;
 let kExprRefAsI31 = 0x5a;
 let kExprRefAsArray = 0x5b;
-let kExprBrOnData = 0x61;
+let kExprBrOnStruct = 0x61;
 let kExprBrOnI31 = 0x62;
 let kExprBrOnArray = 0x66;
-let kExprBrOnNonData = 0x64;
+let kExprBrOnNonStruct = 0x64;
 let kExprBrOnNonI31 = 0x65;
 let kExprBrOnNonArray = 0x67;
-let kExprStringNewWtf8 = 0x80;
+let kExprExternInternalize = 0x70;
+let kExprExternExternalize = 0x71;
+let kExprStringNewUtf8 = 0x80;
 let kExprStringNewWtf16 = 0x81;
 let kExprStringConst = 0x82;
+let kExprStringMeasureUtf8 = 0x83;
 let kExprStringMeasureWtf8 = 0x84;
 let kExprStringMeasureWtf16 = 0x85;
-let kExprStringEncodeWtf8 = 0x86;
+let kExprStringEncodeUtf8 = 0x86;
 let kExprStringEncodeWtf16 = 0x87;
 let kExprStringConcat = 0x88;
 let kExprStringEq = 0x89;
 let kExprStringIsUsvSequence = 0x8a;
+let kExprStringNewLossyUtf8 = 0x8b;
+let kExprStringNewWtf8 = 0x8c;
+let kExprStringEncodeLossyUtf8 = 0x8d;
+let kExprStringEncodeWtf8 = 0x8e;
 let kExprStringAsWtf8 = 0x90;
 let kExprStringViewWtf8Advance = 0x91;
-let kExprStringViewWtf8Encode = 0x92;
+let kExprStringViewWtf8EncodeUtf8 = 0x92;
 let kExprStringViewWtf8Slice = 0x93;
+let kExprStringViewWtf8EncodeLossyUtf8 = 0x94;
+let kExprStringViewWtf8EncodeWtf8 = 0x95;
 let kExprStringAsWtf16 = 0x98;
 let kExprStringViewWtf16Length = 0x99;
 let kExprStringViewWtf16GetCodeunit = 0x9a;
@@ -531,10 +560,14 @@ let kExprStringViewIterNext = 0xa1
 let kExprStringViewIterAdvance = 0xa2;
 let kExprStringViewIterRewind = 0xa3
 let kExprStringViewIterSlice = 0xa4;
-let kExprStringNewWtf8Array = 0xb0;
+let kExprStringNewUtf8Array = 0xb0;
 let kExprStringNewWtf16Array = 0xb1;
-let kExprStringEncodeWtf8Array = 0xb2;
+let kExprStringEncodeUtf8Array = 0xb2;
 let kExprStringEncodeWtf16Array = 0xb3;
+let kExprStringNewLossyUtf8Array = 0xb4;
+let kExprStringNewWtf8Array = 0xb5;
+let kExprStringEncodeLossyUtf8Array = 0xb6;
+let kExprStringEncodeWtf8Array = 0xb7;
 
 // Numeric opcodes.
 let kExprI32SConvertSatF32 = 0x00;
@@ -864,11 +897,6 @@ let kExprI32x4TruncSatF64x2UZero = 0xfd;
 let kExprF64x2ConvertLowI32x4S = 0xfe;
 let kExprF64x2ConvertLowI32x4U = 0xff;
 
-// WTF-8 parsing policies.
-let kWtf8PolicyReject = 0;
-let kWtf8PolicyAccept = 1;
-let kWtf8PolicyReplace = 2;
-
 // Compilation hint constants.
 let kCompilationHintStrategyDefault = 0x00;
 let kCompilationHintStrategyLazy = 0x01;
@@ -1028,9 +1056,6 @@ class Binary {
   }
 
   emit_init_expr(expr) {
-    // TODO(manoskouk): This is redundant, remove it once we are confident we
-    // check everything.
-    checkExpr(expr);
     this.emit_bytes(expr);
     this.emit_u8(kExprEnd);
   }
@@ -2117,7 +2142,26 @@ function wasmF64Const(f) {
 
 function wasmS128Const(f) {
   // Write in little-endian order at offset 0.
-  return [kSimdPrefix, kExprS128Const, ...f];
+  if (Array.isArray(f)) {
+    if (f.length != 16) throw new Error('S128Const needs 16 bytes');
+    return [kSimdPrefix, kExprS128Const, ...f];
+  }
+  let result = [kSimdPrefix, kExprS128Const];
+  if (arguments.length === 2) {
+    for (let j = 0; j < 2; j++) {
+      data_view.setFloat64(0, arguments[j], true);
+      for (let i = 0; i < 8; i++) result.push(byte_view[i]);
+    }
+  } else if (arguments.length === 4) {
+    for (let j = 0; j < 4; j++) {
+      data_view.setFloat32(0, arguments[j], true);
+      for (let i = 0; i < 4; i++) result.push(byte_view[i]);
+    }
+  } else {
+    throw new Error('S128Const needs an array of bytes, or two f64 values, ' +
+                    'or four f32 values');
+  }
+  return result;
 }
 
 function getOpcodeName(opcode) {

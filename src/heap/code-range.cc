@@ -27,8 +27,7 @@ base::LazyMutex process_wide_code_range_creation_mutex_ =
 base::LazyInstance<std::weak_ptr<CodeRange>>::type process_wide_code_range_ =
     LAZY_INSTANCE_INITIALIZER;
 
-base::LazyInstance<CodeRangeAddressHint>::type process_wide_address_hinter_ =
-    LAZY_INSTANCE_INITIALIZER;
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(CodeRangeAddressHint, GetCodeRangeAddressHint)
 
 void FunctionInStaticBinaryForAddressHint() {}
 }  // anonymous namespace
@@ -141,22 +140,21 @@ bool CodeRange::InitReservation(v8::PageAllocator* page_allocator,
   params.base_alignment = base_alignment;
   params.base_bias_size = RoundUp(reserved_area, allocate_page_size);
   params.page_size = MemoryChunk::kPageSize;
-  params.requested_start_hint = process_wide_address_hinter_.Pointer()
-      ->GetAddressHint(requested, allocate_page_size);
+  params.requested_start_hint =
+      GetCodeRangeAddressHint()->GetAddressHint(requested, allocate_page_size);
   params.jit =
-      FLAG_jitless ? JitPermission::kNoJit : JitPermission::kMapAsJittable;
+      v8_flags.jitless ? JitPermission::kNoJit : JitPermission::kMapAsJittable;
 
   if (!VirtualMemoryCage::InitReservation(params)) return false;
 
-  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
-    // Ensure that the code range does not cross the 4Gb boundary and thus
-    // default compression scheme of truncating the Code pointers to 32-bits
-    // still works.
-    Address base = page_allocator_->begin();
-    Address last = base + page_allocator_->size() - 1;
-    CHECK_EQ(GetPtrComprCageBaseAddress(base),
-             GetPtrComprCageBaseAddress(last));
-  }
+#ifdef V8_EXTERNAL_CODE_SPACE
+  // Ensure that ExternalCodeCompressionScheme is applicable to all objects
+  // stored in the code range.
+  Address base = page_allocator_->begin();
+  Address last = base + page_allocator_->size() - 1;
+  CHECK_EQ(ExternalCodeCompressionScheme::GetPtrComprCageBaseAddress(base),
+           ExternalCodeCompressionScheme::GetPtrComprCageBaseAddress(last));
+#endif  // V8_EXTERNAL_CODE_SPACE
 
   // On some platforms, specifically Win64, we need to reserve some pages at
   // the beginning of an executable space. See
@@ -182,7 +180,7 @@ bool CodeRange::InitReservation(v8::PageAllocator* page_allocator,
 
 void CodeRange::Free() {
   if (IsReserved()) {
-    process_wide_address_hinter_.Pointer()->NotifyFreedCodeRange(
+    GetCodeRangeAddressHint()->NotifyFreedCodeRange(
         reservation()->region().begin(), reservation()->region().size());
     VirtualMemoryCage::Free();
   }

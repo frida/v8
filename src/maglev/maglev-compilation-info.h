@@ -34,6 +34,8 @@ class Graph;
 class MaglevCompilationUnit;
 class MaglevGraphLabeller;
 
+// A list of v8_flag values copied into the MaglevCompilationInfo for
+// guaranteed {immutable,threadsafe} access.
 #define MAGLEV_COMPILATION_FLAG_LIST(V) \
   V(code_comments)                      \
   V(maglev)                             \
@@ -51,7 +53,6 @@ class MaglevCompilationInfo final {
   }
   ~MaglevCompilationInfo();
 
-  Isolate* isolate() const { return isolate_; }
   Zone* zone() { return &zone_; }
   compiler::JSHeapBroker* broker() const { return broker_.get(); }
   MaglevCompilationUnit* toplevel_compilation_unit() const {
@@ -69,15 +70,15 @@ class MaglevCompilationInfo final {
   Graph* graph() const { return graph_; }
 
   void set_translation_array_builder(
-      TranslationArrayBuilder* translation_array_builder,
-      IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals) {
-    translation_array_builder_ = translation_array_builder;
-    deopt_literals_ = deopt_literals;
-  }
+      std::unique_ptr<TranslationArrayBuilder> translation_array_builder,
+      std::unique_ptr<IdentityMap<int, base::DefaultAllocationPolicy>>
+          deopt_literals);
   TranslationArrayBuilder& translation_array_builder() const {
+    DCHECK(translation_array_builder_);
     return *translation_array_builder_;
   }
   IdentityMap<int, base::DefaultAllocationPolicy>& deopt_literals() const {
+    DCHECK(deopt_literals_);
     return *deopt_literals_;
   }
 
@@ -87,6 +88,10 @@ class MaglevCompilationInfo final {
   bool Name() const { return Name##_; }
   MAGLEV_COMPILATION_FLAG_LIST(V)
 #undef V
+
+  bool specialize_to_function_context() const {
+    return specialize_to_function_context_;
+  }
 
   // Must be called from within a MaglevCompilationHandleScope. Transfers owned
   // handles (e.g. shared_, function_) to the new scope.
@@ -105,7 +110,6 @@ class MaglevCompilationInfo final {
   MaglevCompilationInfo(Isolate* isolate, Handle<JSFunction> function);
 
   Zone zone_;
-  Isolate* const isolate_;
   const std::unique_ptr<compiler::JSHeapBroker> broker_;
   // Must be initialized late since it requires an initialized heap broker.
   MaglevCompilationUnit* toplevel_compilation_unit_ = nullptr;
@@ -115,12 +119,19 @@ class MaglevCompilationInfo final {
   // Produced off-thread during ExecuteJobImpl.
   Graph* graph_ = nullptr;
 
-  TranslationArrayBuilder* translation_array_builder_ = nullptr;
-  IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals_ = nullptr;
+  std::unique_ptr<TranslationArrayBuilder> translation_array_builder_;
+  std::unique_ptr<IdentityMap<int, base::DefaultAllocationPolicy>>
+      deopt_literals_;
 
 #define V(Name) const bool Name##_;
   MAGLEV_COMPILATION_FLAG_LIST(V)
 #undef V
+
+  // If enabled, the generated code can rely on the function context to be a
+  // constant (known at compile-time). This opens new optimization
+  // opportunities, but prevents code sharing between different function
+  // contexts.
+  const bool specialize_to_function_context_;
 
   // 1) PersistentHandles created via PersistentHandlesScope inside of
   //    CompilationHandleScope.

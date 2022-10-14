@@ -18,27 +18,23 @@ namespace v8 {
 namespace internal {
 
 namespace {
-base::LazyInstance<base::ThreadLocalPointer<MarkingBarrier>>::type
-    current_marking_barrier = LAZY_INSTANCE_INITIALIZER;
+thread_local MarkingBarrier* current_marking_barrier = nullptr;
 }  // namespace
 
 MarkingBarrier* WriteBarrier::CurrentMarkingBarrier(Heap* heap) {
-  auto current_ptr = current_marking_barrier.Pointer()->Get();
-  return current_ptr
-             ? current_ptr
+  return current_marking_barrier
+             ? current_marking_barrier
              : heap->main_thread_local_heap()->marking_barrier();
 }
 
 void WriteBarrier::SetForThread(MarkingBarrier* marking_barrier) {
-  auto current = current_marking_barrier.Pointer();
-  DCHECK_NULL(current->Get());
-  current->Set(marking_barrier);
+  DCHECK_NULL(current_marking_barrier);
+  current_marking_barrier = marking_barrier;
 }
 
 void WriteBarrier::ClearForThread(MarkingBarrier* marking_barrier) {
-  auto current = current_marking_barrier.Pointer();
-  DCHECK_EQ(current->Get(), marking_barrier);
-  current->Set(nullptr);
+  DCHECK_EQ(current_marking_barrier, marking_barrier);
+  current_marking_barrier = nullptr;
 }
 
 void WriteBarrier::MarkingSlow(Heap* heap, HeapObject host, HeapObjectSlot slot,
@@ -101,6 +97,17 @@ int WriteBarrier::MarkingFromCode(Address raw_host, Address raw_slot) {
   }
 #endif
   WriteBarrier::Marking(host, slot, MaybeObject(value));
+  // Called by WriteBarrierCodeStubAssembler, which doesn't accept void type
+  return 0;
+}
+
+int WriteBarrier::SharedFromCode(Address raw_host, Address raw_slot) {
+  HeapObject host = HeapObject::cast(Object(raw_host));
+
+  if (!host.InSharedWritableHeap()) {
+    Heap::SharedHeapBarrierSlow(host, raw_slot);
+  }
+
   // Called by WriteBarrierCodeStubAssembler, which doesn't accept void type
   return 0;
 }

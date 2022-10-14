@@ -137,7 +137,7 @@ TEST_F(CodePagesTest, CodePagesCorrectContents) {
 }
 
 TEST_F(CodePagesTest, OptimizedCodeWithCodeRange) {
-  FLAG_allow_natives_syntax = true;
+  v8_flags.allow_natives_syntax = true;
   if (!i_isolate()->RequiresCodeRange()) return;
 
   HandleScope scope(i_isolate());
@@ -149,12 +149,11 @@ TEST_F(CodePagesTest, OptimizedCodeWithCodeRange) {
   Handle<JSFunction> foo =
       Handle<JSFunction>::cast(v8::Utils::OpenHandle(*local_foo));
 
-  AbstractCode abstract_code = foo->abstract_code(i_isolate());
-  PtrComprCageBase cage_base(i_isolate());
-  // We don't produce optimized code when run with --no-turbofan.
-  if (!abstract_code.IsCode(cage_base) && !FLAG_turbofan) return;
-  EXPECT_TRUE(abstract_code.IsCode(cage_base));
-  Code foo_code = abstract_code.GetCode();
+  CodeT codet = foo->code();
+  // We don't produce optimized code when run with --no-turbofan and
+  // --no-maglev.
+  if (!codet.is_optimized_code()) return;
+  Code foo_code = FromCodeT(codet);
 
   EXPECT_TRUE(i_isolate()->heap()->InSpace(foo_code, CODE_SPACE));
 
@@ -167,7 +166,7 @@ TEST_F(CodePagesTest, OptimizedCodeWithCodePages) {
   // We don't want incremental marking to start which could cause the code to
   // not be collected on the CollectGarbage() call.
   ManualGCScope manual_gc_scope(i_isolate());
-  FLAG_allow_natives_syntax = true;
+  v8_flags.allow_natives_syntax = true;
 
   const void* created_page = nullptr;
   int num_foos_created = 0;
@@ -197,15 +196,14 @@ TEST_F(CodePagesTest, OptimizedCodeWithCodePages) {
       // --always-sparkplug (if this check fails, we'll have to re-think this
       // test).
       if (foo->shared().HasBaselineCode()) {
-        EXPECT_TRUE(FLAG_always_sparkplug);
+        EXPECT_TRUE(v8_flags.always_sparkplug);
         return;
       }
-      AbstractCode abstract_code = foo->abstract_code(i_isolate());
-      PtrComprCageBase cage_base(i_isolate());
-      // We don't produce optimized code when run with --no-turbofan.
-      if (!abstract_code.IsCode(cage_base) && !FLAG_turbofan) return;
-      EXPECT_TRUE(abstract_code.IsCode(cage_base));
-      Code foo_code = abstract_code.GetCode();
+      CodeT codet = foo->code();
+      // We don't produce optimized code when run with --no-turbofan and
+      // --no-maglev.
+      if (!codet.is_optimized_code()) return;
+      Code foo_code = FromCodeT(codet);
 
       EXPECT_TRUE(i_isolate()->heap()->InSpace(foo_code, CODE_SPACE));
 

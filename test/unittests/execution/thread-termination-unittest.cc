@@ -33,6 +33,7 @@
 #include "src/init/v8.h"
 #include "src/objects/objects-inl.h"
 #include "test/unittests/test-utils.h"
+#include "testing/gmock-support.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace v8 {
@@ -103,9 +104,14 @@ void Loop(const FunctionCallbackInfo<Value>& args) {
   CHECK(args.GetIsolate()->IsExecutionTerminating());
 }
 
+void TerminateCurrentThread(const FunctionCallbackInfo<Value>& args) {
+  CHECK(!args.GetIsolate()->IsExecutionTerminating());
+  args.GetIsolate()->TerminateExecution();
+}
+
 class ThreadTerminationTest : public TestWithIsolate {
  public:
-  void TestTerminatingSlowOperation(const char* source) {
+  void TestTerminatingFromOtherThread(const char* source) {
     semaphore = new base::Semaphore(0);
     TerminatorThread thread(i_isolate());
     CHECK(thread.Start());
@@ -123,6 +129,17 @@ class ThreadTerminationTest : public TestWithIsolate {
     semaphore = nullptr;
   }
 
+  void TestTerminatingFromCurrentThread(const char* source) {
+    HandleScope scope(isolate());
+    Local<ObjectTemplate> global =
+        CreateGlobalTemplate(isolate(), TerminateCurrentThread, DoLoop);
+    Local<Context> context = Context::New(isolate(), nullptr, global);
+    Context::Scope context_scope(context);
+    CHECK(!isolate()->IsExecutionTerminating());
+    MaybeLocal<Value> result = TryRunJS(source);
+    CHECK(result.IsEmpty());
+  }
+
   Local<ObjectTemplate> CreateGlobalTemplate(Isolate* isolate,
                                              FunctionCallback terminate,
                                              FunctionCallback doloop) {
@@ -135,11 +152,6 @@ class ThreadTerminationTest : public TestWithIsolate {
     return global;
   }
 };
-
-void TerminateCurrentThread(const FunctionCallbackInfo<Value>& args) {
-  CHECK(!args.GetIsolate()->IsExecutionTerminating());
-  args.GetIsolate()->TerminateExecution();
-}
 
 void DoLoopNoCall(const FunctionCallbackInfo<Value>& args) {
   TryCatch try_catch(args.GetIsolate());
@@ -200,12 +212,13 @@ TEST_F(ThreadTerminationTest, TerminateOnlyV8ThreadFromThreadItselfNoLoop) {
 // from the side by another thread.
 TEST_F(ThreadTerminationTest, TerminateOnlyV8ThreadFromOtherThread) {
   // Run a loop that will be infinite if thread termination does not work.
-  TestTerminatingSlowOperation("try { loop(); fail(); } catch(e) { fail(); }");
+  TestTerminatingFromOtherThread(
+      "try { loop(); fail(); } catch(e) { fail(); }");
 }
 
 // Test that execution can be terminated from within JSON.stringify.
 TEST_F(ThreadTerminationTest, TerminateJsonStringify) {
-  TestTerminatingSlowOperation(
+  TestTerminatingFromCurrentThread(
       "var x = [];"
       "x[2**31]=1;"
       "terminate();"
@@ -214,7 +227,7 @@ TEST_F(ThreadTerminationTest, TerminateJsonStringify) {
 }
 
 TEST_F(ThreadTerminationTest, TerminateBigIntMultiplication) {
-  TestTerminatingSlowOperation(
+  TestTerminatingFromCurrentThread(
       "terminate();"
       "var a = 5n ** 555555n;"
       "var b = 3n ** 3333333n;"
@@ -222,8 +235,24 @@ TEST_F(ThreadTerminationTest, TerminateBigIntMultiplication) {
       "fail();");
 }
 
+TEST_F(ThreadTerminationTest, TerminateOptimizedBigIntMultiplication) {
+  i::v8_flags.allow_natives_syntax = true;
+  TestTerminatingFromCurrentThread(
+      "function foo(a, b) { return a * b; }"
+      "%PrepareFunctionForOptimization(foo);"
+      "foo(1n, 2n);"
+      "foo(1n, 2n);"
+      "%OptimizeFunctionOnNextCall(foo);"
+      "foo(1n, 2n);"
+      "var a = 5n ** 555555n;"
+      "var b = 3n ** 3333333n;"
+      "terminate();"
+      "foo(a, b);"
+      "fail();");
+}
+
 TEST_F(ThreadTerminationTest, TerminateBigIntDivision) {
-  TestTerminatingSlowOperation(
+  TestTerminatingFromCurrentThread(
       "var a = 2n ** 2222222n;"
       "var b = 3n ** 333333n;"
       "terminate();"
@@ -231,8 +260,24 @@ TEST_F(ThreadTerminationTest, TerminateBigIntDivision) {
       "fail();");
 }
 
+TEST_F(ThreadTerminationTest, TerminateOptimizedBigIntDivision) {
+  i::v8_flags.allow_natives_syntax = true;
+  TestTerminatingFromCurrentThread(
+      "function foo(a, b) { return a / b; }"
+      "%PrepareFunctionForOptimization(foo);"
+      "foo(3n, 2n);"
+      "foo(3n, 2n);"
+      "%OptimizeFunctionOnNextCall(foo);"
+      "foo(3n, 2n);"
+      "var a = 2n ** 2222222n;"
+      "var b = 3n ** 333333n;"
+      "terminate();"
+      "foo(a, b);"
+      "fail();");
+}
+
 TEST_F(ThreadTerminationTest, TerminateBigIntToString) {
-  TestTerminatingSlowOperation(
+  TestTerminatingFromCurrentThread(
       "var a = 2n ** 2222222n;"
       "terminate();"
       "a.toString();"
@@ -240,7 +285,7 @@ TEST_F(ThreadTerminationTest, TerminateBigIntToString) {
 }
 
 TEST_F(ThreadTerminationTest, TerminateBigIntFromString) {
-  TestTerminatingSlowOperation(
+  TestTerminatingFromCurrentThread(
       "var a = '12344567890'.repeat(100000);\n"
       "terminate();\n"
       "BigInt(a);\n"
@@ -778,7 +823,7 @@ TEST_F(ThreadTerminationTest, TerminationInInnerTryCall) {
 }
 
 TEST_F(ThreadTerminationTest, TerminateAndTryCall) {
-  i::FLAG_allow_natives_syntax = true;
+  i::v8_flags.allow_natives_syntax = true;
   HandleScope scope(isolate());
   Local<ObjectTemplate> global = CreateGlobalTemplate(
       isolate(), TerminateCurrentThread, DoLoopCancelTerminate);
@@ -819,7 +864,7 @@ class ConsoleImpl : public debug::ConsoleDelegate {
 };
 
 TEST_F(ThreadTerminationTest, TerminateConsole) {
-  i::FLAG_allow_natives_syntax = true;
+  i::v8_flags.allow_natives_syntax = true;
   ConsoleImpl console;
   debug::SetConsoleDelegate(isolate(), &console);
   HandleScope scope(isolate());
@@ -845,6 +890,75 @@ TEST_F(ThreadTerminationTest, TerminateConsole) {
   CHECK(isolate()->IsExecutionTerminating());
 }
 
+TEST_F(ThreadTerminationTest, TerminationClearArrayJoinStack) {
+  internal::v8_flags.allow_natives_syntax = true;
+  HandleScope scope(isolate());
+  Local<ObjectTemplate> global_template =
+      CreateGlobalTemplate(isolate(), TerminateCurrentThread, DoLoopNoCall);
+  {
+    Local<Context> context = Context::New(isolate(), nullptr, global_template);
+    Context::Scope context_scope(context);
+    {
+      TryCatch try_catch(isolate());
+      TryRunJS(
+          "var error = false;"
+          "var a = [{toString(){if(error)loop()}}];"
+          "function Join(){ return a.join();}; "
+          "%PrepareFunctionForOptimization(Join);"
+          "Join();"
+          "%OptimizeFunctionOnNextCall(Join);"
+          "error = true;"
+          "Join();");
+      CHECK(try_catch.HasTerminated());
+      CHECK(isolate()->IsExecutionTerminating());
+    }
+    EXPECT_THAT(RunJS("a[0] = 1; Join();"), testing::IsString("1"));
+  }
+  {
+    Local<Context> context = Context::New(isolate(), nullptr, global_template);
+    Context::Scope context_scope(context);
+    {
+      TryCatch try_catch(isolate());
+      TryRunJS(
+          "var a = [{toString(){loop()}}];"
+          "function Join(){ return a.join();}; "
+          "Join();");
+      CHECK(try_catch.HasTerminated());
+      CHECK(isolate()->IsExecutionTerminating());
+    }
+    EXPECT_THAT(RunJS("a[0] = 1; Join();"), testing::IsString("1"));
+  }
+  {
+    ConsoleImpl console;
+    debug::SetConsoleDelegate(isolate(), &console);
+    HandleScope scope(isolate());
+    Local<Context> context = Context::New(isolate(), nullptr, global_template);
+    Context::Scope context_scope(context);
+    {
+      // setup console global.
+      HandleScope scope(isolate());
+      Local<String> name = String::NewFromUtf8Literal(
+          isolate(), "console", NewStringType::kInternalized);
+      Local<Value> console = context->GetExtrasBindingObject()
+                                 ->Get(context, name)
+                                 .ToLocalChecked();
+      context->Global()->Set(context, name, console).FromJust();
+    }
+    CHECK(!isolate()->IsExecutionTerminating());
+    {
+      TryCatch try_catch(isolate());
+      CHECK(!isolate()->IsExecutionTerminating());
+      CHECK(TryRunJS("var a = [{toString(){terminate();console.log();fail()}}];"
+                     "function Join() {return a.join();}"
+                     "Join();")
+                .IsEmpty());
+      CHECK(try_catch.HasCaught());
+      CHECK(isolate()->IsExecutionTerminating());
+    }
+    EXPECT_THAT(RunJS("a[0] = 1; Join();"), testing::IsString("1"));
+  }
+}
+
 class TerminatorSleeperThread : public base::Thread {
  public:
   explicit TerminatorSleeperThread(Isolate* isolate, int sleep_ms)
@@ -863,12 +977,12 @@ class TerminatorSleeperThread : public base::Thread {
 };
 
 TEST_F(ThreadTerminationTest, TerminateRegExp) {
-  i::FLAG_allow_natives_syntax = true;
+  i::v8_flags.allow_natives_syntax = true;
   // We want to be stuck regexp execution, so no fallback to linear-time
   // engine.
   // TODO(mbid,v8:10765): Find a way to test interrupt support of the
   // experimental engine.
-  i::FLAG_enable_experimental_regexp_engine_on_excessive_backtracks = false;
+  i::v8_flags.enable_experimental_regexp_engine_on_excessive_backtracks = false;
 
   HandleScope scope(isolate());
   Local<ObjectTemplate> global = CreateGlobalTemplate(

@@ -23,6 +23,10 @@ template <typename T>
 class Handle;
 class Heap;
 class Isolate;
+class Factory;
+template <typename Impl>
+class FactoryBase;
+class LocalFactory;
 class Map;
 class PropertyCell;
 class ReadOnlyHeap;
@@ -150,6 +154,11 @@ class Symbol;
     UncachedExternalOneByteStringMap)                                          \
   V(Map, shared_one_byte_string_map, SharedOneByteStringMap)                   \
   V(Map, shared_string_map, SharedStringMap)                                   \
+  V(Map, shared_external_one_byte_string_map, SharedExternalOneByteStringMap)  \
+  V(Map, shared_external_string_map, SharedExternalStringMap)                  \
+  V(Map, shared_uncached_external_one_byte_string_map,                         \
+    SharedUncachedExternalOneByteStringMap)                                    \
+  V(Map, shared_uncached_external_string_map, SharedUncachedExternalStringMap) \
   V(Map, shared_thin_one_byte_string_map, SharedThinOneByteStringMap)          \
   V(Map, shared_thin_string_map, SharedThinStringMap)                          \
   /* Oddball maps */                                                           \
@@ -195,6 +204,8 @@ class Symbol;
   V(HeapNumber, infinity_value, InfinityValue)                                 \
   V(HeapNumber, minus_zero_value, MinusZeroValue)                              \
   V(HeapNumber, minus_infinity_value, MinusInfinityValue)                      \
+  /* Table of strings of one-byte single characters */                         \
+  V(FixedArray, single_character_string_table, SingleCharacterStringTable)     \
   /* Marker for self-references during code-generation */                      \
   V(HeapObject, self_reference_marker, SelfReferenceMarker)                    \
   /* Marker for basic-block usage counters array during code-generation */     \
@@ -246,8 +257,6 @@ class Symbol;
   /* Caches */                                                                 \
   V(FixedArray, string_split_cache, StringSplitCache)                          \
   V(FixedArray, regexp_multiple_cache, RegExpMultipleCache)                    \
-  /* Table of strings of one-byte single characters */                         \
-  V(FixedArray, single_character_string_table, SingleCharacterStringTable)     \
   /* Indirection lists for isolate-independent builtins */                     \
   V(FixedArray, builtins_constants_table, BuiltinsConstantsTable)              \
   /* Internal SharedFunctionInfos */                                           \
@@ -259,8 +268,8 @@ class Symbol;
     AsyncGeneratorAwaitRejectSharedFun)                                        \
   V(SharedFunctionInfo, async_generator_await_resolve_shared_fun,              \
     AsyncGeneratorAwaitResolveSharedFun)                                       \
-  V(SharedFunctionInfo, async_generator_yield_resolve_shared_fun,              \
-    AsyncGeneratorYieldResolveSharedFun)                                       \
+  V(SharedFunctionInfo, async_generator_yield_with_await_resolve_shared_fun,   \
+    AsyncGeneratorYieldWithAwaitResolveSharedFun)                              \
   V(SharedFunctionInfo, async_generator_return_resolve_shared_fun,             \
     AsyncGeneratorReturnResolveSharedFun)                                      \
   V(SharedFunctionInfo, async_generator_return_closed_reject_shared_fun,       \
@@ -325,8 +334,11 @@ class Symbol;
     PendingOptimizeForTestBytecode)                                         \
   V(ArrayList, basic_block_profiling_data, BasicBlockProfilingData)         \
   V(WeakArrayList, shared_wasm_memories, SharedWasmMemories)                \
+  /* EphemeronHashTable for debug scopes (local debug evaluate) */          \
+  V(HeapObject, locals_block_list_cache, DebugLocalsBlockListCache)         \
   IF_WASM(V, HeapObject, active_continuation, ActiveContinuation)           \
   IF_WASM(V, HeapObject, active_suspender, ActiveSuspender)                 \
+  IF_WASM(V, WeakArrayList, js_to_wasm_wrappers, JSToWasmWrappers)          \
   IF_WASM(V, WeakArrayList, wasm_canonical_rtts, WasmCanonicalRtts)
 
 // Entries in this list are limited to Smis and are not visited during GC.
@@ -566,6 +578,8 @@ class RootsTable {
   friend class Isolate;
   friend class Heap;
   friend class Factory;
+  friend class FactoryBase<Factory>;
+  friend class FactoryBase<LocalFactory>;
   friend class PointerCompressedReadOnlyArtifacts;
   friend class ReadOnlyHeap;
   friend class ReadOnlyRoots;

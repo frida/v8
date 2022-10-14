@@ -2,10 +2,12 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-from functools import reduce
-
 from collections import OrderedDict, namedtuple
+from functools import reduce
+from os.path import dirname as up
+
 import json
+import logging
 import multiprocessing
 import optparse
 import os
@@ -13,17 +15,15 @@ import shlex
 import sys
 import traceback
 
-from os.path import dirname as up
-
-from testrunner.local import command
+from testrunner.build_config import BuildConfig
 from testrunner.local import testsuite
 from testrunner.local import utils
+from testrunner.local.context import os_context
 from testrunner.test_config import TestConfig
 from testrunner.testproc import util
 from testrunner.testproc.indicators import PROGRESS_INDICATORS
 from testrunner.testproc.sigproc import SignalProc
 from testrunner.utils.augmented_options import AugmentedOptions
-from testrunner.build_config import BuildConfig
 
 
 DEFAULT_OUT_GN = 'out.gn'
@@ -117,6 +117,14 @@ TRY_RELEASE_MODE = ModeConfig(
     status_mode="debug",
 )
 
+# Set up logging. No need to log a date in timestamps as we can get that from
+# test run start times.
+logging.basicConfig(
+    format='%(asctime)s %(message)s',
+    datefmt='%H:%M:%S',
+    level=logging.WARNING,
+)
+
 class TestRunnerError(Exception):
   pass
 
@@ -143,6 +151,8 @@ class BaseTestRunner(object):
     self.options, args = self._parse_args(parser, sys_args)
     self.infra_staging = self.options.infra_staging
     if self.options.swarming:
+      logging.getLogger().setLevel(logging.INFO)
+
       # Swarming doesn't print how isolated commands are called. Lets make
       # this less cryptic by printing it ourselves.
       print(' '.join(sys.argv))
@@ -166,7 +176,7 @@ class BaseTestRunner(object):
 
       args = self._parse_test_args(args)
 
-      with command.os_context(self.target_os, self.options) as ctx:
+      with os_context(self.target_os, self.options) as ctx:
         names = self._args_to_suite_names(args)
         tests = self._load_testsuite_generators(ctx, names)
         self._setup_env()
@@ -537,6 +547,8 @@ class BaseTestRunner(object):
             sys.byteorder,
         "cfi_vptr":
             self.build_config.cfi_vptr,
+        "component_build":
+            self.build_config.component_build,
         "control_flow_integrity":
             self.build_config.control_flow_integrity,
         "concurrent_marking":
@@ -563,6 +575,8 @@ class BaseTestRunner(object):
             self.build_config.is_clang,
         "is_full_debug":
             self.build_config.is_full_debug,
+        "interrupt_fuzzer":
+            False,
         "mips_arch_variant":
             self.build_config.mips_arch_variant,
         "mode":

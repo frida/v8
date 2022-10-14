@@ -48,8 +48,6 @@ class V8_EXPORT ScriptOrModule {
    * The options that were passed by the embedder as HostDefinedOptions to
    * the ScriptOrigin.
    */
-  V8_DEPRECATED("Use HostDefinedOptions")
-  Local<PrimitiveArray> GetHostDefinedOptions();
   Local<Data> HostDefinedOptions();
 };
 
@@ -94,7 +92,15 @@ class V8_EXPORT UnboundScript {
  * A compiled JavaScript module, not yet tied to a Context.
  */
 class V8_EXPORT UnboundModuleScript : public Data {
-  // Only used as a container for code caching.
+ public:
+  /**
+   * Data read from magic sourceURL comments.
+   */
+  Local<Value> GetSourceURL();
+  /**
+   * Data read from magic sourceMappingURL comments.
+   */
+  Local<Value> GetSourceMappingURL();
 };
 
 /**
@@ -706,6 +712,7 @@ class V8_EXPORT ScriptCompiler {
       CompileOptions options = kNoCompileOptions,
       NoCacheReason no_cache_reason = kNoCacheNoReason,
       Local<ScriptOrModule>* script_or_module_out = nullptr);
+
   static V8_WARN_UNUSED_RESULT MaybeLocal<Function> CompileFunction(
       Local<Context> context, Source* source, size_t arguments_count = 0,
       Local<String> arguments[] = nullptr, size_t context_extension_count = 0,

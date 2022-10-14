@@ -14,11 +14,6 @@
 #include "v8-object.h"        // NOLINT(build/include_directory)
 #include "v8config.h"         // NOLINT(build/include_directory)
 
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 namespace v8 {
 
 class ArrayBuffer;
@@ -136,20 +131,6 @@ class V8_EXPORT WasmStreaming final {
  public:
   class WasmStreamingImpl;
 
-  /**
-   * Client to receive streaming event notifications.
-   */
-  class V8_DEPRECATED("Use SetMoreFunctionsCanBeSerializedCallback") Client {
-   public:
-    virtual ~Client() = default;
-
-    /**
-     * Passes the fully compiled module to the client. This can be used to
-     * implement code caching.
-     */
-    virtual void OnModuleCompiled(CompiledWasmModule) = 0;
-  };
-
   explicit WasmStreaming(std::unique_ptr<WasmStreamingImpl> impl);
 
   ~WasmStreaming();
@@ -190,13 +171,6 @@ class V8_EXPORT WasmStreaming final {
   bool SetCompiledModuleBytes(const uint8_t* bytes, size_t size);
 
   /**
-   * Sets the client object that will receive streaming event notifications.
-   * This must be called before {OnBytesReceived}, {Finish}, or {Abort}.
-   */
-  V8_DEPRECATED("Use SetMoreFunctionsCanBeSerializedCallback")
-  void SetClient(std::shared_ptr<Client> client);
-
-  /**
    * Sets a callback which is called whenever a significant number of new
    * functions are ready for serialization.
    */
@@ -222,9 +196,5 @@ class V8_EXPORT WasmStreaming final {
 };
 
 }  // namespace v8
-
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // INCLUDE_V8_WASM_H_

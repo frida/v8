@@ -64,6 +64,7 @@ void DefineSignature(WasmModule* module,
 
 TEST_F(WasmSubtypingTest, Subtyping) {
   FLAG_SCOPE(experimental_wasm_gc);
+  FLAG_VALUE_SCOPE(wasm_gc_structref_as_dataref, false);
   v8::internal::AccountingAllocator allocator;
   WasmModule module1_(std::make_unique<Zone>(&allocator, ZONE_NAME));
   WasmModule module2_(std::make_unique<Zone>(&allocator, ZONE_NAME));
@@ -129,14 +130,15 @@ TEST_F(WasmSubtypingTest, Subtyping) {
   constexpr ValueType numeric_types[] = {kWasmI32, kWasmI64, kWasmF32, kWasmF64,
                                          kWasmS128};
   constexpr ValueType ref_types[] = {
-      kWasmFuncRef,   kWasmEqRef,          // --
-      kWasmDataRef,   kWasmArrayRef,       // --
-      kWasmI31Ref,    kWasmAnyRef,         // --
-      kWasmExternRef, kWasmNullExternRef,  // --
-      kWasmNullRef,   kWasmNullFuncRef,    // --
-      refNull(0),     ref(0),              // struct
-      refNull(2),     ref(2),              // array
-      refNull(11),    ref(11)              // signature
+      kWasmFuncRef,   kWasmEqRef,           // --
+      kWasmStructRef, kWasmArrayRef,        // --
+      kWasmI31Ref,    kWasmAnyRef,          // --
+      kWasmExternRef, kWasmNullExternRef,   // --
+      kWasmNullRef,   kWasmNullFuncRef,     // --
+      kWasmStringRef, kWasmStringViewIter,  // --
+      refNull(0),     ref(0),               // struct
+      refNull(2),     ref(2),               // array
+      refNull(11),    ref(11)               // signature
   };
 
 // Some macros to help managing types and modules.
@@ -173,9 +175,7 @@ TEST_F(WasmSubtypingTest, Subtyping) {
             TypeInModule(type_result, module_result))
 
   for (WasmModule* module : {module1, module2}) {
-    // For cross module subtyping, we need to enable type canonicalization.
     // Type judgements across modules should work the same as within one module.
-    FLAG_VALUE_SCOPE(wasm_type_canonicalization, module == module2);
 
     // Value types are unrelated, except if they are equal.
     for (ValueType subtype : numeric_types) {
@@ -198,17 +198,19 @@ TEST_F(WasmSubtypingTest, Subtyping) {
       const bool is_any_func = ref_type == kWasmFuncRef ||
                                ref_type == kWasmNullFuncRef ||
                                ref_type == refNull(11) || ref_type == ref(11);
+      const bool is_string_view = ref_type == kWasmStringViewIter ||
+                                  ref_type == kWasmStringViewWtf8 ||
+                                  ref_type == kWasmStringViewWtf16;
       SCOPED_TRACE("ref_type: " + ref_type.name());
-      // Concrete reference types, i31ref and dataref are subtypes of eqref,
-      // externref/funcref/anyref/functions are not.
+      // Concrete reference types, i31ref, structref and arrayref are subtypes
+      // of eqref, externref/funcref/anyref/functions are not.
       SUBTYPE_IFF(ref_type, kWasmEqRef,
-                  ref_type != kWasmAnyRef && !is_any_func && !is_extern);
-      // Struct/array types are subtypes of dataref.
-      SUBTYPE_IFF(ref_type, kWasmDataRef,
-                  ref_type == kWasmDataRef || ref_type == kWasmArrayRef ||
-                      ref_type == kWasmNullRef || ref_type == ref(0) ||
-                      ref_type == ref(2) || ref_type == refNull(0) ||
-                      ref_type == refNull(2));
+                  ref_type != kWasmAnyRef && !is_any_func && !is_extern &&
+                      !is_string_view && ref_type != kWasmStringRef);
+      // Struct types are subtypes of structref.
+      SUBTYPE_IFF(ref_type, kWasmStructRef,
+                  ref_type == kWasmStructRef || ref_type == kWasmNullRef ||
+                      ref_type == ref(0) || ref_type == refNull(0));
       // Array types are subtypes of arrayref.
       SUBTYPE_IFF(ref_type, kWasmArrayRef,
                   ref_type == kWasmArrayRef || ref_type == ref(2) ||
@@ -217,8 +219,10 @@ TEST_F(WasmSubtypingTest, Subtyping) {
       SUBTYPE_IFF(ref_type, kWasmFuncRef, is_any_func);
       // Each reference type is a subtype of itself.
       SUBTYPE(ref_type, ref_type);
-      // Each non-func, non-extern reference type is a subtype of anyref.
-      SUBTYPE_IFF(ref_type, kWasmAnyRef, !is_any_func && !is_extern);
+      // Each non-func, non-extern, non-string-view, non-string-iter reference
+      // type is a subtype of anyref.
+      SUBTYPE_IFF(ref_type, kWasmAnyRef,
+                  !is_any_func && !is_extern && !is_string_view);
       // Only anyref is a subtype of anyref.
       SUBTYPE_IFF(kWasmAnyRef, ref_type, ref_type == kWasmAnyRef);
       // Only externref and nullexternref are subtypes of externref.
@@ -304,7 +308,6 @@ TEST_F(WasmSubtypingTest, Subtyping) {
 
     {
       // Canonicalization tests.
-      FLAG_SCOPE(wasm_type_canonicalization);
 
       // Groups should only be canonicalized to identical groups.
       IDENTICAL(18, 22);
@@ -349,8 +352,16 @@ TEST_F(WasmSubtypingTest, Subtyping) {
 
     // Reference type vs. itself and anyref.
     for (ValueType type : ref_types) {
+      SCOPED_TRACE(type.name());
       UNION(type, type, type);
       INTERSECTION(type, type, type);
+      if (type == kWasmStringViewIter || type == kWasmStringViewWtf8 ||
+          type == kWasmStringViewWtf16) {
+        // String view and string iter aren't subtypes of any but have the same
+        // null sentinel nullref (ref null none).
+        INTERSECTION(type, kWasmAnyRef, kWasmNullRef);
+        continue;
+      }
       if (type == kWasmFuncRef || type == kWasmNullFuncRef || type == ref(11) ||
           type == refNull(11) || type == kWasmExternRef ||
           type == kWasmNullExternRef) {
@@ -367,33 +378,32 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     }
 
     // Abstract types vs abstract types.
-    UNION(kWasmEqRef, kWasmDataRef, kWasmEqRef);
+    UNION(kWasmEqRef, kWasmStructRef, kWasmEqRef);
     UNION(kWasmEqRef, kWasmI31Ref, kWasmEqRef);
     UNION(kWasmEqRef, kWasmArrayRef, kWasmEqRef);
     UNION(kWasmEqRef, kWasmNullRef, kWasmEqRef);
-    UNION(kWasmDataRef, kWasmI31Ref, kWasmEqRef);
-    UNION(kWasmDataRef, kWasmArrayRef, kWasmDataRef);
-    UNION(kWasmDataRef, kWasmNullRef, kWasmDataRef.AsNullable());
+    UNION(kWasmStructRef, kWasmI31Ref, kWasmEqRef);
+    UNION(kWasmStructRef, kWasmArrayRef, kWasmEqRef);
+    UNION(kWasmStructRef, kWasmNullRef, kWasmStructRef.AsNullable());
     UNION(kWasmI31Ref.AsNonNull(), kWasmArrayRef.AsNonNull(),
           kWasmEqRef.AsNonNull());
     UNION(kWasmI31Ref, kWasmNullRef, kWasmI31Ref.AsNullable());
     UNION(kWasmArrayRef, kWasmNullRef, kWasmArrayRef.AsNullable());
-    UNION(kWasmDataRef.AsNonNull(), kWasmI31Ref.AsNonNull(),
+    UNION(kWasmStructRef.AsNonNull(), kWasmI31Ref.AsNonNull(),
           kWasmEqRef.AsNonNull());
-    UNION(kWasmDataRef, kWasmArrayRef, kWasmDataRef);
     UNION(kWasmI31Ref.AsNonNull(), kWasmArrayRef, kWasmEqRef);
     UNION(kWasmAnyRef, kWasmNullRef, kWasmAnyRef);
     UNION(kWasmExternRef, kWasmNullExternRef, kWasmExternRef);
     UNION(kWasmFuncRef, kWasmNullFuncRef, kWasmFuncRef);
 
     INTERSECTION(kWasmExternRef, kWasmEqRef, kWasmBottom);
-    INTERSECTION(kWasmExternRef, kWasmDataRef, kWasmBottom);
+    INTERSECTION(kWasmExternRef, kWasmStructRef, kWasmBottom);
     INTERSECTION(kWasmExternRef, kWasmI31Ref.AsNonNull(), kWasmBottom);
     INTERSECTION(kWasmExternRef, kWasmArrayRef, kWasmBottom);
     INTERSECTION(kWasmExternRef, kWasmNullRef, kWasmBottom);
     INTERSECTION(kWasmExternRef, kWasmFuncRef, kWasmBottom);
     INTERSECTION(kWasmNullExternRef, kWasmEqRef, kWasmBottom);
-    INTERSECTION(kWasmNullExternRef, kWasmDataRef, kWasmBottom);
+    INTERSECTION(kWasmNullExternRef, kWasmStructRef, kWasmBottom);
     INTERSECTION(kWasmNullExternRef, kWasmI31Ref, kWasmBottom);
     INTERSECTION(kWasmNullExternRef, kWasmArrayRef, kWasmBottom);
     INTERSECTION(kWasmNullExternRef, kWasmNullRef, kWasmBottom);
@@ -401,13 +411,13 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     INTERSECTION(kWasmNullExternRef, kWasmExternRef.AsNonNull(), kWasmBottom);
 
     INTERSECTION(kWasmFuncRef, kWasmEqRef, kWasmBottom);
-    INTERSECTION(kWasmFuncRef, kWasmDataRef, kWasmBottom);
+    INTERSECTION(kWasmFuncRef, kWasmStructRef, kWasmBottom);
     INTERSECTION(kWasmFuncRef, kWasmI31Ref.AsNonNull(), kWasmBottom);
     INTERSECTION(kWasmFuncRef, kWasmArrayRef, kWasmBottom);
     INTERSECTION(kWasmFuncRef, kWasmNullRef, kWasmBottom);
     INTERSECTION(kWasmFuncRef, kWasmNullExternRef, kWasmBottom);
     INTERSECTION(kWasmNullFuncRef, kWasmEqRef, kWasmBottom);
-    INTERSECTION(kWasmNullFuncRef, kWasmDataRef, kWasmBottom);
+    INTERSECTION(kWasmNullFuncRef, kWasmStructRef, kWasmBottom);
     INTERSECTION(kWasmNullFuncRef, kWasmI31Ref, kWasmBottom);
     INTERSECTION(kWasmNullFuncRef, kWasmArrayRef, kWasmBottom);
     INTERSECTION(kWasmNullFuncRef, kWasmNullRef, kWasmBottom);
@@ -415,14 +425,14 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     INTERSECTION(kWasmNullFuncRef, kWasmFuncRef.AsNonNull(), kWasmBottom);
     INTERSECTION(kWasmNullFuncRef, kWasmNullExternRef, kWasmBottom);
 
-    INTERSECTION(kWasmEqRef, kWasmDataRef, kWasmDataRef);
+    INTERSECTION(kWasmEqRef, kWasmStructRef, kWasmStructRef);
     INTERSECTION(kWasmEqRef, kWasmI31Ref, kWasmI31Ref);
     INTERSECTION(kWasmEqRef, kWasmArrayRef, kWasmArrayRef);
     INTERSECTION(kWasmEqRef, kWasmNullRef, kWasmNullRef);
     INTERSECTION(kWasmEqRef, kWasmFuncRef, kWasmBottom);
-    INTERSECTION(kWasmDataRef, kWasmI31Ref, kWasmNullRef);
-    INTERSECTION(kWasmDataRef, kWasmArrayRef, kWasmArrayRef);
-    INTERSECTION(kWasmDataRef, kWasmNullRef, kWasmNullRef);
+    INTERSECTION(kWasmStructRef, kWasmI31Ref, kWasmNullRef);
+    INTERSECTION(kWasmStructRef, kWasmArrayRef, kWasmNullRef);
+    INTERSECTION(kWasmStructRef, kWasmNullRef, kWasmNullRef);
     INTERSECTION(kWasmI31Ref, kWasmArrayRef, kWasmNullRef);
     INTERSECTION(kWasmI31Ref.AsNonNull(), kWasmNullRef, kWasmBottom);
     INTERSECTION(kWasmArrayRef.AsNonNull(), kWasmNullRef, kWasmBottom);
@@ -452,11 +462,11 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     INTERSECTION(kWasmEqRef, array_type, array_type);
     INTERSECTION(kWasmEqRef, function_type, kWasmBottom);
 
-    UNION(kWasmDataRef, struct_type, kWasmDataRef);
-    UNION(kWasmDataRef, array_type, kWasmDataRef);
-    INTERSECTION(kWasmDataRef, struct_type, struct_type);
-    INTERSECTION(kWasmDataRef, array_type, array_type);
-    INTERSECTION(kWasmDataRef, function_type, kWasmBottom);
+    UNION(kWasmStructRef, struct_type, kWasmStructRef);
+    UNION(kWasmStructRef, array_type, kWasmEqRef);
+    INTERSECTION(kWasmStructRef, struct_type, struct_type);
+    INTERSECTION(kWasmStructRef, array_type, kWasmBottom);
+    INTERSECTION(kWasmStructRef, function_type, kWasmBottom);
 
     UNION(kWasmI31Ref, struct_type, kWasmEqRef);
     UNION(kWasmI31Ref, array_type, kWasmEqRef);
@@ -464,7 +474,7 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     INTERSECTION(kWasmI31Ref, array_type, kWasmBottom);
     INTERSECTION(kWasmI31Ref, function_type, kWasmBottom);
 
-    UNION(kWasmArrayRef, struct_type, kWasmDataRef);
+    UNION(kWasmArrayRef, struct_type, kWasmEqRef);
     UNION(kWasmArrayRef, array_type, kWasmArrayRef);
     INTERSECTION(kWasmArrayRef, struct_type, kWasmBottom);
     INTERSECTION(kWasmArrayRef, array_type, array_type);
@@ -478,7 +488,7 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     INTERSECTION(kWasmNullRef, function_type, kWasmBottom);
 
     // Indexed types of different kinds.
-    UNION(struct_type, array_type, kWasmDataRef.AsNonNull());
+    UNION(struct_type, array_type, kWasmEqRef.AsNonNull());
     INTERSECTION(struct_type, array_type, kWasmBottom);
     INTERSECTION(struct_type, function_type, kWasmBottom);
     INTERSECTION(array_type, function_type, kWasmBottom);
@@ -486,8 +496,9 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     // Nullable vs. non-nullable.
     UNION(struct_type, struct_type.AsNullable(), struct_type.AsNullable());
     INTERSECTION(struct_type, struct_type.AsNullable(), struct_type);
-    UNION(kWasmDataRef, kWasmDataRef.AsNullable(), kWasmDataRef.AsNullable());
-    INTERSECTION(kWasmDataRef, kWasmDataRef.AsNullable(), kWasmDataRef);
+    UNION(kWasmStructRef, kWasmStructRef.AsNullable(),
+          kWasmStructRef.AsNullable());
+    INTERSECTION(kWasmStructRef, kWasmStructRef.AsNullable(), kWasmStructRef);
 
     // Concrete types of the same kind.
     // Subtyping relation.
@@ -500,7 +511,7 @@ TEST_F(WasmSubtypingTest, Subtyping) {
     // No common ancestor.
     UNION(ref(6), refNull(2), kWasmArrayRef.AsNullable());
     INTERSECTION(ref(6), refNull(2), kWasmBottom);
-    UNION(ref(0), ref(17), kWasmDataRef.AsNonNull());
+    UNION(ref(0), ref(17), kWasmStructRef.AsNonNull());
     INTERSECTION(ref(0), ref(17), kWasmBottom);
     UNION(ref(10), refNull(11), kWasmFuncRef);
     INTERSECTION(ref(10), refNull(11), kWasmBottom);

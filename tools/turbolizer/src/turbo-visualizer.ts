@@ -7,16 +7,19 @@ import { SourceResolver } from "./source-resolver";
 import { SelectionBroker } from "./selection/selection-broker";
 import { DisassemblyView } from "./views/disassembly-view";
 import { GraphMultiView } from "./graphmultiview";
-import { CodeMode, CodeView } from "./views/code-view";
+import { CodeView } from "./views/code-view";
 import { Tabs } from "./tabs";
 import { Resizer } from "./resizer";
 import { InfoView } from "./views/info-view";
 import { HistoryView } from "./views/history-view";
+import { CodeMode } from "./views/view";
+import { BytecodeSourceView } from "./views/bytecode-source-view";
 
 window.onload = function () {
   let multiview: GraphMultiView;
   let disassemblyView: DisassemblyView;
   let sourceViews: Array<CodeView> = new Array<CodeView>();
+  let bytecodeSourceViews: Array<BytecodeSourceView> = new Array<BytecodeSourceView>();
   let historyView: HistoryView;
   let selectionBroker: SelectionBroker;
   let sourceResolver: SourceResolver;
@@ -47,6 +50,7 @@ window.onload = function () {
     }
     try {
       sourceViews.forEach(sv => sv.hide());
+      bytecodeSourceViews.forEach(bsv => bsv.hide());
       multiview?.hide();
       multiview = null;
       document.getElementById("ranges").innerHTML = "";
@@ -55,6 +59,7 @@ window.onload = function () {
       disassemblyView?.hide();
       historyView?.hide();
       sourceViews = new Array<CodeView>();
+      bytecodeSourceViews = new Array<BytecodeSourceView>();
       sourceResolver = new SourceResolver();
       selectionBroker = new SelectionBroker(sourceResolver);
 
@@ -64,7 +69,8 @@ window.onload = function () {
       sourceResolver.setInlinings(jsonObj.inlinings);
       sourceResolver.setSourceLineToBytecodePosition(jsonObj.sourceLineToBytecodePosition);
       sourceResolver.setSources(jsonObj.sources, mainFunction);
-      sourceResolver.setNodePositionMap(jsonObj.nodePositions);
+      sourceResolver.setBytecodeSources(jsonObj.bytecodeSources);
+      sourceResolver.setFinalNodeOrigins(jsonObj.nodeOrigins);
       sourceResolver.parsePhases(jsonObj.phases);
 
       const [sourceTab, sourceContainer] = sourceTabs.addTabAndContent("Source");
@@ -81,6 +87,20 @@ window.onload = function () {
           sourceResolver, CodeMode.InlinedSource);
         sourceView.show();
         sourceViews.push(sourceView);
+      }
+
+      if (sourceResolver.bytecodeSources.size > 0) {
+        const [_, bytecodeContainer] = sourceTabs.addTabAndContent("Bytecode");
+        bytecodeContainer.classList.add("viewpane", "scrollable");
+
+        const bytecodeSources = Array.from(sourceResolver.bytecodeSources.values()).reverse();
+        for (const source of bytecodeSources) {
+          const codeMode = source.sourceId == -1 ? CodeMode.MainSource : CodeMode.InlinedSource;
+          const bytecodeSourceView = new BytecodeSourceView(bytecodeContainer, selectionBroker,
+            source, sourceResolver, codeMode);
+          bytecodeSourceView.show();
+          bytecodeSourceViews.push(bytecodeSourceView);
+        }
       }
 
       const [disassemblyTab, disassemblyContainer] = disassemblyTabs.addTabAndContent("Disassembly");
@@ -102,7 +122,7 @@ window.onload = function () {
       historyView.show();
     } catch (err) {
       if (window.confirm("Error: Exception during load of TurboFan JSON file:\n" +
-        `error: ${err.message} \nDo you want to clear session storage?`)) {
+        `error: ${err} \nDo you want to clear session storage?`)) {
         window.sessionStorage.clear();
       }
       return;
@@ -124,6 +144,7 @@ window.onload = function () {
         if (uploadFile) {
           const fileReader = new FileReader();
           fileReader.onload = () => {
+            document.title = uploadFile.name.replace(".json", "");
             const txtRes = fileReader.result;
             if (typeof txtRes === "string") {
               loadFile(txtRes);

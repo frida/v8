@@ -20,8 +20,6 @@
 #include "src/execution/arm/simulator-arm.h"
 #elif V8_TARGET_ARCH_PPC || V8_TARGET_ARCH_PPC64
 #include "src/execution/ppc/simulator-ppc.h"
-#elif V8_TARGET_ARCH_MIPS
-#include "src/execution/mips/simulator-mips.h"
 #elif V8_TARGET_ARCH_MIPS64
 #include "src/execution/mips64/simulator-mips64.h"
 #elif V8_TARGET_ARCH_LOONG64
@@ -32,10 +30,6 @@
 #include "src/execution/riscv/simulator-riscv.h"
 #else
 #error Unsupported target architecture.
-#endif
-
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-#include <ptrauth.h>
 #endif
 
 namespace v8 {
@@ -109,14 +103,15 @@ class GeneratedCode {
   using Signature = Return(Args...);
 
   static GeneratedCode FromAddress(Isolate* isolate, Address addr) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(addr));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(addr));
   }
 
   static GeneratedCode FromBuffer(Isolate* isolate, byte* buffer) {
-    return GeneratedCode(isolate, ToCodePtr<Signature*>(buffer));
+    return GeneratedCode(isolate, reinterpret_cast<Signature*>(buffer));
   }
 
-  static GeneratedCode FromCode(Code code) {
+  template <typename CodeOrCodeT>
+  static GeneratedCode FromCode(CodeOrCodeT code) {
     return FromAddress(code.GetIsolate(), code.entry());
   }
 
@@ -166,18 +161,8 @@ class GeneratedCode {
   friend class GeneratedCode<Return(Args...)>;
   Isolate* isolate_;
   Signature* fn_ptr_;
-
   GeneratedCode(Isolate* isolate, Signature* fn_ptr)
       : isolate_(isolate), fn_ptr_(fn_ptr) {}
-
-  template <typename P, typename V>
-  static P ToCodePtr(V value) {
-    P ptr = reinterpret_cast<P>(value);
-#if defined(V8_HOST_PTRAUTH) && !defined(USE_SIMULATOR)
-    ptr = ptrauth_sign_unauthenticated(ptr, ptrauth_key_asia, 0);
-#endif
-    return ptr;
-  }
 };
 
 // Allow to use {GeneratedCode<ret(arg1, arg2)>} instead of

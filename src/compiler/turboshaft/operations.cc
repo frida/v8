@@ -7,10 +7,12 @@
 #include <atomic>
 #include <sstream>
 
-#include "src/base/platform/platform.h"
-#include "src/common/assert-scope.h"
+#include "src/base/platform/mutex.h"
+#include "src/codegen/machine-type.h"
 #include "src/common/globals.h"
+#include "src/compiler/backend/instruction-selector.h"
 #include "src/compiler/frame-states.h"
+#include "src/compiler/machine-operator.h"
 #include "src/compiler/turboshaft/deopt-data.h"
 #include "src/compiler/turboshaft/graph.h"
 #include "src/handles/handles-inl.h"
@@ -27,24 +29,26 @@ const char* OpcodeName(Opcode opcode) {
 
 std::ostream& operator<<(std::ostream& os, OperationPrintStyle styled_op) {
   const Operation& op = styled_op.op;
-  os << OpcodeName(op.opcode) << "(";
-  bool first = true;
-  for (OpIndex input : op.inputs()) {
-    if (!first) os << ", ";
-    first = false;
-    os << styled_op.op_index_prefix << input.id();
-  }
-  os << ")";
+  os << OpcodeName(op.opcode);
+  op.PrintInputs(os, styled_op.op_index_prefix);
   op.PrintOptions(os);
   return os;
 }
 
-std::ostream& operator<<(std::ostream& os, IntegerUnaryOp::Kind kind) {
+std::ostream& operator<<(std::ostream& os, WordUnaryOp::Kind kind) {
   switch (kind) {
-    case IntegerUnaryOp::Kind::kReverseBytes:
+    case WordUnaryOp::Kind::kReverseBytes:
       return os << "ReverseBytes";
-    case IntegerUnaryOp::Kind::kCountLeadingZeros:
+    case WordUnaryOp::Kind::kCountLeadingZeros:
       return os << "CountLeadingZeros";
+    case WordUnaryOp::Kind::kCountTrailingZeros:
+      return os << "CountTrailingZeros";
+    case WordUnaryOp::Kind::kPopCount:
+      return os << "PopCount";
+    case WordUnaryOp::Kind::kSignExtend8:
+      return os << "SignExtend8";
+    case WordUnaryOp::Kind::kSignExtend16:
+      return os << "SignExtend16";
   }
 }
 
@@ -66,8 +70,16 @@ std::ostream& operator<<(std::ostream& os, FloatUnaryOp::Kind kind) {
       return os << "RoundTiesEven";
     case FloatUnaryOp::Kind::kLog:
       return os << "Log";
+    case FloatUnaryOp::Kind::kLog2:
+      return os << "Log2";
+    case FloatUnaryOp::Kind::kLog10:
+      return os << "Log10";
+    case FloatUnaryOp::Kind::kLog1p:
+      return os << "Log1p";
     case FloatUnaryOp::Kind::kSqrt:
       return os << "Sqrt";
+    case FloatUnaryOp::Kind::kCbrt:
+      return os << "Cbrt";
     case FloatUnaryOp::Kind::kExp:
       return os << "Exp";
     case FloatUnaryOp::Kind::kExpm1:
@@ -92,6 +104,61 @@ std::ostream& operator<<(std::ostream& os, FloatUnaryOp::Kind kind) {
       return os << "Tan";
     case FloatUnaryOp::Kind::kTanh:
       return os << "Tanh";
+    case FloatUnaryOp::Kind::kAtan:
+      return os << "Atan";
+    case FloatUnaryOp::Kind::kAtanh:
+      return os << "Atanh";
+  }
+}
+
+// static
+bool FloatUnaryOp::IsSupported(Kind kind, FloatRepresentation rep) {
+  switch (rep.value()) {
+    case FloatRepresentation::Float32():
+      switch (kind) {
+        case Kind::kRoundDown:
+          return SupportedOperations::float32_round_down();
+        case Kind::kRoundUp:
+          return SupportedOperations::float32_round_up();
+        case Kind::kRoundToZero:
+          return SupportedOperations::float32_round_to_zero();
+        case Kind::kRoundTiesEven:
+          return SupportedOperations::float32_round_ties_even();
+        default:
+          return true;
+      }
+    case FloatRepresentation::Float64():
+      switch (kind) {
+        case Kind::kRoundDown:
+          return SupportedOperations::float64_round_down();
+        case Kind::kRoundUp:
+          return SupportedOperations::float64_round_up();
+        case Kind::kRoundToZero:
+          return SupportedOperations::float64_round_to_zero();
+        case Kind::kRoundTiesEven:
+          return SupportedOperations::float64_round_ties_even();
+        default:
+          return true;
+      }
+  }
+}
+
+// static
+bool WordUnaryOp::IsSupported(Kind kind, WordRepresentation rep) {
+  switch (kind) {
+    case Kind::kCountLeadingZeros:
+    case Kind::kReverseBytes:
+    case Kind::kSignExtend8:
+    case Kind::kSignExtend16:
+      return true;
+    case Kind::kCountTrailingZeros:
+      return rep == WordRepresentation::Word32()
+                 ? SupportedOperations::word32_ctz()
+                 : SupportedOperations::word64_ctz();
+    case Kind::kPopCount:
+      return rep == WordRepresentation::Word32()
+                 ? SupportedOperations::word32_popcnt()
+                 : SupportedOperations::word64_popcnt();
   }
 }
 
@@ -127,20 +194,14 @@ std::ostream& operator<<(std::ostream& os, ComparisonOp::Kind kind) {
 
 std::ostream& operator<<(std::ostream& os, ChangeOp::Kind kind) {
   switch (kind) {
-    case ChangeOp::Kind::kSignedNarrowing:
-      return os << "SignedNarrowing";
-    case ChangeOp::Kind::kUnsignedNarrowing:
-      return os << "UnsignedNarrowing";
-    case ChangeOp::Kind::kIntegerTruncate:
-      return os << "IntegerTruncate";
     case ChangeOp::Kind::kFloatConversion:
       return os << "FloatConversion";
-    case ChangeOp::Kind::kSignedFloatTruncate:
-      return os << "SignedFloatTruncate";
-    case ChangeOp::Kind::kUnsignedFloatTruncate:
-      return os << "UnsignedFloatTruncate";
+    case ChangeOp::Kind::kJSFloatTruncate:
+      return os << "JSFloatTruncate";
     case ChangeOp::Kind::kSignedFloatTruncateOverflowToMin:
       return os << "SignedFloatTruncateOverflowToMin";
+    case ChangeOp::Kind::kUnsignedFloatTruncateOverflowToMin:
+      return os << "UnsignedFloatTruncateOverflowToMin";
     case ChangeOp::Kind::kSignedToFloat:
       return os << "SignedToFloat";
     case ChangeOp::Kind::kUnsignedToFloat:
@@ -158,6 +219,26 @@ std::ostream& operator<<(std::ostream& os, ChangeOp::Kind kind) {
   }
 }
 
+std::ostream& operator<<(std::ostream& os, TryChangeOp::Kind kind) {
+  switch (kind) {
+    case TryChangeOp::Kind::kSignedFloatTruncateOverflowUndefined:
+      return os << "SignedFloatTruncateOverflowUndefined";
+    case TryChangeOp::Kind::kUnsignedFloatTruncateOverflowUndefined:
+      return os << "UnsignedFloatTruncateOverflowUndefined";
+  }
+}
+
+std::ostream& operator<<(std::ostream& os, ChangeOp::Assumption assumption) {
+  switch (assumption) {
+    case ChangeOp::Assumption::kNoAssumption:
+      return os << "NoAssumption";
+    case ChangeOp::Assumption::kNoOverflow:
+      return os << "NoOverflow";
+    case ChangeOp::Assumption::kReversible:
+      return os << "Reversible";
+  }
+}
+
 std::ostream& operator<<(std::ostream& os, Float64InsertWord32Op::Kind kind) {
   switch (kind) {
     case Float64InsertWord32Op::Kind::kLowHalf:
@@ -167,12 +248,12 @@ std::ostream& operator<<(std::ostream& os, Float64InsertWord32Op::Kind kind) {
   }
 }
 
-std::ostream& operator<<(std::ostream& os, ProjectionOp::Kind kind) {
+std::ostream& operator<<(std::ostream& os, SelectOp::Implementation kind) {
   switch (kind) {
-    case ProjectionOp::Kind::kTuple:
-      return os << "tuple";
-    case ProjectionOp::Kind::kExceptionValue:
-      return os << "exception value";
+    case SelectOp::Implementation::kBranch:
+      return os << "Branch";
+    case SelectOp::Implementation::kCMove:
+      return os << "CMove";
   }
 }
 
@@ -184,6 +265,18 @@ std::ostream& operator<<(std::ostream& os, FrameConstantOp::Kind kind) {
       return os << "frame pointer";
     case FrameConstantOp::Kind::kParentFramePointer:
       return os << "parent frame pointer";
+  }
+}
+
+void Operation::PrintInputs(std::ostream& os,
+                            const std::string& op_index_prefix) const {
+  switch (opcode) {
+#define SWITCH_CASE(Name)                              \
+  case Opcode::k##Name:                                \
+    Cast<Name##Op>().PrintInputs(os, op_index_prefix); \
+    break;
+    TURBOSHAFT_OPERATION_LIST(SWITCH_CASE)
+#undef SWITCH_CASE
   }
 }
 
@@ -232,19 +325,15 @@ void ConstantOp::PrintOptions(std::ostream& os) const {
     case Kind::kCompressedHeapObject:
       os << "compressed heap object: " << handle();
       break;
-    case Kind::kDelayedString:
-      os << delayed_string();
+    case Kind::kRelocatableWasmCall:
+      os << "relocatable wasm call: 0x"
+         << reinterpret_cast<void*>(storage.integral);
+      break;
+    case Kind::kRelocatableWasmStubCall:
+      os << "relocatable wasm stub call: 0x"
+         << reinterpret_cast<void*>(storage.integral);
       break;
   }
-  os << "]";
-}
-
-void LoadOp::PrintOptions(std::ostream& os) const {
-  os << "[";
-  os << (kind == Kind::kTaggedBase ? "tagged base" : "raw");
-  if (!IsAlignedAccess(kind)) os << ", unaligned";
-  os << ", " << loaded_rep;
-  if (offset != 0) os << ", offset: " << offset;
   os << "]";
 }
 
@@ -254,10 +343,24 @@ void ParameterOp::PrintOptions(std::ostream& os) const {
   os << "]";
 }
 
-void IndexedLoadOp::PrintOptions(std::ostream& os) const {
+void LoadOp::PrintInputs(std::ostream& os,
+                         const std::string& op_index_prefix) const {
+  os << " *(" << op_index_prefix << base().id();
+  if (offset < 0) {
+    os << " - " << -offset;
+  } else if (offset > 0) {
+    os << " + " << offset;
+  }
+  if (index().valid()) {
+    os << " + " << op_index_prefix << index().id();
+    if (element_size_log2 > 0) os << "*" << (1 << element_size_log2);
+  }
+  os << ") ";
+}
+void LoadOp::PrintOptions(std::ostream& os) const {
   os << "[";
-  os << (kind == Kind::kTaggedBase ? "tagged base" : "raw");
-  if (!IsAlignedAccess(kind)) os << ", unaligned";
+  os << (kind.tagged_base ? "tagged base" : "raw");
+  if (kind.maybe_unaligned) os << ", unaligned";
   os << ", " << loaded_rep;
   if (element_size_log2 != 0)
     os << ", element size: 2^" << int{element_size_log2};
@@ -265,20 +368,24 @@ void IndexedLoadOp::PrintOptions(std::ostream& os) const {
   os << "]";
 }
 
+void StoreOp::PrintInputs(std::ostream& os,
+                          const std::string& op_index_prefix) const {
+  os << " *(" << op_index_prefix << base().id();
+  if (offset < 0) {
+    os << " - " << -offset;
+  } else if (offset > 0) {
+    os << " + " << offset;
+  }
+  if (index().valid()) {
+    os << " + " << op_index_prefix << index().id();
+    if (element_size_log2 > 0) os << "*" << (1 << element_size_log2);
+  }
+  os << ") = " << op_index_prefix << value().id() << " ";
+}
 void StoreOp::PrintOptions(std::ostream& os) const {
   os << "[";
-  os << (kind == Kind::kTaggedBase ? "tagged base" : "raw");
-  if (!IsAlignedAccess(kind)) os << ", unaligned";
-  os << ", " << stored_rep;
-  os << ", " << write_barrier;
-  if (offset != 0) os << ", offset: " << offset;
-  os << "]";
-}
-
-void IndexedStoreOp::PrintOptions(std::ostream& os) const {
-  os << "[";
-  os << (kind == Kind::kTaggedBase ? "tagged base" : "raw");
-  if (!IsAlignedAccess(kind)) os << ", unaligned";
+  os << (kind.tagged_base ? "tagged base" : "raw");
+  if (kind.maybe_unaligned) os << ", unaligned";
   os << ", " << stored_rep;
   os << ", " << write_barrier;
   if (element_size_log2 != 0)
@@ -337,7 +444,7 @@ void FrameStateOp::PrintOptions(std::ostream& os) const {
   os << "]";
 }
 
-void BinopOp::PrintOptions(std::ostream& os) const {
+void WordBinopOp::PrintOptions(std::ostream& os) const {
   os << "[";
   switch (kind) {
     case Kind::kAdd:
@@ -375,6 +482,29 @@ void BinopOp::PrintOptions(std::ostream& os) const {
       break;
     case Kind::kBitwiseXor:
       os << "BitwiseXor, ";
+      break;
+  }
+  os << rep;
+  os << "]";
+}
+
+void FloatBinopOp::PrintOptions(std::ostream& os) const {
+  os << "[";
+  switch (kind) {
+    case Kind::kAdd:
+      os << "Add, ";
+      break;
+    case Kind::kSub:
+      os << "Sub, ";
+      break;
+    case Kind::kMul:
+      os << "Mul, ";
+      break;
+    case Kind::kDiv:
+      os << "Div, ";
+      break;
+    case Kind::kMod:
+      os << "Mod, ";
       break;
     case Kind::kMin:
       os << "Min, ";
@@ -422,14 +552,14 @@ std::ostream& operator<<(std::ostream& os, const Block* b) {
 }
 
 std::ostream& operator<<(std::ostream& os, OpProperties opProperties) {
-  if(opProperties == OpProperties::Pure()) {
+  if (opProperties == OpProperties::Pure()) {
     os << "Pure";
   } else if (opProperties == OpProperties::Reading()) {
     os << "Reading";
   } else if (opProperties == OpProperties::Writing()) {
     os << "Writing";
-  } else if (opProperties == OpProperties::CanDeopt()) {
-    os << "CanDeopt";
+  } else if (opProperties == OpProperties::CanAbort()) {
+    os << "CanAbort";
   } else if (opProperties == OpProperties::AnySideEffects()) {
     os << "AnySideEffects";
   } else if (opProperties == OpProperties::BlockTerminator()) {
@@ -452,6 +582,24 @@ std::string Operation::ToString() const {
   std::stringstream ss;
   ss << *this;
   return ss.str();
+}
+
+base::LazyMutex SupportedOperations::mutex_;
+SupportedOperations SupportedOperations::instance_;
+bool SupportedOperations::initialized_;
+
+void SupportedOperations::Initialize() {
+  base::MutexGuard lock(mutex_.Pointer());
+  if (initialized_) return;
+  initialized_ = true;
+
+  MachineOperatorBuilder::Flags supported =
+      InstructionSelector::SupportedMachineOperatorFlags();
+#define SET_SUPPORTED(name, machine_name) \
+  instance_.name##_ = supported & MachineOperatorBuilder::Flag::k##machine_name;
+
+  SUPPORTED_OPERATIONS_LIST(SET_SUPPORTED)
+#undef SET_SUPPORTED
 }
 
 }  // namespace v8::internal::compiler::turboshaft

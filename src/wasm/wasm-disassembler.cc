@@ -168,7 +168,6 @@ void FunctionBodyDisassembler::DecodeAsWat(MultiLineStringBuilder& out,
 
   // Decode and print locals.
   uint32_t locals_length;
-  InitializeLocalsFromSig();
   DecodeLocals(pc_, &locals_length);
   if (failed()) {
     // TODO(jkummerow): Improve error handling.
@@ -255,10 +254,7 @@ void FunctionBodyDisassembler::DecodeGlobalInitializer(StringBuilder& out) {
 WasmOpcode FunctionBodyDisassembler::GetOpcode() {
   WasmOpcode opcode = static_cast<WasmOpcode>(*pc_);
   if (!WasmOpcodes::IsPrefixOpcode(opcode)) return opcode;
-  uint32_t opcode_length = 1;
-  if (opcode == kGCPrefix) {
-    return read_two_byte_opcode<validate>(pc_, &opcode_length);
-  }
+  uint32_t opcode_length;
   return read_prefixed_opcode<validate>(pc_, &opcode_length);
 }
 
@@ -376,13 +372,6 @@ class ImmediatesPrinter {
 
   void Length(IndexImmediate<validate>& imm) {
     out_ << " " << imm.index;  // --
-  }
-
-  void Wtf8Policy(Wtf8PolicyImmediate<validate>& imm) {
-    out_ << (imm.value == kWtf8PolicyReject    ? " reject"
-             : imm.value == kWtf8PolicyAccept  ? " accept"
-             : imm.value == kWtf8PolicyReplace ? " replace"
-                                               : " unknown-policy");
   }
 
   void TagIndex(TagIndexImmediate<validate>& imm) {
@@ -611,6 +600,7 @@ class OffsetsProvider {
   void DataOffset(uint32_t offset) { data_offsets_.push_back(offset); }
 
   // Unused by this tracer:
+  void ImportsDone() {}
   void Bytes(const byte* start, uint32_t count) {}
   void Description(const char* desc) {}
   void Description(const char* desc, size_t length) {}

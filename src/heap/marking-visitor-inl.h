@@ -5,6 +5,7 @@
 #ifndef V8_HEAP_MARKING_VISITOR_INL_H_
 #define V8_HEAP_MARKING_VISITOR_INL_H_
 
+#include "src/heap/marking-state-inl.h"
 #include "src/heap/marking-visitor.h"
 #include "src/heap/marking-worklist.h"
 #include "src/heap/objects-visiting-inl.h"
@@ -44,7 +45,7 @@ template <typename THeapObjectSlot>
 void MarkingVisitorBase<ConcreteVisitor, MarkingState>::ProcessStrongHeapObject(
     HeapObject host, THeapObjectSlot slot, HeapObject heap_object) {
   SynchronizePageAccess(heap_object);
-  if (!is_shared_heap_ && heap_object.InSharedHeap()) return;
+  if (!ShouldMarkObject(heap_object)) return;
   MarkObject(host, heap_object);
   concrete_visitor()->RecordSlot(host, slot, heap_object);
 }
@@ -56,7 +57,7 @@ template <typename THeapObjectSlot>
 void MarkingVisitorBase<ConcreteVisitor, MarkingState>::ProcessWeakHeapObject(
     HeapObject host, THeapObjectSlot slot, HeapObject heap_object) {
   SynchronizePageAccess(heap_object);
-  if (!is_shared_heap_ && heap_object.InSharedHeap()) return;
+  if (!ShouldMarkObject(heap_object)) return;
   if (concrete_visitor()->marking_state()->IsBlackOrGrey(heap_object)) {
     // Weak references with live values are directly processed here to
     // reduce the processing time of weak cells during the main GC
@@ -116,7 +117,7 @@ void MarkingVisitorBase<ConcreteVisitor, MarkingState>::VisitEmbeddedPointer(
   DCHECK(RelocInfo::IsEmbeddedObjectMode(rinfo->rmode()));
   HeapObject object =
       rinfo->target_object(ObjectVisitorWithCageBases::cage_base());
-  if (!is_shared_heap_ && object.InSharedHeap()) return;
+  if (!ShouldMarkObject(object)) return;
 
   if (!concrete_visitor()->marking_state()->IsBlackOrGrey(object)) {
     if (host.IsWeakObject(object)) {
@@ -136,7 +137,7 @@ void MarkingVisitorBase<ConcreteVisitor, MarkingState>::VisitCodeTarget(
   DCHECK(RelocInfo::IsCodeTargetMode(rinfo->rmode()));
   Code target = Code::GetCodeFromTargetAddress(rinfo->target_address());
 
-  if (!is_shared_heap_ && target.InSharedHeap()) return;
+  if (!ShouldMarkObject(target)) return;
   MarkObject(host, target);
   concrete_visitor()->RecordRelocSlot(host, rinfo, target);
 }
@@ -147,11 +148,10 @@ void MarkingVisitorBase<ConcreteVisitor, MarkingState>::VisitExternalPointer(
 #ifdef V8_ENABLE_SANDBOX
   if (IsSandboxedExternalPointerType(tag)) {
     ExternalPointerHandle handle = slot.Relaxed_LoadHandle();
-    if (IsSharedExternalPointerType(tag)) {
-      shared_external_pointer_table_->Mark(handle);
-    } else {
-      external_pointer_table_->Mark(handle);
-    }
+    ExternalPointerTable* table = IsSharedExternalPointerType(tag)
+                                      ? shared_external_pointer_table_
+                                      : external_pointer_table_;
+    table->Mark(handle, slot.address());
   }
 #endif  // V8_ENABLE_SANDBOX
 }
@@ -372,7 +372,7 @@ int MarkingVisitorBase<ConcreteVisitor, MarkingState>::VisitEphemeronHashTable(
     ObjectSlot value_slot =
         table.RawFieldOfElementAt(EphemeronHashTable::EntryToValueIndex(i));
 
-    if ((!is_shared_heap_ && key.InSharedHeap()) ||
+    if (!ShouldMarkObject(key) ||
         concrete_visitor()->marking_state()->IsBlackOrGrey(key)) {
       VisitPointer(table, value_slot);
     } else {
@@ -384,7 +384,7 @@ int MarkingVisitorBase<ConcreteVisitor, MarkingState>::VisitEphemeronHashTable(
         concrete_visitor()->RecordSlot(table, value_slot, value);
         AddWeakReferenceForReferenceSummarizer(table, value);
 
-        if (!is_shared_heap_ && value.InSharedHeap()) continue;
+        if (!ShouldMarkObject(value)) continue;
 
         // Revisit ephemerons with both key and value unreachable at end
         // of concurrent marking cycle.
@@ -583,6 +583,7 @@ template <typename ConcreteVisitor, typename MarkingState>
 int YoungGenerationMarkingVisitorBase<
     ConcreteVisitor, MarkingState>::VisitJSArrayBuffer(Map map,
                                                        JSArrayBuffer object) {
+  if (!concrete_visitor()->ShouldVisit(object)) return 0;
   object.YoungMarkExtension();
   int size = JSArrayBuffer::BodyDescriptor::SizeOf(map, object);
   JSArrayBuffer::BodyDescriptor::IterateBody(map, object, size, this);
@@ -592,7 +593,7 @@ int YoungGenerationMarkingVisitorBase<
 template <typename ConcreteVisitor, typename MarkingState>
 void YoungGenerationMarkingVisitorBase<ConcreteVisitor, MarkingState>::
     MarkObjectViaMarkingWorklist(HeapObject object) {
-  if (concrete_visitor()->marking_state()->WhiteToBlack(object)) {
+  if (concrete_visitor()->marking_state()->WhiteToGrey(object)) {
     worklists_local_->Push(object);
   }
 }
@@ -602,7 +603,8 @@ template <typename TSlot>
 void YoungGenerationMarkingVisitorBase<
     ConcreteVisitor, MarkingState>::VisitPointerImpl(HeapObject host,
                                                      TSlot slot) {
-  typename TSlot::TObject target = *slot;
+  typename TSlot::TObject target =
+      slot.Relaxed_Load(ObjectVisitorWithCageBases::cage_base());
   if (Heap::InYoungGeneration(target)) {
     // Treat weak references as strong.
     HeapObject target_object = target.GetHeapObject();

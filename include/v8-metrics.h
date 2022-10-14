@@ -13,11 +13,6 @@
 #include "v8-internal.h"      // NOLINT(build/include_directory)
 #include "v8-local-handle.h"  // NOLINT(build/include_directory)
 
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 namespace v8 {
 
 class Context;
@@ -130,15 +125,6 @@ struct WasmModuleInstantiated {
   int64_t wall_clock_duration_in_us = -1;
 };
 
-struct V8_DEPRECATED(
-    "With dynamic tiering, there is no point any more where the module is "
-    "fully tiered up") WasmModuleTieredUp {
-  bool lazy = false;
-  size_t code_size_in_bytes = 0;
-  int64_t wall_clock_duration_in_us = -1;
-  int64_t cpu_duration_in_us = -1;
-};
-
 struct WasmModulesPerIsolate {
   size_t count = 0;
 };
@@ -195,11 +181,6 @@ class V8_EXPORT Recorder {
   ADD_MAIN_THREAD_EVENT(WasmModuleDecoded)
   ADD_MAIN_THREAD_EVENT(WasmModuleCompiled)
   ADD_MAIN_THREAD_EVENT(WasmModuleInstantiated)
-
-  V8_DEPRECATED(
-      "With dynamic tiering, there is no point any more where the module is "
-      "fully tiered up")
-  ADD_MAIN_THREAD_EVENT(WasmModuleTieredUp)
 #undef ADD_MAIN_THREAD_EVENT
 
   // Thread-safe events are not allowed to access the context and therefore do
@@ -252,9 +233,5 @@ struct V8_EXPORT LongTaskStats {
 
 }  // namespace metrics
 }  // namespace v8
-
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // V8_METRICS_H_

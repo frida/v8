@@ -862,7 +862,7 @@ Type Typer::Visitor::TypeInductionVariablePhi(Node* node) {
     max = +V8_INFINITY;
   }
 
-  if (FLAG_trace_turbo_loop) {
+  if (v8_flags.trace_turbo_loop) {
     StdoutStream{} << std::setprecision(10) << "Loop ("
                    << NodeProperties::GetControlInput(node)->id()
                    << ") variable bounds in "
@@ -1468,6 +1468,10 @@ Type Typer::Visitor::JSOrdinaryHasInstanceTyper(Type lhs, Type rhs, Typer* t) {
 
 Type Typer::Visitor::TypeJSGetSuperConstructor(Node* node) {
   return Type::NonInternal();
+}
+
+Type Typer::Visitor::TypeJSFindNonDefaultConstructorOrConstruct(Node* node) {
+  return Type::Tuple(Type::Boolean(), Type::Object(), zone());
 }
 
 // JS context operators.
@@ -2360,10 +2364,6 @@ Type Typer::Visitor::TypeNewArgumentsElements(Node* node) {
 }
 
 Type Typer::Visitor::TypeNewConsString(Node* node) { return Type::String(); }
-
-Type Typer::Visitor::TypeDelayedStringConstant(Node* node) {
-  return Type::String();
-}
 
 Type Typer::Visitor::TypeFindOrderedHashMapEntry(Node* node) {
   return Type::Range(-1.0, FixedArray::kMaxLength, zone());

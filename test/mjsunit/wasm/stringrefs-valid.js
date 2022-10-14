@@ -72,215 +72,202 @@ let kSig_w_zi = makeSig([kWasmStringViewIter, kWasmI32],
 
   builder.addMemory(0, undefined, false, false);
 
-  builder.addFunction("string.new_wtf8/reject", kSig_w_ii)
+  builder.addFunction("string.new_utf8", kSig_w_ii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyReject
+      ...GCInstr(kExprStringNewUtf8), 0
     ]);
-
-  builder.addFunction("string.new_wtf8/accept", kSig_w_ii)
+  builder.addFunction("string.new_lossy_utf8", kSig_w_ii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyAccept
+      ...GCInstr(kExprStringNewLossyUtf8), 0
     ]);
-
-  builder.addFunction("string.new_wtf8/replace", kSig_w_ii)
+  builder.addFunction("string.new_wtf8", kSig_w_ii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyReplace
+      ...GCInstr(kExprStringNewWtf8), 0
     ]);
 
   builder.addFunction("string.new_wtf16", kSig_w_ii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf16, 0
+      ...GCInstr(kExprStringNewWtf16), 0
     ]);
 
   builder.addLiteralStringRef("foo");
   builder.addFunction("string.const", kSig_w_v)
     .addBody([
-      kGCPrefix, kExprStringConst, 0
+      ...GCInstr(kExprStringConst), 0
     ]);
 
-  builder.addFunction("string.measure_wtf8/utf-8", kSig_i_w)
+  builder.addFunction("string.measure_utf8", kSig_i_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, kWtf8PolicyReject
+      ...GCInstr(kExprStringMeasureUtf8)
     ]);
-
-  builder.addFunction("string.measure_wtf8/wtf-8", kSig_i_w)
+  builder.addFunction("string.measure_wtf8", kSig_i_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, kWtf8PolicyAccept
-    ]);
-
-  builder.addFunction("string.measure_wtf8/replace", kSig_i_w)
-    .addBody([
-      kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, kWtf8PolicyReplace
+      ...GCInstr(kExprStringMeasureWtf8)
     ]);
 
   builder.addFunction("string.measure_wtf16", kSig_i_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf16
+      ...GCInstr(kExprStringMeasureWtf16)
     ]);
 
-  builder.addFunction("string.encode_wtf8/utf-8", kSig_i_wi)
+  builder.addFunction("string.encode_utf8", kSig_i_wi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringEncodeWtf8, 0, kWtf8PolicyAccept
+      ...GCInstr(kExprStringEncodeUtf8), 0
     ]);
-  builder.addFunction("string.encode_wtf8/wtf-8", kSig_i_wi)
+  builder.addFunction("string.encode_lossy_utf8", kSig_i_wi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringEncodeWtf8, 0, kWtf8PolicyReject
+      ...GCInstr(kExprStringEncodeLossyUtf8), 0
     ]);
-  builder.addFunction("string.encode_wtf8/replace", kSig_i_wi)
+  builder.addFunction("string.encode_wtf8", kSig_i_wi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringEncodeWtf8, 0, kWtf8PolicyReplace
+      ...GCInstr(kExprStringEncodeWtf8), 0
     ]);
 
   builder.addFunction("string.encode_wtf16", kSig_i_wi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringEncodeWtf16, 0
+      ...GCInstr(kExprStringEncodeWtf16), 0
     ]);
 
   builder.addFunction("string.concat", kSig_w_ww)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringConcat
+      ...GCInstr(kExprStringConcat)
     ]);
 
   builder.addFunction("string.eq", kSig_i_ww)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringEq
+      ...GCInstr(kExprStringEq)
     ]);
 
   builder.addFunction("string.as_wtf8", kSig_x_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf8
+      ...GCInstr(kExprStringAsWtf8)
     ]);
 
   builder.addFunction("stringview_wtf8.advance", kSig_i_xii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf8Advance
+      ...GCInstr(kExprStringViewWtf8Advance)
     ]);
 
-  builder.addFunction("stringview_wtf8.encode/utf-8", kSig_ii_xiii)
+  builder.addFunction("stringview_wtf8.encode_utf8", kSig_ii_xiii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2, kExprLocalGet, 3,
-      kGCPrefix, kExprStringViewWtf8Encode, 0, 0
+      ...GCInstr(kExprStringViewWtf8EncodeUtf8), 0
     ]);
-
-  builder.addFunction("stringview_wtf8.encode/wtf-8", kSig_ii_xiii)
+  builder.addFunction("stringview_wtf8.encode_lossy_utf8", kSig_ii_xiii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2, kExprLocalGet, 3,
-      kGCPrefix, kExprStringViewWtf8Encode, 0, 1
+      ...GCInstr(kExprStringViewWtf8EncodeLossyUtf8), 0
     ]);
-
-  builder.addFunction("stringview_wtf8.encode/replace", kSig_ii_xiii)
+  builder.addFunction("stringview_wtf8.encode_wtf8", kSig_ii_xiii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2, kExprLocalGet, 3,
-      kGCPrefix, kExprStringViewWtf8Encode, 0, 2
+      ...GCInstr(kExprStringViewWtf8EncodeWtf8), 0
     ]);
 
   builder.addFunction("stringview_wtf8.slice", kSig_w_xii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf8Slice
+      ...GCInstr(kExprStringViewWtf8Slice)
     ]);
 
   builder.addFunction("string.as_wtf16", kSig_y_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf16
+      ...GCInstr(kExprStringAsWtf16)
     ]);
 
   builder.addFunction("stringview_wtf16.length", kSig_i_y)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringViewWtf16Length
+      ...GCInstr(kExprStringViewWtf16Length)
     ]);
 
   builder.addFunction("stringview_wtf16.get_codeunit", kSig_i_yi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringViewWtf16GetCodeunit
+      ...GCInstr(kExprStringViewWtf16GetCodeunit)
     ]);
 
   builder.addFunction("stringview_wtf16.encode", kSig_i_yiii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2, kExprLocalGet, 3,
-      kGCPrefix, kExprStringViewWtf16Encode, 0
+      ...GCInstr(kExprStringViewWtf16Encode), 0
     ]);
 
   builder.addFunction("stringview_wtf16.slice", kSig_w_yii)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1, kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf16Slice
+      ...GCInstr(kExprStringViewWtf16Slice)
     ]);
 
   builder.addFunction("string.as_iter", kSig_z_w)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsIter
+      ...GCInstr(kExprStringAsIter)
     ]);
 
   builder.addFunction("stringview_iter.next", kSig_i_z)
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringViewIterNext
+      ...GCInstr(kExprStringViewIterNext)
     ]);
 
   builder.addFunction("stringview_iter.advance", kSig_i_zi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringViewIterAdvance
+      ...GCInstr(kExprStringViewIterAdvance)
     ]);
 
   builder.addFunction("stringview_iter.rewind", kSig_i_zi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringViewIterRewind
+      ...GCInstr(kExprStringViewIterRewind)
     ]);
 
   builder.addFunction("stringview_iter.slice", kSig_w_zi)
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringViewIterSlice
+      ...GCInstr(kExprStringViewIterSlice)
     ]);
 
   let i8_array = builder.addArray(kWasmI8, true);
   let i16_array = builder.addArray(kWasmI16, true);
 
-  builder.addFunction("string.new_wtf8_array/accept", kSig_w_v)
+  builder.addFunction("string.new_utf8_array", kSig_w_v)
     .addBody([
       kExprRefNull, i8_array,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringNewWtf8Array, kWtf8PolicyAccept
+      ...GCInstr(kExprStringNewWtf8Array)
     ]);
-
-  builder.addFunction("string.new_wtf8_array/reject", kSig_w_v)
+  builder.addFunction("string.new_lossy_utf8_array", kSig_w_v)
     .addBody([
       kExprRefNull, i8_array,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringNewWtf8Array, kWtf8PolicyReject
+      ...GCInstr(kExprStringNewLossyUtf8Array)
     ]);
-
-  builder.addFunction("string.new_wtf8_array/replace", kSig_w_v)
+  builder.addFunction("string.new_wtf8_array", kSig_w_v)
     .addBody([
       kExprRefNull, i8_array,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringNewWtf8Array, kWtf8PolicyReplace
+      ...GCInstr(kExprStringNewWtf8Array)
     ]);
 
   builder.addFunction("string.new_wtf16_array", kSig_w_v)
@@ -288,31 +275,29 @@ let kSig_w_zi = makeSig([kWasmStringViewIter, kWasmI32],
       kExprRefNull, i16_array,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringNewWtf16Array
+      ...GCInstr(kExprStringNewWtf16Array)
     ]);
 
-  builder.addFunction("string.encode_wtf8_array/accept", kSig_i_v)
+  builder.addFunction("string.encode_utf8_array", kSig_i_v)
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprRefNull, i8_array,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringEncodeWtf8Array, kWtf8PolicyAccept
+      ...GCInstr(kExprStringEncodeUtf8Array)
     ]);
-
-  builder.addFunction("string.encode_wtf8_array/reject", kSig_i_v)
+  builder.addFunction("string.encode_lossy_utf8_array", kSig_i_v)
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprRefNull, i8_array,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringEncodeWtf8Array, kWtf8PolicyReject
+      ...GCInstr(kExprStringEncodeLossyUtf8Array)
     ]);
-
-  builder.addFunction("string.encode_wtf8_array/replace", kSig_i_v)
+  builder.addFunction("string.encode_wtf8_array", kSig_i_v)
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprRefNull, i8_array,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringEncodeWtf8Array, kWtf8PolicyReplace
+      ...GCInstr(kExprStringEncodeWtf8Array)
     ]);
 
   builder.addFunction("string.encode_wtf16_array", kSig_i_v)
@@ -320,7 +305,7 @@ let kSig_w_zi = makeSig([kWasmStringViewIter, kWasmI32],
       kExprRefNull, kStringRefCode,
       kExprRefNull, i16_array,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringEncodeWtf16Array
+      ...GCInstr(kExprStringEncodeWtf16Array)
     ]);
 
   assertTrue(WebAssembly.validate(builder.toBuffer()));
@@ -330,7 +315,7 @@ assertInvalid(
   builder => {
     builder.addFunction("string.const/bad-index", kSig_w_v)
       .addBody([
-        kGCPrefix, kExprStringConst, 0
+        ...GCInstr(kExprStringConst), 0
       ]);
   },
   /Invalid string literal index: 0/);
@@ -340,7 +325,7 @@ assertInvalid(
     builder.addFunction("string.new_wtf8/no-mem", kSig_w_ii)
       .addBody([
         kExprLocalGet, 0, kExprLocalGet, 1,
-        kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyAccept
+        ...GCInstr(kExprStringNewWtf8), 0
       ]);
   },
   /memory instruction with no memory/);
@@ -351,7 +336,7 @@ assertInvalid(
     builder.addFunction("string.new_wtf8/bad-mem", kSig_w_ii)
       .addBody([
         kExprLocalGet, 0, kExprLocalGet, 1,
-        kGCPrefix, kExprStringNewWtf8, 1, kWtf8PolicyAccept
+        ...GCInstr(kExprStringNewWtf8), 1
       ]);
   },
   /expected memory index 0, found 1/);
@@ -361,7 +346,7 @@ assertInvalid(
     builder.addFunction("string.encode_wtf8/no-mem", kSig_i_wi)
       .addBody([
         kExprLocalGet, 0, kExprLocalGet, 1,
-        kGCPrefix, kExprStringEncodeWtf8, 0, kWtf8PolicyAccept
+        ...GCInstr(kExprStringEncodeWtf8), 0
       ]);
   },
   /memory instruction with no memory/);
@@ -372,44 +357,10 @@ assertInvalid(
     builder.addFunction("string.encode_wtf8/bad-mem", kSig_i_wi)
       .addBody([
         kExprLocalGet, 0, kExprLocalGet, 1,
-        kGCPrefix, kExprStringEncodeWtf8, 1, kWtf8PolicyAccept
+        ...GCInstr(kExprStringEncodeWtf8), 1
       ]);
   },
   /expected memory index 0, found 1/);
-
-assertInvalid(
-  builder => {
-    builder.addMemory(0, undefined, false, false);
-    builder.addFunction("string.encode_wtf8/bad-policy", kSig_i_wi)
-      .addBody([
-        kExprLocalGet, 0, kExprLocalGet, 1,
-        kGCPrefix, kExprStringEncodeWtf8, 0, 3
-      ]);
-  },
-  /expected wtf8 policy 0, 1, or 2, but found 3/);
-
-assertInvalid(
-  builder => {
-    builder.addFunction("string.measure_wtf8/bad-policy", kSig_i_w)
-      .addBody([
-        kExprLocalGet, 0,
-        kGCPrefix, kExprStringMeasureWtf8, 3
-      ]);
-  },
-  /expected wtf8 policy 0, 1, or 2, but found 3/);
-
-assertInvalid(
-  builder => {
-    let i8_array = builder.addArray(kWasmI8, true);
-    builder.addFunction("string.new_wtf8_array/bad-policy", kSig_w_v)
-      .addBody([
-        kExprRefNull, i8_array,
-        kExprI32Const, 0,
-        kExprI32Const, 0,
-        kGCPrefix, kExprStringNewWtf8Array, 3
-      ]);
-  },
-  /expected wtf8 policy 0, 1, or 2, but found 3/);
 
 assertInvalid(
   builder => {
@@ -419,7 +370,7 @@ assertInvalid(
         kExprRefNull, i16_array,
         kExprI32Const, 0,
         kExprI32Const, 0,
-        kGCPrefix, kExprStringNewWtf8Array, kWtf8PolicyAccept
+        ...GCInstr(kExprStringNewWtf8Array)
       ]);
   },
   /string.new_wtf8_array\[0\] expected array of i8, found ref.null of type \(ref null 0\)/);
@@ -432,7 +383,7 @@ assertInvalid(
         kExprRefNull, i8_array,
         kExprI32Const, 0,
         kExprI32Const, 0,
-        kGCPrefix, kExprStringNewWtf16Array
+        ...GCInstr(kExprStringNewWtf16Array)
       ]);
   },
   /string.new_wtf16_array\[0\] expected array of i16, found ref.null of type \(ref null 0\)/);
@@ -449,7 +400,7 @@ assertInvalid(
         kExprLocalGet, 0,
         kExprLocalGet, 1,
         kExprLocalGet, 2,
-        kGCPrefix, kExprStringEncodeWtf8Array, kWtf8PolicyAccept,
+        ...GCInstr(kExprStringEncodeWtf8Array)
       ]);
   },
   /string.encode_wtf8_array\[1\] expected array of mutable i8, found local.get of type \(ref 0\)/);
@@ -466,7 +417,7 @@ assertInvalid(
         kExprLocalGet, 0,
         kExprLocalGet, 1,
         kExprLocalGet, 2,
-        kGCPrefix, kExprStringEncodeWtf16Array,
+        ...GCInstr(kExprStringEncodeWtf16Array),
       ]);
   },
   /string.encode_wtf16_array\[1\] expected array of mutable i16, found local.get of type \(ref 0\)/);

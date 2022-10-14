@@ -27,11 +27,6 @@
 #include "v8-unwinder.h"           // NOLINT(build/include_directory)
 #include "v8config.h"              // NOLINT(build/include_directory)
 
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 namespace v8 {
 
 class CppHeap;
@@ -200,6 +195,11 @@ enum RAILMode : unsigned {
 enum class MemoryPressureLevel { kNone, kModerate, kCritical };
 
 /**
+ * Indicator for the stack state.
+ */
+using StackState = cppgc::EmbedderStackState;
+
+/**
  * Isolate represents an isolated instance of the V8 engine.  V8 isolates have
  * completely separate states.  Objects from one isolate must not be used in
  * other isolates.  The embedder can create multiple isolates and use them in
@@ -294,12 +294,6 @@ class V8_EXPORT Isolate {
      */
     FatalErrorCallback fatal_error_callback = nullptr;
     OOMErrorCallback oom_error_callback = nullptr;
-
-    /**
-     * The following parameter is experimental and may change significantly.
-     * This is currently for internal testing.
-     */
-    Isolate* experimental_attach_to_shared_isolate = nullptr;
   };
 
   /**
@@ -540,6 +534,9 @@ class V8_EXPORT Isolate {
     kInvalidatedMegaDOMProtector = 112,
     kFunctionPrototypeArguments = 113,
     kFunctionPrototypeCaller = 114,
+    kTurboFanOsrCompileStarted = 115,
+    kAsyncStackTaggingCreateTaskCall = 116,
+    kDurationFormat = 117,
 
     // If you add new values here, you'll also need to update Chromium's:
     // web_feature.mojom, use_counter_callback.cc, and enums.xml. V8 changes to
@@ -927,6 +924,7 @@ class V8_EXPORT Isolate {
   void RemoveGCPrologueCallback(GCCallbackWithData, void* data = nullptr);
   void RemoveGCPrologueCallback(GCCallback callback);
 
+  START_ALLOW_USE_DEPRECATED()
   /**
    * Sets the embedder heap tracer for the isolate.
    * SetEmbedderHeapTracer cannot be used simultaneously with AttachCppHeap.
@@ -938,6 +936,7 @@ class V8_EXPORT Isolate {
    * SetEmbedderHeapTracer.
    */
   EmbedderHeapTracer* GetEmbedderHeapTracer();
+  END_ALLOW_USE_DEPRECATED()
 
   /**
    * Sets an embedder roots handle that V8 should consider when performing
@@ -1163,9 +1162,8 @@ class V8_EXPORT Isolate {
    * LowMemoryNotification() instead to influence the garbage collection
    * schedule.
    */
-  void RequestGarbageCollectionForTesting(
-      GarbageCollectionType type,
-      EmbedderHeapTracer::EmbedderStackState stack_state);
+  void RequestGarbageCollectionForTesting(GarbageCollectionType type,
+                                          StackState stack_state);
 
   /**
    * Set the callback to invoke for logging event.
@@ -1532,10 +1530,6 @@ class V8_EXPORT Isolate {
 
   void SetWasmExceptionsEnabledCallback(WasmExceptionsEnabledCallback callback);
 
-  V8_DEPRECATED("Dynamic tiering is now enabled by default")
-  void SetWasmDynamicTieringEnabledCallback(WasmDynamicTieringEnabledCallback) {
-  }
-
   void SetSharedArrayBufferConstructorEnabledCallback(
       SharedArrayBufferConstructorEnabledCallback callback);
 
@@ -1696,9 +1690,5 @@ MaybeLocal<T> Isolate::GetDataFromSnapshotOnce(size_t index) {
 }
 
 }  // namespace v8
-
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // INCLUDE_V8_ISOLATE_H_

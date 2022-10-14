@@ -9,7 +9,6 @@
 
 #include "include/libplatform/libplatform.h"
 #include "include/v8-initialization.h"
-#include "src/wasm/function-body-decoder-impl.h"
 #include "src/wasm/module-decoder-impl.h"
 #include "src/wasm/names-provider.h"
 #include "src/wasm/string-builder-multiline.h"
@@ -101,6 +100,11 @@ class InstructionStatistics {
 
   void RecordCodeSize(size_t chunk) { total_code_size_ += chunk; }
 
+  void RecordLocals(uint32_t count, uint32_t size) {
+    locals_count_ += count;
+    locals_size_ += size;
+  }
+
   void WriteTo(std::ostream& out) {
     // Sort by number of occurrences.
     std::vector<Entry> sorted;
@@ -134,19 +138,24 @@ class InstructionStatistics {
     out << std::setw(8) << "% of code\n";
 
     // Print instruction counts.
-    for (const Entry& e : sorted) {
-      out << std::setw(longest_mnemo) << std::left
-          << WasmOpcodes::OpcodeName(e.opcode);
-      out << std::setw(count_digits) << std::right << e.count;
+    auto PrintLine = [&](const char* name, uint32_t count,
+                         uint32_t total_size) {
+      out << std::setw(longest_mnemo) << std::left << name;
+      out << std::setw(count_digits) << std::right << count;
       out << std::setw(kSpacing) << " ";
-      out << std::setw(8) << e.total_size;
+      out << std::setw(8) << total_size;
       out << std::setw(kSpacing) << " ";
       out << std::fixed << std::setprecision(2) << std::setw(8)
-          << static_cast<double>(e.total_size) / e.count;
+          << static_cast<double>(total_size) / count;
       out << std::setw(kSpacing) << " ";
       out << std::fixed << std::setprecision(1) << std::setw(8)
-          << 100.0 * e.total_size / total_code_size_ << "%\n";
+          << 100.0 * total_size / this->total_code_size_ << "%\n";
+    };
+    for (const Entry& e : sorted) {
+      PrintLine(WasmOpcodes::OpcodeName(e.opcode), e.count, e.total_size);
     }
+    out << "\n";
+    PrintLine("locals", locals_count_, locals_size_);
 
     // Print most common immediate values.
     for (const auto& imm : immediates) {
@@ -193,6 +202,8 @@ class InstructionStatistics {
   std::unordered_map<WasmOpcode, Entry> entries;
   std::map<WasmOpcode, OpcodeImmediates> immediates;
   size_t total_code_size_ = 0;
+  uint32_t locals_count_ = 0;
+  uint32_t locals_size_ = 0;
 };
 
 // A variant of FunctionBodyDisassembler that can produce "annotated hex dump"
@@ -223,7 +234,6 @@ class ExtendedFunctionDis : public FunctionBodyDisassembler {
 
     // Decode and print locals.
     uint32_t locals_length;
-    InitializeLocalsFromSig();
     DecodeLocals(pc_, &locals_length);
     if (failed()) {
       // TODO(jkummerow): Better error handling.
@@ -325,6 +335,7 @@ class ExtendedFunctionDis : public FunctionBodyDisassembler {
     uint32_t locals_length;
     DecodeLocals(pc_, &locals_length);
     if (failed()) return;
+    stats.RecordLocals(num_locals(), locals_length);
     consume_bytes(locals_length);
     while (pc_ < end_) {
       WasmOpcode opcode = GetOpcode();
@@ -345,10 +356,24 @@ class ExtendedFunctionDis : public FunctionBodyDisassembler {
 // A variant of ModuleDisassembler that produces "annotated hex dump" format,
 // e.g.:
 //     0x01, 0x70, 0x00,  // table count 1: funcref no maximum
+class HexDumpModuleDis;
+class DumpingModuleDecoder : public ModuleDecoderTemplate<HexDumpModuleDis> {
+ public:
+  DumpingModuleDecoder(const ModuleWireBytes wire_bytes,
+                       HexDumpModuleDis* module_dis)
+      : ModuleDecoderTemplate<HexDumpModuleDis>(
+            WasmFeatures::All(), wire_bytes.start(), wire_bytes.end(),
+            kWasmOrigin, *module_dis) {}
+
+  void onFirstError() override {
+    // Pretend we've reached the end of the section, but contrary to the
+    // superclass implementation do so without moving {pc_}, so whatever
+    // bytes caused the failure can still be dumped correctly.
+    end_ = pc_;
+  }
+};
 class HexDumpModuleDis {
  public:
-  using DumpingModuleDecoder = ModuleDecoderTemplate<HexDumpModuleDis>;
-
   HexDumpModuleDis(MultiLineStringBuilder& out, const WasmModule* module,
                    NamesProvider* names, const ModuleWireBytes wire_bytes,
                    AccountingAllocator* allocator)
@@ -357,35 +382,39 @@ class HexDumpModuleDis {
         names_(names),
         wire_bytes_(wire_bytes),
         allocator_(allocator),
-        zone_(allocator, "disassembler") {
-    for (const WasmImport& import : module->import_table) {
-      switch (import.kind) {
-        // clang-format off
-        case kExternalFunction:                       break;
-        case kExternalTable:    next_table_index_++;  break;
-        case kExternalMemory:                         break;
-        case kExternalGlobal:   next_global_index_++; break;
-        case kExternalTag:      next_tag_index_++;    break;
-          // clang-format on
-      }
-    }
-  }
+        zone_(allocator, "disassembler") {}
 
   // Public entrypoint.
   void PrintModule() {
-    constexpr bool verify_functions = false;
-    DumpingModuleDecoder decoder(WasmFeatures::All(), wire_bytes_.start(),
-                                 wire_bytes_.end(), kWasmOrigin, *this);
+    DumpingModuleDecoder decoder(wire_bytes_, this);
     decoder_ = &decoder;
+
+    // If the module failed validation, create fakes to allow us to print
+    // what we can.
+    std::unique_ptr<WasmModule> fake_module;
+    std::unique_ptr<NamesProvider> names_provider;
+    if (!names_) {
+      fake_module.reset(
+          new WasmModule(std::make_unique<Zone>(allocator_, "fake module")));
+      names_provider.reset(
+          new NamesProvider(fake_module.get(), wire_bytes_.module_bytes()));
+      names_ = names_provider.get();
+    }
+
     out_ << "[";
     out_.NextLine(0);
+    constexpr bool verify_functions = false;
     decoder.DecodeModule(nullptr, allocator_, verify_functions);
     out_ << "]";
 
     if (total_bytes_ != wire_bytes_.length()) {
       std::cerr << "WARNING: OUTPUT INCOMPLETE. Disassembled " << total_bytes_
                 << " out of " << wire_bytes_.length() << " bytes.\n";
-      // TODO(jkummerow): Would it be helpful to DCHECK here?
+    }
+
+    // For cleanliness, reset {names_} if it's pointing at a fake.
+    if (names_ == names_provider.get()) {
+      names_ = nullptr;
     }
   }
 
@@ -491,7 +520,7 @@ class HexDumpModuleDis {
   // We don't care about offsets, but we can use these hooks to provide
   // helpful indexing comments in long lists.
   void TypeOffset(uint32_t offset) {
-    if (module_->types.size() > 3) {
+    if (!module_ || module_->types.size() > 3) {
       description_ << "type #" << next_type_index_ << " ";
       names_->PrintTypeName(description_, next_type_index_);
       next_type_index_++;
@@ -501,14 +530,20 @@ class HexDumpModuleDis {
     description_ << "import #" << next_import_index_++;
     NextLine();
   }
+  void ImportsDone() {
+    const WasmModule* module = decoder_->shared_module().get();
+    next_table_index_ = static_cast<uint32_t>(module->tables.size());
+    next_global_index_ = static_cast<uint32_t>(module->globals.size());
+    next_tag_index_ = static_cast<uint32_t>(module->tags.size());
+  }
   void TableOffset(uint32_t offset) {
-    if (module_->tables.size() > 3) {
+    if (!module_ || module_->tables.size() > 3) {
       description_ << "table #" << next_table_index_++;
     }
   }
   void MemoryOffset(uint32_t offset) {}
   void TagOffset(uint32_t offset) {
-    if (module_->tags.size() > 3) {
+    if (!module_ || module_->tags.size() > 3) {
       description_ << "tag #" << next_tag_index_++ << ":";
     }
   }
@@ -517,13 +552,13 @@ class HexDumpModuleDis {
   }
   void StartOffset(uint32_t offset) {}
   void ElementOffset(uint32_t offset) {
-    if (module_->elem_segments.size() > 3) {
+    if (!module_ || module_->elem_segments.size() > 3) {
       description_ << "segment #" << next_segment_index_++;
       NextLine();
     }
   }
   void DataOffset(uint32_t offset) {
-    if (module_->data_segments.size() > 3) {
+    if (!module_ || module_->data_segments.size() > 3) {
       description_ << "data segment #" << next_data_segment_index_++;
       NextLine();
     }
@@ -536,7 +571,9 @@ class HexDumpModuleDis {
     WasmFeatures detected;
     auto sig = FixedSizeSignature<ValueType>::Returns(expected_type);
     uint32_t offset = decoder_->pc_offset();
-    ExtendedFunctionDis d(&zone_, module_, 0, &detected, &sig, start, end,
+    const WasmModule* module = module_;
+    if (!module) module = decoder_->shared_module().get();
+    ExtendedFunctionDis d(&zone_, module, 0, &detected, &sig, start, end,
                           offset, names_);
     d.HexdumpConstantExpression(out_);
     total_bytes_ += static_cast<size_t>(end - start);
@@ -546,7 +583,9 @@ class HexDumpModuleDis {
     const byte* end = start + func->code.length();
     WasmFeatures detected;
     uint32_t offset = static_cast<uint32_t>(start - decoder_->start());
-    ExtendedFunctionDis d(&zone_, module_, func->func_index, &detected,
+    const WasmModule* module = module_;
+    if (!module) module = decoder_->shared_module().get();
+    ExtendedFunctionDis d(&zone_, module, func->func_index, &detected,
                           func->sig, start, end, offset, names_);
     d.HexDump(out_, FunctionBodyDisassembler::kSkipHeader);
     total_bytes_ += func->code.length();
@@ -592,9 +631,6 @@ class HexDumpModuleDis {
       }
     }
   }
-
-  // TODO(jkummerow): Consider using an OnFirstError() override to offer
-  // help when decoding fails.
 
  private:
   static constexpr uint32_t kDontCareAboutOffsets = 0;
@@ -688,31 +724,33 @@ class HexDumpModuleDis {
 
 class FormatConverter {
  public:
+  enum Status { kNotReady, kIoInitialized, kModuleReady };
+
   explicit FormatConverter(const char* input, const char* output)
       : output_(output), out_(output_.get()) {
     if (!output_.ok()) return;
     if (!LoadFile(input)) return;
     base::Vector<const byte> wire_bytes(raw_bytes_.data(), raw_bytes_.size());
     wire_bytes_ = ModuleWireBytes({raw_bytes_.data(), raw_bytes_.size()});
+    status_ = kIoInitialized;
     ModuleResult result =
         DecodeWasmModuleForDisassembler(start(), end(), &allocator_);
     if (result.failed()) {
       WasmError error = result.error();
       std::cerr << "Decoding error: " << error.message() << " at offset "
                 << error.offset() << "\n";
-      // TODO(jkummerow): Show some disassembly.
       return;
     }
-    ok_ = true;
+    status_ = kModuleReady;
     module_ = result.value();
     names_provider_ =
         std::make_unique<NamesProvider>(module_.get(), wire_bytes);
   }
 
-  bool ok() const { return ok_; }
+  Status status() const { return status_; }
 
   void ListFunctions() {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     const WasmModule* m = module();
     uint32_t num_functions = static_cast<uint32_t>(m->functions.size());
     out_ << "There are " << num_functions << " functions ("
@@ -729,7 +767,7 @@ class FormatConverter {
   }
 
   void SectionStats() {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     Decoder decoder(start(), end());
     decoder.consume_bytes(kModuleHeaderSize, "module header");
 
@@ -758,7 +796,7 @@ class FormatConverter {
   }
 
   void Strip() {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     Decoder decoder(start(), end());
     out_.write(reinterpret_cast<const char*>(decoder.pc()), kModuleHeaderSize);
     decoder.consume_bytes(kModuleHeaderSize);
@@ -772,7 +810,7 @@ class FormatConverter {
   }
 
   void InstructionStats() {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     Zone zone(&allocator_, "disassembler");
     InstructionStatistics stats;
     for (uint32_t i = module()->num_imported_functions;
@@ -790,7 +828,7 @@ class FormatConverter {
   }
 
   void DisassembleFunction(uint32_t func_index, OutputMode mode) {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     MultiLineStringBuilder sb;
     if (func_index >= module()->functions.size()) {
       sb << "Invalid function index!\n";
@@ -825,7 +863,7 @@ class FormatConverter {
   }
 
   void WatForModule() {
-    DCHECK(ok_);
+    DCHECK_EQ(status_, kModuleReady);
     MultiLineStringBuilder sb;
     ModuleDisassembler md(sb, module(), names(), wire_bytes_, &allocator_);
     md.PrintModule({0, 2});
@@ -833,7 +871,9 @@ class FormatConverter {
   }
 
   void HexdumpForModule() {
-    DCHECK(ok_);
+    DCHECK_NE(status_, kNotReady);
+    DCHECK_IMPLIES(status_ == kIoInitialized,
+                   module() == nullptr && names() == nullptr);
     MultiLineStringBuilder sb;
     HexDumpModuleDis md(sb, module(), names(), wire_bytes_, &allocator_);
     md.PrintModule();
@@ -1008,7 +1048,7 @@ class FormatConverter {
   AccountingAllocator allocator_;
   Output output_;
   std::ostream& out_;
-  bool ok_{false};
+  Status status_{kNotReady};
   std::vector<byte> raw_bytes_;
   ModuleWireBytes wire_bytes_{{}};
   std::shared_ptr<WasmModule> module_;
@@ -1147,7 +1187,13 @@ int main(int argc, char** argv) {
   v8::V8::Initialize();
 
   FormatConverter fc(options.input, options.output);
-  if (!fc.ok()) return 1;
+  if (fc.status() == FormatConverter::kNotReady) return 1;
+  // Allow hex dumping invalid modules.
+  if (fc.status() != FormatConverter::kModuleReady &&
+      options.action != Action::kFullHexdump) {
+    std::cerr << "Consider using --full-hexdump to learn more.\n";
+    return 1;
+  }
   switch (options.action) {
     case Action::kListFunctions:
       fc.ListFunctions();

@@ -69,10 +69,14 @@ class Profiler;
 class SourcePosition;
 class Ticker;
 
+#if defined(V8_OS_WIN) && defined(V8_ENABLE_ETW_STACK_WALKING)
+class ETWJitLogger;
+#endif
+
 #undef LOG
-#define LOG(isolate, Call)                                         \
-  do {                                                             \
-    if (v8::internal::FLAG_log) (isolate)->v8_file_logger()->Call; \
+#define LOG(isolate, Call)                                             \
+  do {                                                                 \
+    if (v8::internal::v8_flags.log) (isolate)->v8_file_logger()->Call; \
   } while (false)
 
 #define LOG_CODE_EVENT(isolate, Call)                        \
@@ -95,7 +99,7 @@ class ExistingCodeLogger {
   void LogExistingFunction(
       Handle<SharedFunctionInfo> shared, Handle<AbstractCode> code,
       LogEventListener::CodeTag tag = LogEventListener::CodeTag::kFunction);
-  void LogCodeObject(Object object);
+  void LogCodeObject(AbstractCode object);
 
  private:
   Isolate* isolate_;
@@ -133,6 +137,11 @@ class V8FileLogger : public LogEventListener {
 
   // Sets the current code event handler.
   void SetCodeEventHandler(uint32_t options, JitCodeEventHandler event_handler);
+
+#if defined(V8_OS_WIN) && defined(V8_ENABLE_ETW_STACK_WALKING)
+  void SetEtwCodeEventHandler(uint32_t options);
+  void ResetEtwCodeEventHandler();
+#endif
 
   sampler::Sampler* sampler();
   V8_EXPORT_PRIVATE std::string file_name() const;
@@ -235,13 +244,6 @@ class V8FileLogger : public LogEventListener {
 
   V8_EXPORT_PRIVATE void TimerEvent(v8::LogEventStatus se, const char* name);
 
-  void BasicBlockCounterEvent(const char* name, int block_id, uint32_t count);
-
-  void BasicBlockBranchEvent(const char* name, int true_block_id,
-                             int false_block_id);
-
-  void BuiltinHashEvent(const char* name, int hash);
-
   static void EnterExternal(Isolate* isolate);
   static void LeaveExternal(Isolate* isolate);
 
@@ -268,7 +270,11 @@ class V8FileLogger : public LogEventListener {
   V8_EXPORT_PRIVATE bool is_logging();
 
   bool is_listening_to_code_events() override {
-    return is_logging() || jit_logger_ != nullptr;
+    return
+#if defined(V8_OS_WIN) && defined(V8_ENABLE_ETW_STACK_WALKING)
+        etw_jit_logger_ != nullptr ||
+#endif
+        is_logging() || jit_logger_ != nullptr;
   }
 
   void LogExistingFunction(Handle<SharedFunctionInfo> shared,
@@ -306,7 +312,7 @@ class V8FileLogger : public LogEventListener {
   void TickEvent(TickSample* sample, bool overflow);
   void RuntimeCallTimerEvent();
 
-  // Logs a StringEvent regardless of whether FLAG_log is true.
+  // Logs a StringEvent regardless of whether v8_flags.log is true.
   void UncheckedStringEvent(const char* name, const char* value);
 
   // Logs a scripts sources. Keeps track of all logged scripts to ensure that
@@ -352,7 +358,7 @@ class V8FileLogger : public LogEventListener {
   std::unique_ptr<JitLogger> gdb_jit_logger_;
 #endif
 #if defined(V8_OS_WIN) && defined(V8_ENABLE_ETW_STACK_WALKING)
-  std::unique_ptr<JitLogger> etw_jit_logger_;
+  std::unique_ptr<ETWJitLogger> etw_jit_logger_;
 #endif
   std::set<int> logged_source_code_;
   uint32_t next_source_info_id_ = 0;

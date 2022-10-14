@@ -24,8 +24,6 @@ namespace internal {
 // Convenience for platform-independent signatures.
 using MemOperand = Operand;
 
-class StringConstantBase;
-
 struct SmiIndex {
   SmiIndex(Register index_register, ScaleFactor scale)
       : reg(index_register), scale(scale) {}
@@ -228,11 +226,11 @@ class V8_EXPORT_PRIVATE TurboAssembler
   Condition CheckSmi(Operand src);
 
   // Abort execution if argument is a smi, enabled via --debug-code.
-  void AssertNotSmi(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertNotSmi(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a smi, enabled via --debug-code.
-  void AssertSmi(Register object) NOOP_UNLESS_DEBUG_CODE;
-  void AssertSmi(Operand object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertSmi(Register object) NOOP_UNLESS_DEBUG_CODE
+  void AssertSmi(Operand object) NOOP_UNLESS_DEBUG_CODE
 
   // Test-and-jump functions. Typically combines a check function
   // above with a conditional jump.
@@ -352,15 +350,13 @@ class V8_EXPORT_PRIVATE TurboAssembler
   // Move src0 to dst0 and src1 to dst1, handling possible overlaps.
   void MovePair(Register dst0, Register src0, Register dst1, Register src1);
 
-  void MoveStringConstant(
-      Register result, const StringConstantBase* string,
-      RelocInfo::Mode rmode = RelocInfo::FULL_EMBEDDED_OBJECT);
-
   // Convert smi to word-size sign-extended value.
   void SmiUntag(Register reg);
+  void SmiUntagUnsigned(Register reg);
   // Requires dst != src
   void SmiUntag(Register dst, Register src);
   void SmiUntag(Register dst, Operand src);
+  void SmiUntagUnsigned(Register dst, Operand src);
 
   // Convert smi to 32-bit value.
   void SmiToInt32(Register reg);
@@ -419,6 +415,7 @@ class V8_EXPORT_PRIVATE TurboAssembler
   void LoadCodeTEntry(Register destination, Register code);
   void CallCodeTObject(Register code);
   void JumpCodeTObject(Register code, JumpMode jump_mode = JumpMode::kJump);
+  void CodeDataContainerFromCodeT(Register destination, Register codet);
 
   void Jump(Address destination, RelocInfo::Mode rmode);
   void Jump(const ExternalReference& reference);
@@ -457,15 +454,19 @@ class V8_EXPORT_PRIVATE TurboAssembler
 
   // Calls Abort(msg) if the condition cc is not satisfied.
   // Use --debug_code to enable.
-  void Assert(Condition cc, AbortReason reason) NOOP_UNLESS_DEBUG_CODE;
+  void Assert(Condition cc, AbortReason reason) NOOP_UNLESS_DEBUG_CODE
 
   // Like Assert(), but without condition.
   // Use --debug_code to enable.
-  void AssertUnreachable(AbortReason reason) NOOP_UNLESS_DEBUG_CODE;
+  void AssertUnreachable(AbortReason reason) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if a 64 bit register containing a 32 bit payload does not
   // have zeros in the top 32 bits, enabled via --debug-code.
-  void AssertZeroExtended(Register reg) NOOP_UNLESS_DEBUG_CODE;
+  void AssertZeroExtended(Register reg) NOOP_UNLESS_DEBUG_CODE
+
+  // Abort execution if the signed bit of smi register with pointer compression
+  // is not zero, enabled via --debug-code.
+  void AssertSignedBitOfSmiIsZero(Register smi) NOOP_UNLESS_DEBUG_CODE
 
   // Like Assert(), but always enabled.
   void Check(Condition cc, AbortReason reason);
@@ -605,6 +606,7 @@ class V8_EXPORT_PRIVATE TurboAssembler
 
   // Loads a field containing smi value and untags it.
   void SmiUntagField(Register dst, Operand src);
+  void SmiUntagFieldUnsigned(Register dst, Operand src);
 
   // Compresses tagged value if necessary and stores it to given on-heap
   // location.
@@ -828,30 +830,44 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void TestCodeTIsMarkedForDeoptimization(Register codet, Register scratch);
   Immediate ClearedValue() const;
 
+  // Tiering support.
+  void AssertFeedbackVector(Register object) NOOP_UNLESS_DEBUG_CODE
+  void ReplaceClosureCodeWithOptimizedCode(Register optimized_code,
+                                           Register closure, Register scratch1,
+                                           Register slot_address);
+  void GenerateTailCallToReturnedCode(Runtime::FunctionId function_id,
+                                      JumpMode jump_mode = JumpMode::kJump);
+  void LoadFeedbackVectorFlagsAndJumpIfNeedsProcessing(
+      Register flags, Register feedback_vector, CodeKind current_code_kind,
+      Label* flags_need_processing);
+  void OptimizeCodeOrTailCallOptimizedCodeSlot(
+      Register flags, Register feedback_vector, Register closure,
+      JumpMode jump_mode = JumpMode::kJump);
+
   // Abort execution if argument is not a CodeT, enabled via --debug-code.
-  void AssertCodeT(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertCodeT(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
-  void AssertConstructor(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertConstructor(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
-  void AssertFunction(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a callable JSFunction, enabled via
   // --debug-code.
-  void AssertCallableFunction(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertCallableFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
-  void AssertBoundFunction(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertBoundFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSGeneratorObject (or subclass),
   // enabled via --debug-code.
-  void AssertGeneratorObject(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertGeneratorObject(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not undefined or an AllocationSite, enabled
   // via --debug-code.
-  void AssertUndefinedOrAllocationSite(Register object) NOOP_UNLESS_DEBUG_CODE;
+  void AssertUndefinedOrAllocationSite(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // ---------------------------------------------------------------------------
   // Exception handling
@@ -903,12 +919,12 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   // ---------------------------------------------------------------------------
   // StatsCounter support
   void IncrementCounter(StatsCounter* counter, int value) {
-    if (!FLAG_native_code_counters) return;
+    if (!v8_flags.native_code_counters) return;
     EmitIncrementCounter(counter, value);
   }
   void EmitIncrementCounter(StatsCounter* counter, int value);
   void DecrementCounter(StatsCounter* counter, int value) {
-    if (!FLAG_native_code_counters) return;
+    if (!v8_flags.native_code_counters) return;
     EmitDecrementCounter(counter, value);
   }
   void EmitDecrementCounter(StatsCounter* counter, int value);

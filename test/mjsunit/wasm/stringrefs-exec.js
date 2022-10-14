@@ -162,21 +162,21 @@ function makeWtf8TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyReject
+      ...GCInstr(kExprStringNewUtf8), 0
     ]);
 
   builder.addFunction("string_new_wtf8", kSig_w_ii)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyAccept
+      ...GCInstr(kExprStringNewWtf8), 0
     ]);
 
   builder.addFunction("string_new_utf8_sloppy", kSig_w_ii)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf8, 0, kWtf8PolicyReplace
+      ...GCInstr(kExprStringNewLossyUtf8), 0
     ]);
 
   let instance = builder.instantiate();
@@ -245,7 +245,7 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprStringNewWtf16, 0
+      ...GCInstr(kExprStringNewWtf16), 0
     ]);
 
   let instance = builder.instantiate();
@@ -261,10 +261,10 @@ function makeWtf16TestDataSegment() {
 
     builder.addFunction("string_const" + index, kSig_w_v)
       .exportFunc()
-      .addBody([kGCPrefix, kExprStringConst, index]);
+      .addBody([...GCInstr(kExprStringConst), index]);
 
     builder.addGlobal(kWasmStringRef, false,
-                      [kGCPrefix, kExprStringConst, index])
+                      [...GCInstr(kExprStringConst), index])
       .exportAs("global" + index);
   }
 
@@ -282,50 +282,34 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, 0
+      ...GCInstr(kExprStringMeasureUtf8)
     ]);
 
   builder.addFunction("string_measure_wtf8", kSig_i_w)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, 1
-    ]);
-
-  builder.addFunction("string_measure_wtf8_replace", kSig_i_w)
-    .exportFunc()
-    .addBody([
-      kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf8, 2
+      ...GCInstr(kExprStringMeasureWtf8)
     ]);
 
   builder.addFunction("string_measure_utf8_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringMeasureWtf8, 0
+      ...GCInstr(kExprStringMeasureUtf8)
     ]);
 
   builder.addFunction("string_measure_wtf8_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringMeasureWtf8, 1
-    ]);
-
-  builder.addFunction("string_measure_wtf8_replace_null", kSig_i_v)
-    .exportFunc()
-    .addBody([
-      kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringMeasureWtf8, 2
+      ...GCInstr(kExprStringMeasureWtf8)
     ]);
 
   let instance = builder.instantiate();
   for (let str of interestingStrings) {
     let wtf8 = encodeWtf8(str);
     assertEquals(wtf8.length, instance.exports.string_measure_wtf8(str));
-    assertEquals(wtf8.length,
-                 instance.exports.string_measure_wtf8_replace(str));
     if (HasIsolatedSurrogate(str)) {
       assertEquals(-1, instance.exports.string_measure_utf8(str));
     } else {
@@ -337,8 +321,6 @@ function makeWtf16TestDataSegment() {
                WebAssembly.RuntimeError, "dereferencing a null pointer");
   assertThrows(() => instance.exports.string_measure_wtf8_null(),
                WebAssembly.RuntimeError, "dereferencing a null pointer");
-  assertThrows(() => instance.exports.string_measure_wtf8_replace_null(),
-               WebAssembly.RuntimeError, "dereferencing a null pointer");
 })();
 
 (function TestStringMeasureWtf16() {
@@ -348,14 +330,14 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringMeasureWtf16
+      ...GCInstr(kExprStringMeasureWtf16)
     ]);
 
   builder.addFunction("string_measure_wtf16_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringMeasureWtf16
+      ...GCInstr(kExprStringMeasureWtf16)
     ]);
 
   let instance = builder.instantiate();
@@ -372,13 +354,15 @@ function makeWtf16TestDataSegment() {
 
   builder.addMemory(1, undefined, true /* exported */, false);
 
-  for (let [policy, name] of ["utf8", "wtf8", "replace"].entries()) {
+  for (let [instr, name] of [[kExprStringEncodeUtf8, "utf8"],
+                             [kExprStringEncodeWtf8, "wtf8"],
+                             [kExprStringEncodeLossyUtf8, "replace"]]) {
     builder.addFunction("encode_" + name, kSig_i_wi)
       .exportFunc()
       .addBody([
         kExprLocalGet, 0,
         kExprLocalGet, 1,
-        kGCPrefix, kExprStringEncodeWtf8, 0, policy,
+        ...GCInstr(instr), 0,
       ]);
   }
 
@@ -387,7 +371,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
         kExprRefNull, kStringRefCode,
         kExprI32Const, 42,
-        kGCPrefix, kExprStringEncodeWtf8, 0, 0,
+        ...GCInstr(kExprStringEncodeWtf8), 0, 0,
       ]);
 
   let instance = builder.instantiate();
@@ -473,7 +457,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprLocalGet, 0,
       kExprLocalGet, 1,
-      kGCPrefix, kExprStringEncodeWtf16, 0,
+      ...GCInstr(kExprStringEncodeWtf16), 0,
     ]);
 
   builder.addFunction("encode_null", kSig_i_v)
@@ -481,7 +465,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
         kExprRefNull, kStringRefCode,
         kExprI32Const, 42,
-        kGCPrefix, kExprStringEncodeWtf16, 0,
+        ...GCInstr(kExprStringEncodeWtf16), 0,
       ]);
 
   let instance = builder.instantiate();
@@ -552,7 +536,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprLocalGet, 0,
       kExprLocalGet, 1,
-      kGCPrefix, kExprStringConcat
+      ...GCInstr(kExprStringConcat)
     ]);
 
   builder.addFunction("concat_null_head", kSig_w_w)
@@ -560,14 +544,14 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringConcat
+      ...GCInstr(kExprStringConcat)
     ]);
   builder.addFunction("concat_null_tail", kSig_w_w)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringConcat
+      ...GCInstr(kExprStringConcat)
     ]);
 
   let instance = builder.instantiate();
@@ -592,7 +576,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprLocalGet, 0,
       kExprLocalGet, 1,
-      kGCPrefix, kExprStringEq
+      ...GCInstr(kExprStringEq)
     ]);
 
   builder.addFunction("eq_null_a", kSig_i_w)
@@ -600,21 +584,21 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringEq
+      ...GCInstr(kExprStringEq)
     ]);
   builder.addFunction("eq_null_b", kSig_i_w)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringEq
+      ...GCInstr(kExprStringEq)
     ]);
   builder.addFunction("eq_both_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringEq
+      ...GCInstr(kExprStringEq)
     ]);
 
   let instance = builder.instantiate();
@@ -639,14 +623,14 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringIsUsvSequence
+      ...GCInstr(kExprStringIsUsvSequence)
     ]);
 
   builder.addFunction("is_usv_sequence_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringIsUsvSequence
+      ...GCInstr(kExprStringIsUsvSequence)
     ]);
 
   let instance = builder.instantiate();
@@ -665,28 +649,34 @@ function makeWtf16TestDataSegment() {
 
   builder.addMemory(1, undefined, true /* exported */, false);
 
+  builder.addFunction("view_from_null", kSig_v_v).exportFunc().addBody([
+    kExprRefNull, kStringRefCode,
+    ...GCInstr(kExprStringAsWtf16),
+    kExprDrop,
+  ]);
+
   builder.addFunction("length", kSig_i_w)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf16,
-      kGCPrefix, kExprStringViewWtf16Length
+      ...GCInstr(kExprStringAsWtf16),
+      ...GCInstr(kExprStringViewWtf16Length)
     ]);
 
   builder.addFunction("length_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringViewWtf16Code,
-      kGCPrefix, kExprStringViewWtf16Length
+      ...GCInstr(kExprStringViewWtf16Length)
     ]);
 
   builder.addFunction("get_codeunit", kSig_i_wi)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf16,
+      ...GCInstr(kExprStringAsWtf16),
       kExprLocalGet, 1,
-      kGCPrefix, kExprStringViewWtf16GetCodeunit
+      ...GCInstr(kExprStringViewWtf16GetCodeunit)
     ]);
 
   builder.addFunction("get_codeunit_null", kSig_i_v)
@@ -694,18 +684,18 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringViewWtf16Code,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf16GetCodeunit
+      ...GCInstr(kExprStringViewWtf16GetCodeunit)
     ]);
 
   builder.addFunction("encode", kSig_i_wiii)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf16,
+      ...GCInstr(kExprStringAsWtf16),
       kExprLocalGet, 1,
       kExprLocalGet, 2,
       kExprLocalGet, 3,
-      kGCPrefix, kExprStringViewWtf16Encode, 0
+      ...GCInstr(kExprStringViewWtf16Encode), 0
     ]);
 
   builder.addFunction("encode_null", kSig_i_v)
@@ -715,17 +705,17 @@ function makeWtf16TestDataSegment() {
       kExprI32Const, 0,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf16Encode, 0
+      ...GCInstr(kExprStringViewWtf16Encode), 0
     ]);
 
   builder.addFunction("slice", kSig_w_wii)
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf16,
+      ...GCInstr(kExprStringAsWtf16),
       kExprLocalGet, 1,
       kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf16Slice
+      ...GCInstr(kExprStringViewWtf16Slice)
     ]);
 
   builder.addFunction("slice_null", kSig_w_v)
@@ -734,7 +724,7 @@ function makeWtf16TestDataSegment() {
       kExprRefNull, kStringViewWtf16Code,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf16Slice
+      ...GCInstr(kExprStringViewWtf16Slice)
     ]);
 
   let instance = builder.instantiate();
@@ -816,6 +806,8 @@ function makeWtf16TestDataSegment() {
   assertEquals("oo", instance.exports.slice("foo", 1, 100));
   assertEquals("", instance.exports.slice("foo", 1, 0));
 
+  assertThrows(() => instance.exports.view_from_null(),
+               WebAssembly.RuntimeError, 'dereferencing a null pointer');
   assertThrows(() => instance.exports.length_null(),
                WebAssembly.RuntimeError, "dereferencing a null pointer");
   assertThrows(() => instance.exports.get_codeunit_null(),
@@ -837,10 +829,10 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf8,
+      ...GCInstr(kExprStringAsWtf8),
       kExprLocalGet, 1,
       kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf8Advance
+      ...GCInstr(kExprStringViewWtf8Advance)
     ]);
 
   builder.addFunction("advance_null", kSig_i_v)
@@ -849,21 +841,22 @@ function makeWtf16TestDataSegment() {
       kExprRefNull, kStringViewWtf8Code,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf8Advance
+      ...GCInstr(kExprStringViewWtf8Advance)
     ]);
 
-  for (let [name, policy] of Object.entries({utf8: kWtf8PolicyReject,
-                                             wtf8: kWtf8PolicyAccept,
-                                             replace: kWtf8PolicyReplace})) {
+  for (let [instr, name] of
+       [[kExprStringViewWtf8EncodeUtf8, "utf8"],
+        [kExprStringViewWtf8EncodeWtf8, "wtf8"],
+        [kExprStringViewWtf8EncodeLossyUtf8, "replace"]]) {
     builder.addFunction(`encode_${name}`, kSig_ii_wiii)
       .exportFunc()
       .addBody([
         kExprLocalGet, 0,
-        kGCPrefix, kExprStringAsWtf8,
+        ...GCInstr(kExprStringAsWtf8),
         kExprLocalGet, 1,
         kExprLocalGet, 2,
         kExprLocalGet, 3,
-        kGCPrefix, kExprStringViewWtf8Encode, 0, policy
+        ...GCInstr(instr), 0
       ]);
   }
   builder.addFunction("encode_null", kSig_v_v)
@@ -873,7 +866,7 @@ function makeWtf16TestDataSegment() {
       kExprI32Const, 0,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf8Encode, 0, kWtf8PolicyAccept,
+      ...GCInstr(kExprStringViewWtf8EncodeWtf8), 0,
       kExprDrop,
       kExprDrop
     ]);
@@ -882,10 +875,10 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsWtf8,
+      ...GCInstr(kExprStringAsWtf8),
       kExprLocalGet, 1,
       kExprLocalGet, 2,
-      kGCPrefix, kExprStringViewWtf8Slice
+      ...GCInstr(kExprStringViewWtf8Slice)
     ]);
   builder.addFunction("slice_null", kSig_v_v)
     .exportFunc()
@@ -893,7 +886,7 @@ function makeWtf16TestDataSegment() {
       kExprRefNull, kStringViewWtf8Code,
       kExprI32Const, 0,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewWtf8Slice,
+      ...GCInstr(kExprStringViewWtf8Slice),
       kExprDrop
     ]);
 
@@ -1049,7 +1042,7 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringAsIter,
+      ...GCInstr(kExprStringAsIter),
       kExprGlobalSet, global.index
     ]);
 
@@ -1057,7 +1050,7 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprRefNull, kStringRefCode,
-      kGCPrefix, kExprStringAsIter,
+      ...GCInstr(kExprStringAsIter),
       kExprDrop
     ]);
 
@@ -1065,14 +1058,14 @@ function makeWtf16TestDataSegment() {
     .exportFunc()
     .addBody([
       kExprGlobalGet, global.index,
-      kGCPrefix, kExprStringViewIterNext
+      ...GCInstr(kExprStringViewIterNext)
     ]);
 
   builder.addFunction("next_null", kSig_i_v)
     .exportFunc()
     .addBody([
       kExprRefNull, kStringViewIterCode,
-      kGCPrefix, kExprStringViewIterNext
+      ...GCInstr(kExprStringViewIterNext)
     ]);
 
   builder.addFunction("advance", kSig_i_i)
@@ -1080,7 +1073,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprGlobalGet, global.index,
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringViewIterAdvance
+      ...GCInstr(kExprStringViewIterAdvance)
     ]);
 
   builder.addFunction("advance_null", kSig_i_v)
@@ -1088,7 +1081,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringViewIterCode,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewIterAdvance
+      ...GCInstr(kExprStringViewIterAdvance)
     ]);
 
   builder.addFunction("rewind", kSig_i_i)
@@ -1096,7 +1089,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprGlobalGet, global.index,
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringViewIterRewind
+      ...GCInstr(kExprStringViewIterRewind)
     ]);
 
   builder.addFunction("rewind_null", kSig_i_v)
@@ -1104,7 +1097,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringViewIterCode,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewIterRewind
+      ...GCInstr(kExprStringViewIterRewind)
     ]);
 
   builder.addFunction("slice", kSig_w_i)
@@ -1112,7 +1105,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprGlobalGet, global.index,
       kExprLocalGet, 0,
-      kGCPrefix, kExprStringViewIterSlice
+      ...GCInstr(kExprStringViewIterSlice)
     ]);
 
   builder.addFunction("slice_null", kSig_w_i)
@@ -1120,7 +1113,7 @@ function makeWtf16TestDataSegment() {
     .addBody([
       kExprRefNull, kStringViewIterCode,
       kExprI32Const, 0,
-      kGCPrefix, kExprStringViewIterSlice
+      ...GCInstr(kExprStringViewIterSlice)
     ]);
 
   let instance = builder.instantiate();

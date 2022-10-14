@@ -46,6 +46,7 @@
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-date-time-format-inl.h"
 #include "src/objects/js-display-names-inl.h"
+#include "src/objects/js-duration-format-inl.h"
 #endif  // V8_INTL_SUPPORT
 #include "src/objects/js-generator-inl.h"
 #ifdef V8_INTL_SUPPORT
@@ -63,6 +64,7 @@
 #include "src/objects/js-segmenter-inl.h"
 #include "src/objects/js-segments-inl.h"
 #endif  // V8_INTL_SUPPORT
+#include "src/objects/js-raw-json-inl.h"
 #include "src/objects/js-shared-array-inl.h"
 #include "src/objects/js-struct-inl.h"
 #include "src/objects/js-temporal-objects-inl.h"
@@ -555,7 +557,7 @@ void Map::MapVerify(Isolate* isolate) {
         IsJSAtomicsCondition()) {
       CHECK(InSharedHeap());
       CHECK(GetBackPointer().IsUndefined(isolate));
-      Object maybe_cell = prototype_validity_cell();
+      Object maybe_cell = prototype_validity_cell(kRelaxedLoad);
       if (maybe_cell.IsCell()) CHECK(maybe_cell.InSharedHeap());
       CHECK(!is_extensible());
       CHECK(!is_prototype_map());
@@ -878,7 +880,7 @@ void ConsString::ConsStringVerify(Isolate* isolate) {
 
 void ThinString::ThinStringVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::ThinStringVerify(*this, isolate);
-  CHECK(!HasForwardingIndex());
+  CHECK(!HasForwardingIndex(kAcquireLoad));
   CHECK(actual().IsInternalizedString());
   CHECK(actual().IsSeqString() || actual().IsExternalString());
 }
@@ -1091,19 +1093,27 @@ void CodeDataContainer::CodeDataContainerVerify(Isolate* isolate) {
   CHECK(next_code_link().IsCodeT() || next_code_link().IsUndefined(isolate));
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
     if (raw_code() != Smi::zero()) {
+      Code code = this->code();
 #ifdef V8_EXTERNAL_CODE_SPACE
-      // kind and builtin_id() getters are not available on CodeDataContainer
+      // kind() and builtin_id() getters are not available on CodeDataContainer
       // when external code space is not enabled.
-      CHECK_EQ(code().kind(), kind());
-      CHECK_EQ(code().builtin_id(), builtin_id());
+      CHECK_EQ(code.kind(), kind());
+      CHECK_EQ(code.builtin_id(), builtin_id());
+      if (V8_REMOVE_BUILTINS_CODE_OBJECTS) {
+        // When v8_flags.interpreted_frames_native_stack is enabled each
+        // interpreted function gets its own copy of the
+        // InterpreterEntryTrampoline. Thus, there could be Code'ful builtins.
+        CHECK_IMPLIES(isolate->embedded_blob_code() && is_off_heap_trampoline(),
+                      builtin_id() == Builtin::kInterpreterEntryTrampoline);
+      }
 #endif  // V8_EXTERNAL_CODE_SPACE
-      CHECK_EQ(code().code_data_container(kAcquireLoad), *this);
+      CHECK_EQ(code.code_data_container(kAcquireLoad), *this);
 
       // Ensure the cached code entry point corresponds to the Code object
       // associated with this CodeDataContainer.
 #ifdef V8_COMPRESS_POINTERS_IN_SHARED_CAGE
       if (V8_SHORT_BUILTIN_CALLS_BOOL) {
-        if (code().InstructionStart() == code_entry_point()) {
+        if (code.InstructionStart() == code_entry_point()) {
           // Most common case, all good.
         } else {
           // When shared pointer compression cage is enabled and it has the
@@ -1118,13 +1128,13 @@ void CodeDataContainer::CodeDataContainerVerify(Isolate* isolate) {
               isolate->heap()->GcSafeFindCodeForInnerPointer(
                   code_entry_point());
           CHECK(lookup_result.IsFound());
-          CHECK_EQ(lookup_result.ToCode(), code());
+          CHECK_EQ(lookup_result.ToCode(), code);
         }
       } else {
-        CHECK_EQ(code().InstructionStart(), code_entry_point());
+        CHECK_EQ(code.InstructionStart(), code_entry_point());
       }
 #else
-      CHECK_EQ(code().InstructionStart(), code_entry_point());
+      CHECK_EQ(code.InstructionStart(), code_entry_point());
 #endif  // V8_COMPRESS_POINTERS_IN_SHARED_CAGE
     }
   }
@@ -1291,7 +1301,7 @@ void JSSharedArray::JSSharedArrayVerify(Isolate* isolate) {
 void WeakCell::WeakCellVerify(Isolate* isolate) {
   CHECK(IsWeakCell());
 
-  CHECK(target().IsJSReceiver() || target().IsUndefined(isolate));
+  CHECK(target().IsUndefined(isolate) || target().CanBeHeldWeakly());
 
   CHECK(prev().IsWeakCell() || prev().IsUndefined(isolate));
   if (prev().IsWeakCell()) {
@@ -1319,7 +1329,7 @@ void WeakCell::WeakCellVerify(Isolate* isolate) {
 void JSWeakRef::JSWeakRefVerify(Isolate* isolate) {
   CHECK(IsJSWeakRef());
   JSObjectVerify(isolate);
-  CHECK(target().IsUndefined(isolate) || target().IsJSReceiver());
+  CHECK(target().IsUndefined(isolate) || target().CanBeHeldWeakly());
 }
 
 void JSFinalizationRegistry::JSFinalizationRegistryVerify(Isolate* isolate) {
@@ -1550,7 +1560,7 @@ void JSRegExp::JSRegExpVerify(Isolate* isolate) {
 
       bool is_compiled = latin1_code.IsCodeT();
       if (is_compiled) {
-        CHECK_EQ(FromCodeT(CodeT::cast(latin1_code)).builtin_id(),
+        CHECK_EQ(CodeT::cast(latin1_code).builtin_id(),
                  Builtin::kRegExpExperimentalTrampoline);
         CHECK_EQ(uc16_code, latin1_code);
 
@@ -1901,7 +1911,7 @@ void AllocationSite::AllocationSiteVerify(Isolate* isolate) {
 
 void Script::ScriptVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::ScriptVerify(*this, isolate);
-  if V8_UNLIKELY (type() == Script::TYPE_WEB_SNAPSHOT) {
+  if (V8_UNLIKELY(type() == Script::TYPE_WEB_SNAPSHOT)) {
     CHECK_LE(shared_function_info_count(), shared_function_infos().length());
   } else {
     // No overallocating shared_function_infos.
@@ -1918,7 +1928,7 @@ void Script::ScriptVerify(Isolate* isolate) {
 
 void NormalizedMapCache::NormalizedMapCacheVerify(Isolate* isolate) {
   WeakFixedArray::cast(*this).WeakFixedArrayVerify(isolate);
-  if (FLAG_enable_slow_asserts) {
+  if (v8_flags.enable_slow_asserts) {
     for (int i = 0; i < length(); i++) {
       MaybeObject e = WeakFixedArray::Get(i);
       HeapObject heap_object;

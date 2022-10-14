@@ -7,19 +7,10 @@
 
 #include <memory>
 
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable: 4251)
-#endif
-
 #include "libplatform/libplatform-export.h"
 #include "libplatform/v8-tracing.h"
 #include "v8-platform.h"  // NOLINT(build/include_directory)
 #include "v8config.h"     // NOLINT(build/include_directory)
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif
 
 namespace v8 {
 namespace platform {

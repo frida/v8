@@ -12,17 +12,20 @@ vars = {
   # Fetches only the SDK boot images which match at least one of the whitelist
   # entries in a comma-separated list.
   #
-  # Only the X64 and ARM64 QEMU images are downloaded by default. Developers
-  # that need to boot on other target architectures or devices can opt to
-  # download more boot images. Example of images include:
+  # Available images:
+  #   Emulation:
+  #   - qemu.x64 (pulls terminal.qemu-x64-release)
+  #   - qemu.arm64 (pulls terminal.qemu-arm64-release)
+  #   - workstation.qemu-x64-release
+  #   Hardware:
+  #   - generic.x64 (pulls terminal.x64-debug)
+  #   - generic.arm64 (pulls terminal.arm64-debug)
+  #   - chromebook.x64 (pulls terminal.chromebook-x64-debug)
   #
-  # Emulation:
-  #   qemu.x64, qemu.arm64
-  # Hardware:
-  #   generic.x64, generic.arm64
-  #
-  # Wildcards are supported (e.g. "qemu.*").
-  'checkout_fuchsia_boot_images': "qemu.x64,qemu.arm64",
+  # Since the images are hundreds of MB, default to only downloading the image
+  # most commonly useful for developers. Bots and developers that need to use
+  # other images (e.g., qemu.arm64) can override this with additional images.
+  'checkout_fuchsia_boot_images': "qemu.x64",
 
   'checkout_instrumented_libraries': False,
   'checkout_ittapi': False,
@@ -43,15 +46,19 @@ vars = {
   'reclient_version': 're_client_version:0.69.0.458df98-gomaip',
 
   # GN CIPD package version.
-  'gn_version': 'git_revision:9ef321772ecc161937db69acb346397e0ccc484d',
+  'gn_version': 'git_revision:cc28efe62ef0c2fb32455f414a29c4a55bb7fbc4',
+
+  # ninja CIPD package version
+  # https://chrome-infra-packages.appspot.com/p/infra/3pp/tools/ninja
+  'ninja_version': 'version:2@1.8.2.chromium.3',
 
   # luci-go CIPD package version.
-  'luci_go': 'git_revision:a0ba80649473055bae3d789eec28c9967adb5e45',
+  'luci_go': 'git_revision:20c50aa39686d91330c2daceccaa4ef1a0a72ee4',
 
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling Fuchsia sdk
   # and whatever else without interference from each other.
-  'fuchsia_version': 'version:9.20220728.1.1',
+  'fuchsia_version': 'version:9.20220919.2.1',
 
   # Three lines of non-changing comments so that
   # the commit queue can handle CLs rolling android_sdk_build-tools_version
@@ -89,11 +96,11 @@ vars = {
 
 deps = {
   'base/trace_event/common':
-    Var('chromium_url') + '/chromium/src/base/trace_event/common.git' + '@' + '2ba7a48ca6167ee8ef311a7f3bc60b5e5cf5ee79',
+    Var('chromium_url') + '/chromium/src/base/trace_event/common.git' + '@' + '521ac34ebd795939c7e16b37d9d3ddb40e8ed556',
   'build':
-    Var('chromium_url') + '/chromium/src/build.git' + '@' + '664331e40d91ab9c6e6e306b2c4865014e92dc49',
+    Var('chromium_url') + '/chromium/src/build.git' + '@' + '7e7c21a9ac34c4fc2b255aa44d639efec9c33b90',
   'buildtools':
-    Var('chromium_url') + '/chromium/src/buildtools.git' + '@' + '56cc5bc2236676397fd722076690ae742e46c1ca',
+    Var('chromium_url') + '/chromium/src/buildtools.git' + '@' + '9174abb6ac087b46f22248dc713b6c0328b8f774',
   'buildtools/clang_format/script':
     Var('chromium_url') + '/external/github.com/llvm/llvm-project/clang/tools/clang-format.git' + '@' + '8b525d2747f2584fc35d8c7e612e66f377858df7',
   'buildtools/linux64': {
@@ -117,11 +124,11 @@ deps = {
     'condition': 'host_os == "mac"',
   },
   'buildtools/third_party/libc++/trunk':
-    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libcxx.git' + '@' + '6c8f712bc4430d582f00f7c341d768a38d8f9334',
+    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libcxx.git' + '@' + '2e919977e0030ce61bd19c40cefe31b995f1e2d4',
   'buildtools/third_party/libc++abi/trunk':
-    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libcxxabi.git' + '@' + '039323b945911a54cb7400da8fb14fcbb0348e97',
+    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libcxxabi.git' + '@' + 'db2a783a7d1ef0f0ef31da4b6e3de0c31fcfd93f',
   'buildtools/third_party/libunwind/trunk':
-    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libunwind.git' + '@' + '012c3438e0795fa6ad1626f1f5e1c0ab577b91f6',
+    Var('chromium_url') + '/external/github.com/llvm/llvm-project/libunwind.git' + '@' + '08ebcbe7b672a04e341cb3a88d8bf4276f96ac6e',
   'buildtools/win': {
     'packages': [
       {
@@ -147,32 +154,13 @@ deps = {
   'test/mozilla/data':
     Var('chromium_url') + '/v8/deps/third_party/mozilla-tests.git' + '@' + 'f6c578a10ea707b1a8ab0b88943fe5115ce2b9be',
   'test/test262/data':
-    Var('chromium_url') + '/external/github.com/tc39/test262.git' + '@' + 'e41d581c6dd372c304b82db891405e6da76db635',
-  'third_party/aemu-linux-x64': {
-      'packages': [
-          {
-              'package': 'fuchsia/third_party/aemu/linux-amd64',
-              'version': 'vRCm89BzABss-_H8vC-tLjcSf6uusZA9IBSSYtdw4_kC'
-          },
-      ],
-      'condition': 'host_os == "linux" and checkout_fuchsia',
-      'dep_type': 'cipd',
-  },
-  'third_party/aemu-mac-x64': {
-      'packages': [
-          {
-              'package': 'fuchsia/third_party/aemu/mac-amd64',
-              'version': 'T9bWxf8aUC5TwCFgPxpuW29Mfy-7Z9xCfXB9QO8MfU0C'
-          },
-      ],
-      'condition': 'host_os == "mac" and checkout_fuchsia',
-      'dep_type': 'cipd',
-  },
+    Var('chromium_url') + '/external/github.com/tc39/test262.git' + '@' + '58b7a2358286b918efd38eac4b2facbc8ada1206',
   'third_party/android_ndk': {
     'url': Var('chromium_url') + '/android_ndk.git' + '@' + '8388a2be5421311dc75c5f937aae13d821a27f3d',
+    'condition': 'checkout_android',
   },
   'third_party/android_platform': {
-    'url': Var('chromium_url') + '/chromium/src/third_party/android_platform.git' + '@' + 'de32b1862372e928445327947d66845ccafb695c',
+    'url': Var('chromium_url') + '/chromium/src/third_party/android_platform.git' + '@' + '04b33506bfd9d0e866bd8bd62f4cbf323d84dc79',
     'condition': 'checkout_android',
   },
   'third_party/android_sdk/public': {
@@ -214,14 +202,15 @@ deps = {
       'dep_type': 'cipd',
   },
   'third_party/catapult': {
-    'url': Var('chromium_url') + '/catapult.git' + '@' + '84a7988038ae00e1e861381fedf76e233337843f',
+    'url': Var('chromium_url') + '/catapult.git' + '@' + 'ff03621a71c01a6f2b0f3bf2677cf815291a9e85',
+    'condition': 'checkout_android',
   },
   'third_party/colorama/src': {
     'url': Var('chromium_url') + '/external/colorama.git' + '@' + '799604a1041e9b3bc5d2789ecbd7e8db2e18e6b8',
     'condition': 'checkout_android',
   },
   'third_party/depot_tools':
-    Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + '2cd48234f1fdef2e61a06a7a43479fe8407baaf0',
+    Var('chromium_url') + '/chromium/tools/depot_tools.git' + '@' + 'a724859f7a9b3531c0373d86886a42314e772532',
   'third_party/fuchsia-sdk/sdk': {
     'packages': [
         {
@@ -233,12 +222,12 @@ deps = {
     'dep_type': 'cipd',
   },
   'third_party/google_benchmark/src': {
-    'url': Var('chromium_url') + '/external/github.com/google/benchmark.git' + '@' + 'ef7f75fb182fc23d03b4a3ecd09cc325ac125dfd',
+    'url': Var('chromium_url') + '/external/github.com/google/benchmark.git' + '@' + 'e8baf2622591569a27615b31372d1e9cc046af10',
   },
   'third_party/googletest/src':
     Var('chromium_url') + '/external/github.com/google/googletest.git' + '@' + 'af29db7ec28d6df1c7f0f745186884091e602e07',
   'third_party/icu':
-    Var('chromium_url') + '/chromium/deps/icu.git' + '@' + '50ec7b3822a90d73aa761b21fc941b485a1cb9d6',
+    Var('chromium_url') + '/chromium/deps/icu.git' + '@' + '20f8ac695af59b6c830def7d4e95bfeb13dd7be5',
   'third_party/instrumented_libraries':
     Var('chromium_url') + '/chromium/src/third_party/instrumented_libraries.git' + '@' + 'e09c4b66b6e87116eb190651421f1a6e2f3b9c52',
   'third_party/ittapi': {
@@ -255,38 +244,27 @@ deps = {
     Var('chromium_url') + '/infra/luci/luci-py/client/libs/logdog' + '@' + '0b2078a90f7a638d576b3a7c407d136f2fb62399',
   'third_party/markupsafe':
     Var('chromium_url') + '/chromium/src/third_party/markupsafe.git' + '@' + '1b882ef6372b58bfd55a3285f37ed801be9137cd',
+  'third_party/ninja': {
+    'packages': [
+      {
+        'package': 'infra/3pp/tools/ninja/${{platform}}',
+        'version': Var('ninja_version'),
+      }
+    ],
+    'dep_type': 'cipd',
+  },
   'third_party/perfetto':
     Var('android_url') + '/platform/external/perfetto.git' + '@' + '0eba417b2c72264fa825dc21067b9adc9b8adf70',
   'third_party/protobuf':
     Var('chromium_url') + '/external/github.com/google/protobuf'+ '@' + '6a59a2ad1f61d9696092f79b6d74368b4d7970a3',
-  'third_party/qemu-linux-x64': {
-      'packages': [
-          {
-              'package': 'fuchsia/qemu/linux-amd64',
-              'version': '9cc486c5b18a0be515c39a280ca9a309c54cf994'
-          },
-      ],
-      'condition': 'host_os == "linux" and checkout_fuchsia',
-      'dep_type': 'cipd',
-  },
-  'third_party/qemu-mac-x64': {
-      'packages': [
-          {
-              'package': 'fuchsia/qemu/mac-amd64',
-              'version': '2d3358ae9a569b2d4a474f498b32b202a152134f'
-          },
-      ],
-      'condition': 'host_os == "mac" and checkout_fuchsia',
-      'dep_type': 'cipd',
-  },
   'third_party/requests': {
       'url': Var('chromium_url') + '/external/github.com/kennethreitz/requests.git' + '@' + 'refs/tags/v2.23.0',
       'condition': 'checkout_android',
   },
   'third_party/zlib':
-    Var('chromium_url') + '/chromium/src/third_party/zlib.git'+ '@' + '8d1d3e341948009ed8dc807a545204e7a1854c33',
+    Var('chromium_url') + '/chromium/src/third_party/zlib.git'+ '@' + 'd689fca54d7b43154f7cf77f785d19f2628fa133',
   'tools/clang':
-    Var('chromium_url') + '/chromium/src/tools/clang.git' + '@' + '5a9c56560805e8c5b47d3db88a2233a38fb04c05',
+    Var('chromium_url') + '/chromium/src/tools/clang.git' + '@' + 'a5e0d72349d028a4023927d6d166a8478355fac3',
   'tools/luci-go': {
       'packages': [
         {
@@ -609,16 +587,6 @@ hooks = [
     'condition': 'host_os == "mac" and checkout_fuchsia',
     'action': ['python3', 'tools/clang/scripts/update.py',
                '--package=objdump'],
-  },
-  # Download and initialize "vpython" VirtualEnv environment packages.
-  {
-    'name': 'vpython_common',
-    'pattern': '.',
-    'condition': 'checkout_android',
-    'action': [ 'vpython',
-                '-vpython-spec', '.vpython',
-                '-vpython-tool', 'install',
-    ],
   },
   {
     'name': 'vpython3_common',

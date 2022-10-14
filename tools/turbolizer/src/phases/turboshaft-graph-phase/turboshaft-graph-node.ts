@@ -7,51 +7,63 @@ import { measureText } from "../../common/util";
 import { TurboshaftGraphEdge } from "./turboshaft-graph-edge";
 import { TurboshaftGraphBlock } from "./turboshaft-graph-block";
 import { Node } from "../../node";
+import { BytecodePosition, SourcePosition } from "../../position";
+import { NodeOrigin } from "../../origin";
 
 export class TurboshaftGraphNode extends Node<TurboshaftGraphEdge<TurboshaftGraphNode>> {
   title: string;
   block: TurboshaftGraphBlock;
+  sourcePosition: SourcePosition;
+  bytecodePosition: BytecodePosition;
+  origin: NodeOrigin;
   opPropertiesType: OpPropertiesType;
-  properties: string;
-  propertiesBox: { width: number, height: number };
 
   constructor(id: number, title: string, block: TurboshaftGraphBlock,
-              opPropertiesType: OpPropertiesType, properties: string) {
+              sourcePosition: SourcePosition, bytecodePosition: BytecodePosition,
+              origin: NodeOrigin, opPropertiesType: OpPropertiesType) {
     super(id);
     this.title = title;
     this.block = block;
+    this.sourcePosition = sourcePosition;
+    this.bytecodePosition = bytecodePosition;
+    this.origin = origin;
     this.opPropertiesType = opPropertiesType;
-    this.properties = properties;
-    this.propertiesBox = measureText(this.properties);
     this.visible = true;
   }
 
-  public getHeight(showProperties: boolean): number {
-    if (this.properties && showProperties) {
-      return this.labelBox.height + this.propertiesBox.height;
-    }
-    return this.labelBox.height;
+  public getHeight(showCustomData: boolean): number {
+    return showCustomData ? this.labelBox.height * 2 : this.labelBox.height;
   }
 
   public getWidth(): number {
     return Math.max(this.inputs.length * C.NODE_INPUT_WIDTH, this.labelBox.width);
   }
 
-  public initDisplayLabel() {
+  public initDisplayLabel(): void {
     this.displayLabel = this.getInlineLabel();
     this.labelBox = measureText(this.displayLabel);
   }
 
   public getTitle(): string {
     let title = `${this.id} ${this.title} ${this.opPropertiesType}`;
+    if (this.origin) {
+      title += `\nOrigin: ${this.origin.toString()}`;
+    }
     if (this.inputs.length > 0) {
       title += `\nInputs: ${this.inputs.map(i => i.source.id).join(", ")}`;
     }
     if (this.outputs.length > 0) {
       title += `\nOutputs: ${this.outputs.map(i => i.target.id).join(", ")}`;
     }
-    const opPropertiesStr = this.properties.length > 0 ? this.properties : "No op properties";
-    return `${title}\n${opPropertiesStr}`;
+    return title;
+  }
+
+  public getHistoryLabel(): string {
+    return `${this.id} ${this.title}`;
+  }
+
+  public getNodeOrigin(): NodeOrigin {
+    return this.origin;
   }
 
   public getInlineLabel(): string {
@@ -59,11 +71,10 @@ export class TurboshaftGraphNode extends Node<TurboshaftGraphEdge<TurboshaftGrap
     return `${this.id} ${this.title}(${this.inputs.map(i => i.source.id).join(",")})`;
   }
 
-  public getReadableProperties(blockWidth: number): string {
-    if (blockWidth > this.propertiesBox.width) return this.properties;
-    const widthOfOneSymbol = Math.floor(this.propertiesBox.width / this.properties.length);
-    const lengthOfReadableProperties = Math.floor(blockWidth / widthOfOneSymbol);
-    return `${this.properties.slice(0, lengthOfReadableProperties - 3)}..`;
+  public equals(that?: TurboshaftGraphNode): boolean {
+    if (!that) return false;
+    if (this.id !== that.id) return false;
+    return this.title === that.title;
   }
 }
 

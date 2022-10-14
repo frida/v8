@@ -45,8 +45,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
  public:
   using TurboAssemblerBase::TurboAssemblerBase;
 
-  void CallBuiltin(Builtin builtin);
-  void TailCallBuiltin(Builtin builtin);
+  void CallBuiltin(Builtin builtin, Condition cond = al);
+  void TailCallBuiltin(Builtin builtin, Condition cond = al);
   void AtomicCmpExchangeHelper(Register addr, Register output,
                                Register old_value, Register new_value,
                                int start, int end, int shift_amount, int offset,
@@ -83,6 +83,15 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   void LoadFromConstantsTable(Register destination, int constant_index) final;
   void LoadRootRegisterOffset(Register destination, intptr_t offset) final;
   void LoadRootRelative(Register destination, int32_t offset) final;
+
+  // Operand pointing to an external reference.
+  // May emit code to set up the scratch register. The operand is
+  // only guaranteed to be correct as long as the scratch register
+  // isn't changed.
+  // If the operand is used more than once, use a scratch register
+  // that is guaranteed not to be clobbered.
+  MemOperand ExternalReferenceAsOperand(ExternalReference reference,
+                                        Register scratch);
 
   // Jump, Call, and Ret pseudo instructions implementing inter-working.
   void Jump(Register target, Condition cond = al);
@@ -313,6 +322,10 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
       }
     }
   }
+  void MulHighS64(Register dst, Register src1, Register src2);
+  void MulHighS64(Register dst, Register src1, const MemOperand& src2);
+  void MulHighU64(Register dst, Register src1, Register src2);
+  void MulHighU64(Register dst, Register src1, const MemOperand& src2);
 
   void MulHighS32(Register dst, Register src1, const MemOperand& src2);
   void MulHighS32(Register dst, Register src1, Register src2);
@@ -926,11 +939,12 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
 
   // Calls Abort(msg) if the condition cond is not satisfied.
   // Use --debug_code to enable.
-  void Assert(Condition cond, AbortReason reason, CRegister cr = cr7);
+  void Assert(Condition cond, AbortReason reason,
+              CRegister cr = cr7) NOOP_UNLESS_DEBUG_CODE
 
   // Like Assert(), but without condition.
   // Use --debug-code to enable.
-  void AssertUnreachable(AbortReason reason);
+  void AssertUnreachable(AbortReason reason) NOOP_UNLESS_DEBUG_CODE
 
   // Like Assert(), but always enabled.
   void Check(Condition cond, AbortReason reason, CRegister cr = cr7);
@@ -1051,7 +1065,7 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
     lgfr(dst, dst);
   }
   void SmiToInt32(Register smi) {
-    if (FLAG_enable_slow_asserts) {
+    if (v8_flags.enable_slow_asserts) {
       AssertSmi(smi);
     }
     DCHECK(SmiValuesAre32Bits() || SmiValuesAre31Bits());
@@ -1065,8 +1079,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   }
 
   // Abort execution if argument is a smi, enabled via --debug-code.
-  void AssertNotSmi(Register object);
-  void AssertSmi(Register object);
+  void AssertNotSmi(Register object) NOOP_UNLESS_DEBUG_CODE
+  void AssertSmi(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Activation support.
   void EnterFrame(StackFrame::Type type,
@@ -1609,14 +1623,14 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 
   void IncrementCounter(StatsCounter* counter, int value, Register scratch1,
                         Register scratch2) {
-    if (!FLAG_native_code_counters) return;
+    if (!v8_flags.native_code_counters) return;
     EmitIncrementCounter(counter, value, scratch1, scratch2);
   }
   void EmitIncrementCounter(StatsCounter* counter, int value, Register scratch1,
                             Register scratch2);
   void DecrementCounter(StatsCounter* counter, int value, Register scratch1,
                         Register scratch2) {
-    if (!FLAG_native_code_counters) return;
+    if (!v8_flags.native_code_counters) return;
     EmitDecrementCounter(counter, value, scratch1, scratch2);
   }
   void EmitDecrementCounter(StatsCounter* counter, int value, Register scratch1,
@@ -1711,26 +1725,28 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
 #endif
 
   // Abort execution if argument is not a Constructor, enabled via --debug-code.
-  void AssertConstructor(Register object, Register scratch);
+  void AssertConstructor(Register object,
+                         Register scratch) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSFunction, enabled via --debug-code.
-  void AssertFunction(Register object);
+  void AssertFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a callable JSFunction, enabled via
   // --debug-code.
-  void AssertCallableFunction(Register object);
+  void AssertCallableFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSBoundFunction,
   // enabled via --debug-code.
-  void AssertBoundFunction(Register object);
+  void AssertBoundFunction(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not a JSGeneratorObject (or subclass),
   // enabled via --debug-code.
-  void AssertGeneratorObject(Register object);
+  void AssertGeneratorObject(Register object) NOOP_UNLESS_DEBUG_CODE
 
   // Abort execution if argument is not undefined or an AllocationSite, enabled
   // via --debug-code.
-  void AssertUndefinedOrAllocationSite(Register object, Register scratch);
+  void AssertUndefinedOrAllocationSite(Register object,
+                                       Register scratch) NOOP_UNLESS_DEBUG_CODE
 
   template <typename Field>
   void DecodeField(Register dst, Register src) {
@@ -1741,6 +1757,19 @@ class V8_EXPORT_PRIVATE MacroAssembler : public TurboAssembler {
   void DecodeField(Register reg) {
     DecodeField<Field>(reg, reg);
   }
+
+  // Tiering support.
+  void AssertFeedbackVector(Register object,
+                            Register scratch) NOOP_UNLESS_DEBUG_CODE
+  void ReplaceClosureCodeWithOptimizedCode(Register optimized_code,
+                                           Register closure, Register scratch1,
+                                           Register slot_address);
+  void GenerateTailCallToReturnedCode(Runtime::FunctionId function_id);
+  void LoadFeedbackVectorFlagsAndJumpIfNeedsProcessing(
+      Register flags, Register feedback_vector, CodeKind current_code_kind,
+      Label* flags_need_processing);
+  void OptimizeCodeOrTailCallOptimizedCodeSlot(Register flags,
+                                               Register feedback_vector);
 
   // ---------------------------------------------------------------------------
   // GC Support

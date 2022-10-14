@@ -5,7 +5,6 @@
 #ifndef V8_WASM_BASELINE_IA32_LIFTOFF_ASSEMBLER_IA32_H_
 #define V8_WASM_BASELINE_IA32_LIFTOFF_ASSEMBLER_IA32_H_
 
-#include "src/base/platform/wrappers.h"
 #include "src/base/v8-fallthrough.h"
 #include "src/codegen/assembler.h"
 #include "src/heap/memory-chunk.h"
@@ -276,7 +275,7 @@ void LiftoffAssembler::PatchPrepareStackFrame(
   // check in the condition code.
   RecordComment("OOL: stack check for large frame");
   Label continuation;
-  if (frame_size < FLAG_stack_size * 1024) {
+  if (frame_size < v8_flags.stack_size * 1024) {
     // We do not have a scratch register, so pick any and push it first.
     Register stack_limit = eax;
     push(stack_limit);
@@ -385,11 +384,12 @@ void LiftoffAssembler::ResetOSRTarget() {}
 
 void LiftoffAssembler::LoadTaggedPointer(Register dst, Register src_addr,
                                          Register offset_reg,
-                                         int32_t offset_imm) {
+                                         int32_t offset_imm, bool needs_shift) {
   DCHECK_GE(offset_imm, 0);
   static_assert(kTaggedSize == kInt32Size);
   Load(LiftoffRegister(dst), src_addr, offset_reg,
-       static_cast<uint32_t>(offset_imm), LoadType::kI32Load);
+       static_cast<uint32_t>(offset_imm), LoadType::kI32Load, nullptr, false,
+       false, needs_shift);
 }
 
 void LiftoffAssembler::LoadFullPointer(Register dst, Register src_addr,
@@ -411,7 +411,7 @@ void LiftoffAssembler::StoreTaggedPointer(Register dst_addr,
                        : Operand(dst_addr, offset_reg, times_1, offset_imm);
   mov(dst_op, src.gp());
 
-  if (skip_write_barrier || FLAG_disable_write_barriers) return;
+  if (skip_write_barrier || v8_flags.disable_write_barriers) return;
 
   Register scratch = pinned.set(GetUnusedRegister(kGpReg, pinned)).gp();
   Label write_barrier;
@@ -432,15 +432,19 @@ void LiftoffAssembler::StoreTaggedPointer(Register dst_addr,
 }
 
 void LiftoffAssembler::Load(LiftoffRegister dst, Register src_addr,
-                            Register offset_reg, uintptr_t offset_imm,
+                            Register offset_reg, uint32_t offset_imm,
                             LoadType type, uint32_t* protected_load_pc,
-                            bool /* is_load_mem */, bool i64_offset) {
+                            bool /* is_load_mem */, bool i64_offset,
+                            bool needs_shift) {
   // Offsets >=2GB are statically OOB on 32-bit systems.
   DCHECK_LE(offset_imm, std::numeric_limits<int32_t>::max());
   DCHECK_EQ(type.value_type() == kWasmI64, dst.is_gp_pair());
-  Operand src_op = offset_reg == no_reg
-                       ? Operand(src_addr, offset_imm)
-                       : Operand(src_addr, offset_reg, times_1, offset_imm);
+  static_assert(times_4 == 2);
+  ScaleFactor scale_factor =
+      !needs_shift ? times_1 : static_cast<ScaleFactor>(type.size_log_2());
+  Operand src_op = offset_reg == no_reg ? Operand(src_addr, offset_imm)
+                                        : Operand(src_addr, offset_reg,
+                                                  scale_factor, offset_imm);
   if (protected_load_pc) *protected_load_pc = pc_offset();
 
   switch (type.value()) {
@@ -508,7 +512,7 @@ void LiftoffAssembler::Load(LiftoffRegister dst, Register src_addr,
 }
 
 void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
-                             uintptr_t offset_imm, LiftoffRegister src,
+                             uint32_t offset_imm, LiftoffRegister src,
                              StoreType type, LiftoffRegList pinned,
                              uint32_t* protected_store_pc,
                              bool /* is_store_mem */, bool /* i64_offset */) {
@@ -577,7 +581,7 @@ void LiftoffAssembler::Store(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
-                                  Register offset_reg, uintptr_t offset_imm,
+                                  Register offset_reg, uint32_t offset_imm,
                                   LoadType type, LiftoffRegList /* pinned */) {
   if (type.value() != LoadType::kI64Load) {
     Load(dst, src_addr, offset_reg, offset_imm, type, nullptr, true);
@@ -596,7 +600,7 @@ void LiftoffAssembler::AtomicLoad(LiftoffRegister dst, Register src_addr,
 }
 
 void LiftoffAssembler::AtomicStore(Register dst_addr, Register offset_reg,
-                                   uintptr_t offset_imm, LiftoffRegister src,
+                                   uint32_t offset_imm, LiftoffRegister src,
                                    StoreType type, LiftoffRegList pinned) {
   DCHECK_NE(offset_reg, no_reg);
   DCHECK_LE(offset_imm, std::numeric_limits<int32_t>::max());
@@ -936,7 +940,7 @@ inline void AtomicBinop64(LiftoffAssembler* lasm, Binop op, Register dst_addr,
 }  // namespace liftoff
 
 void LiftoffAssembler::AtomicAdd(Register dst_addr, Register offset_reg,
-                                 uintptr_t offset_imm, LiftoffRegister value,
+                                 uint32_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
     liftoff::AtomicBinop64(this, liftoff::kAdd, dst_addr, offset_reg,
@@ -949,7 +953,7 @@ void LiftoffAssembler::AtomicAdd(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicSub(Register dst_addr, Register offset_reg,
-                                 uintptr_t offset_imm, LiftoffRegister value,
+                                 uint32_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
     liftoff::AtomicBinop64(this, liftoff::kSub, dst_addr, offset_reg,
@@ -961,7 +965,7 @@ void LiftoffAssembler::AtomicSub(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicAnd(Register dst_addr, Register offset_reg,
-                                 uintptr_t offset_imm, LiftoffRegister value,
+                                 uint32_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
     liftoff::AtomicBinop64(this, liftoff::kAnd, dst_addr, offset_reg,
@@ -974,7 +978,7 @@ void LiftoffAssembler::AtomicAnd(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicOr(Register dst_addr, Register offset_reg,
-                                uintptr_t  offset_imm, LiftoffRegister value,
+                                uint32_t offset_imm, LiftoffRegister value,
                                 LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
     liftoff::AtomicBinop64(this, liftoff::kOr, dst_addr, offset_reg, offset_imm,
@@ -987,7 +991,7 @@ void LiftoffAssembler::AtomicOr(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicXor(Register dst_addr, Register offset_reg,
-                                 uintptr_t offset_imm, LiftoffRegister value,
+                                 uint32_t offset_imm, LiftoffRegister value,
                                  LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
     liftoff::AtomicBinop64(this, liftoff::kXor, dst_addr, offset_reg,
@@ -1000,7 +1004,7 @@ void LiftoffAssembler::AtomicXor(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicExchange(Register dst_addr, Register offset_reg,
-                                      uintptr_t offset_imm,
+                                      uint32_t offset_imm,
                                       LiftoffRegister value,
                                       LiftoffRegister result, StoreType type) {
   if (type.value() == StoreType::kI64Store) {
@@ -1014,7 +1018,7 @@ void LiftoffAssembler::AtomicExchange(Register dst_addr, Register offset_reg,
 }
 
 void LiftoffAssembler::AtomicCompareExchange(
-    Register dst_addr, Register offset_reg, uintptr_t offset_imm,
+    Register dst_addr, Register offset_reg, uint32_t offset_imm,
     LiftoffRegister expected, LiftoffRegister new_value, LiftoffRegister result,
     StoreType type) {
   // We expect that the offset has already been added to {dst_addr}, and no
@@ -1280,6 +1284,11 @@ void LiftoffAssembler::FillStackSlotsWithZero(int start, int size) {
     pop(ecx);
     pop(eax);
   }
+}
+
+void LiftoffAssembler::LoadSpillAddress(Register dst, int offset,
+                                        ValueKind /* kind */) {
+  lea(dst, liftoff::GetStackSlot(offset));
 }
 
 void LiftoffAssembler::emit_i32_add(Register dst, Register lhs, Register rhs) {
@@ -3654,13 +3663,18 @@ void LiftoffAssembler::emit_i16x8_q15mulr_sat_s(LiftoffRegister dst,
 void LiftoffAssembler::emit_i16x8_relaxed_q15mulr_s(LiftoffRegister dst,
                                                     LiftoffRegister src1,
                                                     LiftoffRegister src2) {
-  bailout(kRelaxedSimd, "emit_i16x8_relaxed_q15mulr_s");
+  if (CpuFeatures::IsSupported(AVX) || dst == src1) {
+    Pmulhrsw(dst.fp(), src1.fp(), src2.fp());
+  } else {
+    movdqa(dst.fp(), src1.fp());
+    pmulhrsw(dst.fp(), src2.fp());
+  }
 }
 
 void LiftoffAssembler::emit_i16x8_dot_i8x16_i7x16_s(LiftoffRegister dst,
                                                     LiftoffRegister lhs,
                                                     LiftoffRegister rhs) {
-  bailout(kSimd, "emit_i16x8_dot_i8x16_i7x16_s");
+  I16x8DotI8x16I7x16S(dst.fp(), lhs.fp(), rhs.fp());
 }
 
 void LiftoffAssembler::emit_i32x4_dot_i8x16_i7x16_add_s(LiftoffRegister dst,

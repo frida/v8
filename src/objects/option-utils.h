@@ -36,7 +36,7 @@ V8_WARN_UNUSED_RESULT MaybeHandle<JSReceiver> CoerceOptionsToObject(
 // printing the error message.
 V8_EXPORT_PRIVATE V8_WARN_UNUSED_RESULT Maybe<bool> GetStringOption(
     Isolate* isolate, Handle<JSReceiver> options, const char* property,
-    std::vector<const char*> values, const char* method_name,
+    const std::vector<const char*>& values, const char* method_name,
     std::unique_ptr<char[]>* result);
 
 // A helper template to get string from option into a enum.
@@ -76,8 +76,8 @@ V8_WARN_UNUSED_RESULT static Maybe<T> GetStringOrBooleanOption(
     const std::vector<T>& enum_values, T true_value, T false_value,
     T fallback_value) {
   DCHECK_EQ(str_values.size(), enum_values.size());
-  Handle<String> property_str =
-      isolate->factory()->NewStringFromAsciiChecked(property);
+  Factory* factory = isolate->factory();
+  Handle<String> property_str = factory->NewStringFromAsciiChecked(property);
 
   // 1. Let value be ? Get(options, property).
   Handle<Object> value;
@@ -104,8 +104,14 @@ V8_WARN_UNUSED_RESULT static Maybe<T> GetStringOrBooleanOption(
   // 6. Let value be ? ToString(value).
   ASSIGN_RETURN_ON_EXCEPTION_VALUE(
       isolate, value_str, Object::ToString(isolate, value), Nothing<T>());
-  // If values does not contain an element equal to value, return fallback.
-  // 8. Return value.
+  // 7. If value is *"true"* or *"false"*, return _fallback_.
+  if (String::Equals(isolate, value_str, factory->true_string()) ||
+      String::Equals(isolate, value_str, factory->false_string())) {
+    return Just(fallback_value);
+  }
+  // 8. If values does not contain an element equal to _value_, throw a
+  // *RangeError* exception.
+  // 9. Return value.
   value_str = String::Flatten(isolate, value_str);
   {
     DisallowGarbageCollection no_gc;
@@ -127,7 +133,11 @@ V8_WARN_UNUSED_RESULT static Maybe<T> GetStringOrBooleanOption(
       }
     }
   }  // end of no_gc
-  return Just(fallback_value);
+  THROW_NEW_ERROR_RETURN_VALUE(
+      isolate,
+      NewRangeError(MessageTemplate::kValueOutOfRange, value,
+                    factory->NewStringFromAsciiChecked(method), property_str),
+      Nothing<T>());
 }
 
 // ECMA402 9.2.10. GetOption( options, property, type, values, fallback)

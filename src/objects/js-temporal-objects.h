@@ -137,6 +137,11 @@ class JSTemporalCalendar
       Isolate* isolate, Handle<JSTemporalCalendar> calendar,
       Handle<Object> temporal_date_like);
 
+  // #sec-temporal.calendar.prototype.weekofyear
+  V8_WARN_UNUSED_RESULT static MaybeHandle<Smi> WeekOfYear(
+      Isolate* isolate, Handle<JSTemporalCalendar> calendar,
+      Handle<Object> temporal_date_like);
+
   // #sec-temporal.calendar.prototype.tostring
   V8_WARN_UNUSED_RESULT static MaybeHandle<String> ToString(
       Isolate* isolate, Handle<JSTemporalCalendar> calendar,
@@ -530,6 +535,16 @@ class JSTemporalPlainDateTime
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalPlainDateTime> Round(
       Isolate* isolate, Handle<JSTemporalPlainDateTime> date_time,
       Handle<Object> round_to);
+
+  // #sec-temporal.plaindatetime.prototype.until
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalDuration> Until(
+      Isolate* isolate, Handle<JSTemporalPlainDateTime> date_time,
+      Handle<Object> other, Handle<Object> options);
+
+  // #sec-temporal.plaindatetime.prototype.since
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalDuration> Since(
+      Isolate* isolate, Handle<JSTemporalPlainDateTime> date_time,
+      Handle<Object> other, Handle<Object> options);
 
   // #sec-temporal.plaindatetime.prototype.add
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalPlainDateTime> Add(
@@ -935,13 +950,23 @@ class JSTemporalZonedDateTime
                Handle<Object> time_zone_like);
 
   // #sec-get-temporal.zoneddatetime.prototype.hoursinday
-  V8_WARN_UNUSED_RESULT static MaybeHandle<Smi> HoursInDay(
+  V8_WARN_UNUSED_RESULT static MaybeHandle<Object> HoursInDay(
       Isolate* isolate, Handle<JSTemporalZonedDateTime> zoned_date_time);
 
   // #sec-temporal.zoneddatetime.prototype.round
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalZonedDateTime> Round(
       Isolate* isolate, Handle<JSTemporalZonedDateTime> zoned_date_time,
       Handle<Object> round_to);
+
+  // #sec-temporal.zoneddatetime.prototype.until
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalDuration> Until(
+      Isolate* isolate, Handle<JSTemporalZonedDateTime> date_time,
+      Handle<Object> other, Handle<Object> options);
+
+  // #sec-temporal.zoneddatetime.prototype.since
+  V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalDuration> Since(
+      Isolate* isolate, Handle<JSTemporalZonedDateTime> date_time,
+      Handle<Object> other, Handle<Object> options);
 
   // #sec-temporal.zoneddatetime.prototype.add
   V8_WARN_UNUSED_RESULT static MaybeHandle<JSTemporalZonedDateTime> Add(
@@ -1026,6 +1051,35 @@ class JSTemporalZonedDateTime
 
 namespace temporal {
 
+struct DateRecord {
+  int32_t year;
+  int32_t month;
+  int32_t day;
+};
+
+struct TimeRecord {
+  int32_t hour;
+  int32_t minute;
+  int32_t second;
+  int32_t millisecond;
+  int32_t microsecond;
+  int32_t nanosecond;
+};
+
+struct DateTimeRecord {
+  DateRecord date;
+  TimeRecord time;
+};
+
+// #sec-temporal-createtemporaldatetime
+V8_WARN_UNUSED_RESULT MaybeHandle<JSTemporalPlainDateTime>
+CreateTemporalDateTime(Isolate* isolate, const DateTimeRecord& date_time,
+                       Handle<JSReceiver> calendar);
+
+// #sec-temporal-createtemporaltimezone
+MaybeHandle<JSTemporalTimeZone> CreateTemporalTimeZone(
+    Isolate* isolate, Handle<String> identifier);
+
 // #sec-temporal-createtemporalinstant
 V8_WARN_UNUSED_RESULT MaybeHandle<JSTemporalInstant> CreateTemporalInstant(
     Isolate* isolate, Handle<JSFunction> target, Handle<HeapObject> new_target,
@@ -1083,6 +1137,57 @@ V8_WARN_UNUSED_RESULT MaybeHandle<JSReceiver> ToTemporalTimeZone(
 
 V8_WARN_UNUSED_RESULT MaybeHandle<Oddball> IsInvalidTemporalCalendarField(
     Isolate* isolate, Handle<String> string, Handle<FixedArray> field_names);
+
+// #sec-temporal-getbuiltincalendar
+V8_WARN_UNUSED_RESULT MaybeHandle<JSTemporalCalendar> GetBuiltinCalendar(
+    Isolate* isolate, Handle<String> id);
+
+MaybeHandle<JSTemporalInstant> BuiltinTimeZoneGetInstantForCompatible(
+    Isolate* isolate, Handle<JSReceiver> time_zone,
+    Handle<JSTemporalPlainDateTime> date_time, const char* method_name);
+
+// For Intl.DurationFormat
+
+// #sec-temporal-time-duration-records
+struct TimeDurationRecord {
+  double days;
+  double hours;
+  double minutes;
+  double seconds;
+  double milliseconds;
+  double microseconds;
+  double nanoseconds;
+
+  // #sec-temporal-createtimedurationrecord
+  static Maybe<TimeDurationRecord> Create(Isolate* isolate, double days,
+                                          double hours, double minutes,
+                                          double seconds, double milliseconds,
+                                          double microseconds,
+                                          double nanoseconds);
+};
+
+// #sec-temporal-duration-records
+// Cannot reuse DateDurationRecord here due to duplicate days.
+struct DurationRecord {
+  double years;
+  double months;
+  double weeks;
+  TimeDurationRecord time_duration;
+  // #sec-temporal-createdurationrecord
+  static Maybe<DurationRecord> Create(Isolate* isolate, double years,
+                                      double months, double weeks, double days,
+                                      double hours, double minutes,
+                                      double seconds, double milliseconds,
+                                      double microseconds, double nanoseconds);
+};
+
+// #sec-temporal-topartialduration
+Maybe<DurationRecord> ToPartialDuration(
+    Isolate* isolate, Handle<Object> temporal_duration_like_obj,
+    const DurationRecord& input);
+
+// #sec-temporal-isvalidduration
+bool IsValidDuration(Isolate* isolate, const DurationRecord& dur);
 
 }  // namespace temporal
 }  // namespace internal

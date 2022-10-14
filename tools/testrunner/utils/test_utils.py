@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from io import StringIO
 from os.path import dirname as up
 
-from testrunner.local.command import BaseCommand, DefaultOSContext
+from testrunner.local.command import BaseCommand
 from testrunner.objects import output
+from testrunner.local.context import DefaultOSContext
+from testrunner.local.pool import SingleThreadedExecutionPool
 
 TOOLS_ROOT = up(up(up(os.path.abspath(__file__))))
 sys.path.append(TOOLS_ROOT)
@@ -181,18 +183,26 @@ class TestRunnerTest(unittest.TestCase):
         json_out = clean_json_output(json_out_path, basedir)
         return TestResult(stdout.getvalue(), stderr.getvalue(), code, json_out, self)
 
-    def get_runner_class():
-      """Implement to return the runner class"""
-      return None
+  def get_runner_options(self, baseroot='testroot1'):
+    """Returns a list of all flags parsed by the test runner."""
+    with temp_base(baseroot=baseroot) as basedir:
+      runner = self.get_runner_class()(basedir=basedir)
+      parser = runner._create_parser()
+      return [i.get_opt_string() for i in parser.option_list]
+
+  def get_runner_class():
+    """Implement to return the runner class"""
+    return None
 
 
 class FakeOSContext(DefaultOSContext):
 
   def __init__(self):
-    super(FakeOSContext, self).__init__(FakeCommand)
+    super(FakeOSContext, self).__init__(FakeCommand,
+                                        SingleThreadedExecutionPool())
 
   @contextmanager
-  def context(self, device):
+  def handle_context(self, options):
     print("===>Starting stuff")
     yield
     print("<===Stopping stuff")

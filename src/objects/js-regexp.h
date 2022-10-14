@@ -96,7 +96,11 @@ class JSRegExp : public TorqueGeneratedJSRegExp<JSRegExp, JSObject> {
     base::Optional<RegExpFlag> f = TryRegExpFlagFromChar(c);
     if (!f.has_value()) return f;
     if (f.value() == RegExpFlag::kLinear &&
-        !FLAG_enable_experimental_regexp_engine) {
+        !v8_flags.enable_experimental_regexp_engine) {
+      return {};
+    }
+    if (f.value() == RegExpFlag::kUnicodeSets &&
+        !v8_flags.harmony_regexp_unicode_sets) {
       return {};
     }
     return f;

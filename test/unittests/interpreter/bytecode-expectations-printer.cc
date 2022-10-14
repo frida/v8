@@ -196,7 +196,11 @@ void BytecodeExpectationsPrinter::PrintBytecodeOperand(
     switch (op_type) {
       case OperandType::kFlag8:
         *stream << 'U' << size_tag << '(';
-        *stream << bytecode_iterator.GetFlagOperand(op_index);
+        *stream << bytecode_iterator.GetFlag8Operand(op_index);
+        break;
+      case OperandType::kFlag16:
+        *stream << 'U' << size_tag << '(';
+        *stream << bytecode_iterator.GetFlag16Operand(op_index);
         break;
       case OperandType::kIdx: {
         *stream << 'U' << size_tag << '(';
@@ -389,7 +393,7 @@ void BytecodeExpectationsPrinter::PrintExpectation(
       wrap_ ? WrapCodeInFunction(test_function_name_.c_str(), snippet)
             : snippet;
 
-  i::FLAG_compilation_cache = false;
+  i::v8_flags.compilation_cache = false;
   i::Handle<i::BytecodeArray> bytecode_array;
   if (module_) {
     CHECK(top_level_ && !wrap_);

@@ -265,7 +265,7 @@ bool PagesContainsAddress(size_t length, MemoryRange* pages,
 // Check that we can unwind when the pc is within an optimized code object on
 // the V8 heap.
 TEST(Unwind_CodeObjectPCInMiddle_Success_CodePagesAPI) {
-  FLAG_allow_natives_syntax = true;
+  v8_flags.allow_natives_syntax = true;
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
@@ -296,13 +296,12 @@ TEST(Unwind_CodeObjectPCInMiddle_Success_CodePagesAPI) {
       Handle<JSFunction>::cast(v8::Utils::OpenHandle(*local_foo));
 
   // Put the current PC inside of the created code object.
-  AbstractCode abstract_code = foo->abstract_code(i_isolate);
-  PtrComprCageBase cage_base(i_isolate);
-  // We don't produce optimized code when run with --no-turbofan.
-  if (!abstract_code.IsCode(cage_base) && !FLAG_turbofan) return;
-  CHECK(abstract_code.IsCode(cage_base));
+  CodeT codet = foo->code();
+  // We don't produce optimized code when run with --no-turbofan and
+  // --no-maglev.
+  if (!codet.is_optimized_code()) return;
 
-  Code code = abstract_code.GetCode();
+  Code code = FromCodeT(codet);
   // We don't want the offset too early or it could be the `push rbp`
   // instruction (which is not at the start of generated code, because the lazy
   // deopt check happens before frame setup).
@@ -654,7 +653,7 @@ TEST(PCIsInV8_InJSEntryRange_CodePagesAPI) {
 // Large code objects can be allocated in large object space. Check that this is
 // inside the CodeRange.
 TEST(PCIsInV8_LargeCodeObject_CodePagesAPI) {
-  FLAG_allow_natives_syntax = true;
+  v8_flags.allow_natives_syntax = true;
   LocalContext env;
   v8::Isolate* isolate = env->GetIsolate();
   Isolate* i_isolate = reinterpret_cast<Isolate*>(isolate);
@@ -747,7 +746,7 @@ class UnwinderTestHelper {
 UnwinderTestHelper* UnwinderTestHelper::instance_;
 
 TEST(Unwind_TwoNestedFunctions_CodePagesAPI) {
-  i::FLAG_allow_natives_syntax = true;
+  i::v8_flags.allow_natives_syntax = true;
   const char* test_script =
       "function test_unwinder_api_inner() {"
       "  TryUnwind();"

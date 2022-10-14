@@ -31,7 +31,10 @@ class RememberedSetOperations {
   static void Insert(SlotSet* slot_set, MemoryChunk* chunk, Address slot_addr) {
     DCHECK(chunk->Contains(slot_addr));
     uintptr_t offset = slot_addr - chunk->address();
-    slot_set->Insert<access_mode>(offset);
+    slot_set->Insert<access_mode == v8::internal::AccessMode::ATOMIC
+                         ? v8::internal::SlotSet::AccessMode::ATOMIC
+                         : v8::internal::SlotSet::AccessMode::NON_ATOMIC>(
+        offset);
   }
 
   template <typename Callback>
@@ -298,6 +301,10 @@ class UpdateTypedSlotHelper {
   template <typename Callback>
   static SlotCallbackResult UpdateTypedSlot(Heap* heap, SlotType slot_type,
                                             Address addr, Callback callback);
+
+  // Returns the HeapObject referenced by the given typed slot entry.
+  inline static HeapObject GetTargetObject(Heap* heap, SlotType slot_type,
+                                           Address addr);
 
  private:
   // Updates a code entry slot using an untyped slot callback.

@@ -5,7 +5,7 @@
 // Test specific cases of the lazy/eager-parse decision.
 //
 // Note that presently most unit tests for parsing are found in
-// cctest/test-parsing.cc.
+// parsing-unittest.cc.
 
 #include <unordered_map>
 
@@ -55,7 +55,7 @@ void GetTopLevelFunctionInfo(
 }  // anonymous namespace
 
 TEST_F(ParseDecisionTest, GetTopLevelFunctionInfo) {
-  if (!FLAG_lazy) return;
+  if (!v8_flags.lazy) return;
 
   HandleScope scope(i_isolate());
 
@@ -69,7 +69,7 @@ TEST_F(ParseDecisionTest, GetTopLevelFunctionInfo) {
 }
 
 TEST_F(ParseDecisionTest, EagerlyCompileImmediateUseFunctions) {
-  if (!FLAG_lazy) return;
+  if (!v8_flags.lazy) return;
 
   HandleScope scope(i_isolate());
 
@@ -100,7 +100,7 @@ TEST_F(ParseDecisionTest, EagerlyCompileImmediateUseFunctions) {
 }
 
 TEST_F(ParseDecisionTest, CommaFunctionSequence) {
-  if (!FLAG_lazy) return;
+  if (!v8_flags.lazy) return;
 
   HandleScope scope(i_isolate());
 

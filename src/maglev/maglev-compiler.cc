@@ -13,7 +13,6 @@
 #include "src/base/threaded-list.h"
 #include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/machine-type.h"
-#include "src/codegen/macro-assembler.h"
 #include "src/codegen/register.h"
 #include "src/codegen/reglist.h"
 #include "src/common/globals.h"
@@ -27,6 +26,7 @@
 #include "src/ic/handler-configuration.h"
 #include "src/maglev/maglev-basic-block.h"
 #include "src/maglev/maglev-code-generator.h"
+#include "src/maglev/maglev-compilation-info.h"
 #include "src/maglev/maglev-compilation-unit.h"
 #include "src/maglev/maglev-graph-builder.h"
 #include "src/maglev/maglev-graph-labeller.h"
@@ -35,6 +35,7 @@
 #include "src/maglev/maglev-graph-verifier.h"
 #include "src/maglev/maglev-graph.h"
 #include "src/maglev/maglev-interpreter-frame-state.h"
+#include "src/maglev/maglev-ir-inl.h"
 #include "src/maglev/maglev-ir.h"
 #include "src/maglev/maglev-regalloc.h"
 #include "src/maglev/maglev-vreg-allocator.h"
@@ -49,13 +50,12 @@ namespace maglev {
 
 class UseMarkingProcessor {
  public:
-  void PreProcessGraph(MaglevCompilationInfo*, Graph* graph) {
-    next_node_id_ = kFirstValidNodeId;
-  }
-  void PostProcessGraph(MaglevCompilationInfo*, Graph* graph) {
-    DCHECK(loop_used_nodes_.empty());
-  }
-  void PreProcessBasicBlock(MaglevCompilationInfo*, BasicBlock* block) {
+  explicit UseMarkingProcessor(MaglevCompilationInfo* compilation_info)
+      : compilation_info_(compilation_info) {}
+
+  void PreProcessGraph(Graph* graph) { next_node_id_ = kFirstValidNodeId; }
+  void PostProcessGraph(Graph* graph) { DCHECK(loop_used_nodes_.empty()); }
+  void PreProcessBasicBlock(BasicBlock* block) {
     if (!block->has_state()) return;
     if (block->state()->is_loop()) {
       loop_used_nodes_.push_back(LoopUsedNodes{next_node_id_, {}});
@@ -122,7 +122,7 @@ class UseMarkingProcessor {
       // loop, allow nodes to be "moved" between lifetime extensions.
       LoopUsedNodes* outer_loop_used_nodes = GetCurrentLoopUsedNodes();
       base::Vector<Input> used_node_inputs =
-          state.compilation_info()->zone()->NewVector<Input>(
+          compilation_info_->zone()->NewVector<Input>(
               loop_used_nodes.used_nodes.size());
       int i = 0;
       for (ValueNode* used_node : loop_used_nodes.used_nodes) {
@@ -176,85 +176,52 @@ class UseMarkingProcessor {
     }
   }
 
-  void MarkCheckpointNodes(NodeBase* node, const MaglevCompilationUnit& unit,
-                           const CheckpointedInterpreterState* checkpoint_state,
-                           InputLocation* input_locations,
-                           LoopUsedNodes* loop_used_nodes,
-                           const ProcessingState& state, int& index) {
-    if (checkpoint_state->parent) {
-      MarkCheckpointNodes(node, *unit.caller(), checkpoint_state->parent,
-                          input_locations, loop_used_nodes, state, index);
-    }
-
-    const CompactInterpreterFrameState* register_frame =
-        checkpoint_state->register_frame;
-    int use_id = node->id();
-
-    register_frame->ForEachValue(
-        unit, [&](ValueNode* node, interpreter::Register reg) {
-          MarkUse(node, use_id, &input_locations[index++], loop_used_nodes);
-        });
-  }
   void MarkCheckpointNodes(NodeBase* node, const EagerDeoptInfo* deopt_info,
                            LoopUsedNodes* loop_used_nodes,
                            const ProcessingState& state) {
-    int index = 0;
-    MarkCheckpointNodes(node, deopt_info->unit, &deopt_info->state,
-                        deopt_info->input_locations, loop_used_nodes, state,
-                        index);
+    int use_id = node->id();
+    detail::DeepForEachInput(
+        deopt_info,
+        [&](ValueNode* node, interpreter::Register reg, InputLocation* input) {
+          MarkUse(node, use_id, input, loop_used_nodes);
+        });
   }
   void MarkCheckpointNodes(NodeBase* node, const LazyDeoptInfo* deopt_info,
                            LoopUsedNodes* loop_used_nodes,
                            const ProcessingState& state) {
-    int index = 0;
-
-    if (deopt_info->state.parent) {
-      MarkCheckpointNodes(node, *deopt_info->unit.caller(),
-                          deopt_info->state.parent, deopt_info->input_locations,
-                          loop_used_nodes, state, index);
-    }
-
-    // Handle the top-of-frame info manually, since we have to handle the result
-    // location.
-    const CompactInterpreterFrameState* register_frame =
-        deopt_info->state.register_frame;
     int use_id = node->id();
-
-    register_frame->ForEachValue(
-        deopt_info->unit, [&](ValueNode* node, interpreter::Register reg) {
-          // Skip over the result location.
-          if (reg == deopt_info->result_location) return;
-          MarkUse(node, use_id, &deopt_info->input_locations[index++],
-                  loop_used_nodes);
+    detail::DeepForEachInput(
+        deopt_info,
+        [&](ValueNode* node, interpreter::Register reg, InputLocation* input) {
+          MarkUse(node, use_id, input, loop_used_nodes);
         });
   }
 
+  MaglevCompilationInfo* compilation_info_;
   uint32_t next_node_id_;
   std::vector<LoopUsedNodes> loop_used_nodes_;
 };
 
 class TranslationArrayProcessor {
  public:
-  explicit TranslationArrayProcessor(LocalIsolate* local_isolate)
-      : local_isolate_(local_isolate) {}
+  explicit TranslationArrayProcessor(LocalIsolate* local_isolate,
+                                     MaglevCompilationInfo* compilation_info)
+      : local_isolate_(local_isolate), compilation_info_(compilation_info) {}
 
-  void PreProcessGraph(MaglevCompilationInfo* compilation_info, Graph* graph) {
-    translation_array_builder_ =
-        compilation_info->zone()->New<TranslationArrayBuilder>(
-            compilation_info->zone());
-    deopt_literals_ =
-        compilation_info->zone()
-            ->New<IdentityMap<int, base::DefaultAllocationPolicy>>(
-                local_isolate_->heap()->heap());
+  void PreProcessGraph(Graph* graph) {
+    translation_array_builder_.reset(
+        new TranslationArrayBuilder(compilation_info_->zone()));
+    deopt_literals_.reset(new IdentityMap<int, base::DefaultAllocationPolicy>(
+        local_isolate_->heap()->heap()));
 
     tagged_slots_ = graph->tagged_stack_slots();
   }
 
-  void PostProcessGraph(MaglevCompilationInfo* compilation_info, Graph* graph) {
-    compilation_info->set_translation_array_builder(translation_array_builder_,
-                                                    deopt_literals_);
+  void PostProcessGraph(Graph* graph) {
+    compilation_info_->set_translation_array_builder(
+        std::move(translation_array_builder_), std::move(deopt_literals_));
   }
-  void PreProcessBasicBlock(MaglevCompilationInfo*, BasicBlock* block) {}
+  void PreProcessBasicBlock(BasicBlock* block) {}
 
   void Process(NodeBase* node, const ProcessingState& state) {
     if (node->properties().can_eager_deopt()) {
@@ -266,14 +233,13 @@ class TranslationArrayProcessor {
   }
 
  private:
-  const InputLocation* EmitDeoptFrame(const MaglevCompilationUnit& unit,
-                                      const CheckpointedInterpreterState& state,
-                                      const InputLocation* input_locations) {
+  void EmitDeoptFrame(const MaglevCompilationUnit& unit,
+                      const CheckpointedInterpreterState& state,
+                      const InputLocation*& current_input_location) {
     if (state.parent) {
       // Deopt input locations are in the order of deopt frame emission, so
       // update the pointer after emitting the parent frame.
-      input_locations =
-          EmitDeoptFrame(*unit.caller(), *state.parent, input_locations);
+      EmitDeoptFrame(*unit.caller(), *state.parent, current_input_location);
     }
 
     // Returns are used for updating an accumulator or register after a lazy
@@ -285,9 +251,8 @@ class TranslationArrayProcessor {
         GetDeoptLiteral(*unit.shared_function_info().object()),
         unit.register_count(), return_offset, return_count);
 
-    return EmitDeoptFrameValues(unit, state.register_frame, input_locations,
-                                interpreter::Register::invalid_value(),
-                                return_count);
+    EmitDeoptFrameValues(unit, state.register_frame, current_input_location,
+                         interpreter::Register::invalid_value(), return_count);
   }
 
   void EmitEagerDeopt(EagerDeoptInfo* deopt_info) {
@@ -298,8 +263,8 @@ class TranslationArrayProcessor {
         translation_array_builder().BeginTranslation(frame_count, jsframe_count,
                                                      update_feedback_count);
 
-    EmitDeoptFrame(deopt_info->unit, deopt_info->state,
-                   deopt_info->input_locations);
+    const InputLocation* current_input_location = deopt_info->input_locations;
+    EmitDeoptFrame(deopt_info->unit, deopt_info->state, current_input_location);
   }
 
   void EmitLazyDeopt(LazyDeoptInfo* deopt_info) {
@@ -311,13 +276,13 @@ class TranslationArrayProcessor {
                                                      update_feedback_count);
 
     const MaglevCompilationUnit& unit = deopt_info->unit;
-    const InputLocation* input_locations = deopt_info->input_locations;
+    const InputLocation* current_input_location = deopt_info->input_locations;
 
     if (deopt_info->state.parent) {
       // Deopt input locations are in the order of deopt frame emission, so
       // update the pointer after emitting the parent frame.
-      input_locations = EmitDeoptFrame(
-          *unit.caller(), *deopt_info->state.parent, input_locations);
+      EmitDeoptFrame(*unit.caller(), *deopt_info->state.parent,
+                     current_input_location);
     }
 
     // Return offsets are counted from the end of the translation frame, which
@@ -348,7 +313,7 @@ class TranslationArrayProcessor {
         unit.register_count(), return_offset, deopt_info->result_size);
 
     EmitDeoptFrameValues(unit, deopt_info->state.register_frame,
-                         input_locations, deopt_info->result_location,
+                         current_input_location, deopt_info->result_location,
                          deopt_info->result_size);
   }
 
@@ -426,17 +391,17 @@ class TranslationArrayProcessor {
 
   bool InReturnValues(interpreter::Register reg,
                       interpreter::Register result_location, int result_size) {
-    if (result_size == 0) {
+    if (result_size == 0 || !result_location.is_valid()) {
       return false;
     }
     return base::IsInRange(reg.index(), result_location.index(),
                            result_location.index() + result_size - 1);
   }
 
-  const InputLocation* EmitDeoptFrameValues(
+  void EmitDeoptFrameValues(
       const MaglevCompilationUnit& compilation_unit,
       const CompactInterpreterFrameState* checkpoint_state,
-      const InputLocation* input_locations,
+      const InputLocation*& input_location,
       interpreter::Register result_location, int result_size) {
     // Closure
     if (compilation_unit.inlining_depth() == 0) {
@@ -451,7 +416,6 @@ class TranslationArrayProcessor {
     // TODO(leszeks): The input locations array happens to be in the same order
     // as parameters+context+locals+accumulator are accessed here. We should
     // make this clearer and guard against this invariant failing.
-    const InputLocation* input_location = input_locations;
 
     // Parameters
     {
@@ -463,9 +427,9 @@ class TranslationArrayProcessor {
               translation_array_builder().StoreOptimizedOut();
             } else {
               EmitDeoptFrameSingleValue(value, *input_location);
+              input_location++;
             }
             i++;
-            input_location++;
           });
     }
 
@@ -480,18 +444,15 @@ class TranslationArrayProcessor {
       checkpoint_state->ForEachLocal(
           compilation_unit, [&](ValueNode* value, interpreter::Register reg) {
             DCHECK_LE(i, reg.index());
-            if (InReturnValues(reg, result_location, result_size)) {
-              input_location++;
-              return;
-            }
+            if (InReturnValues(reg, result_location, result_size)) return;
             while (i < reg.index()) {
               translation_array_builder().StoreOptimizedOut();
               i++;
             }
             DCHECK_EQ(i, reg.index());
             EmitDeoptFrameSingleValue(value, *input_location);
-            i++;
             input_location++;
+            i++;
           });
       while (i < compilation_unit.register_count()) {
         translation_array_builder().StoreOptimizedOut();
@@ -506,12 +467,11 @@ class TranslationArrayProcessor {
                           result_location, result_size)) {
         ValueNode* value = checkpoint_state->accumulator(compilation_unit);
         EmitDeoptFrameSingleValue(value, *input_location);
+        input_location++;
       } else {
         translation_array_builder().StoreOptimizedOut();
       }
     }
-
-    return input_location;
   }
 
   int GetDeoptLiteral(Object obj) {
@@ -525,11 +485,13 @@ class TranslationArrayProcessor {
 
   TranslationArrayBuilder& translation_array_builder() {
     return *translation_array_builder_;
-  };
+  }
 
   LocalIsolate* local_isolate_;
-  TranslationArrayBuilder* translation_array_builder_;
-  IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals_;
+  MaglevCompilationInfo* compilation_info_;
+  std::unique_ptr<TranslationArrayBuilder> translation_array_builder_;
+  std::unique_ptr<IdentityMap<int, base::DefaultAllocationPolicy>>
+      deopt_literals_;
   int tagged_slots_;
 };
 
@@ -539,27 +501,20 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
   compiler::UnparkedScopeIfNeeded unparked_scope(compilation_info->broker());
 
   // Build graph.
-  if (FLAG_print_maglev_code || FLAG_code_comments || FLAG_print_maglev_graph ||
-      FLAG_trace_maglev_graph_building || FLAG_trace_maglev_regalloc) {
+  if (v8_flags.print_maglev_code || v8_flags.code_comments ||
+      v8_flags.print_maglev_graph || v8_flags.trace_maglev_graph_building ||
+      v8_flags.trace_maglev_regalloc) {
     compilation_info->set_graph_labeller(new MaglevGraphLabeller());
   }
 
-  if (FLAG_print_maglev_code || FLAG_print_maglev_graph ||
-      FLAG_trace_maglev_graph_building || FLAG_trace_maglev_regalloc) {
+  if (v8_flags.print_maglev_code || v8_flags.print_maglev_graph ||
+      v8_flags.trace_maglev_graph_building || v8_flags.trace_maglev_regalloc) {
     MaglevCompilationUnit* top_level_unit =
         compilation_info->toplevel_compilation_unit();
     std::cout << "Compiling " << Brief(*top_level_unit->function().object())
               << " with Maglev\n";
-    top_level_unit->bytecode().object()->Disassemble(std::cout);
+    BytecodeArray::Disassemble(top_level_unit->bytecode().object(), std::cout);
     top_level_unit->feedback().object()->Print(std::cout);
-  }
-
-  // TODO(v8:7700): Support exceptions in maglev. We currently bail if exception
-  // handler table is non-empty.
-  if (compilation_info->toplevel_compilation_unit()
-          ->bytecode()
-          .handler_table_size() > 0) {
-    return;
   }
 
   Graph* graph = Graph::New(compilation_info->zone());
@@ -569,12 +524,7 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
 
   graph_builder.Build();
 
-  // TODO(v8:7700): Clean up after all bytecodes are supported.
-  if (graph_builder.found_unsupported_bytecode()) {
-    return;
-  }
-
-  if (FLAG_print_maglev_graph) {
+  if (v8_flags.print_maglev_graph) {
     std::cout << "\nAfter graph buiding" << std::endl;
     PrintGraph(std::cout, compilation_info, graph_builder.graph());
   }
@@ -588,11 +538,11 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
 
   {
     GraphMultiProcessor<UseMarkingProcessor, MaglevVregAllocator> processor(
-        compilation_info);
+        UseMarkingProcessor{compilation_info});
     processor.ProcessGraph(graph_builder.graph());
   }
 
-  if (FLAG_print_maglev_graph) {
+  if (v8_flags.print_maglev_graph) {
     std::cout << "After node processor" << std::endl;
     PrintGraph(std::cout, compilation_info, graph_builder.graph());
   }
@@ -600,13 +550,13 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
   StraightForwardRegisterAllocator allocator(compilation_info,
                                              graph_builder.graph());
 
-  if (FLAG_print_maglev_graph) {
+  if (v8_flags.print_maglev_graph) {
     std::cout << "After register allocation" << std::endl;
     PrintGraph(std::cout, compilation_info, graph_builder.graph());
   }
 
   GraphProcessor<TranslationArrayProcessor> build_translation_array(
-      compilation_info, local_isolate);
+      local_isolate, compilation_info);
   build_translation_array.ProcessGraph(graph_builder.graph());
 
   // Stash the compiled graph on the compilation info.
@@ -615,7 +565,7 @@ void MaglevCompiler::Compile(LocalIsolate* local_isolate,
 
 // static
 MaybeHandle<CodeT> MaglevCompiler::GenerateCode(
-    MaglevCompilationInfo* compilation_info) {
+    Isolate* isolate, MaglevCompilationInfo* compilation_info) {
   Graph* const graph = compilation_info->graph();
   if (graph == nullptr) {
     // Compilation failed.
@@ -627,7 +577,8 @@ MaybeHandle<CodeT> MaglevCompiler::GenerateCode(
   }
 
   Handle<Code> code;
-  if (!MaglevCodeGenerator::Generate(compilation_info, graph).ToHandle(&code)) {
+  if (!MaglevCodeGenerator::Generate(isolate, compilation_info, graph)
+           .ToHandle(&code)) {
     compilation_info->toplevel_compilation_unit()
         ->shared_function_info()
         .object()
@@ -635,15 +586,17 @@ MaybeHandle<CodeT> MaglevCompiler::GenerateCode(
     return {};
   }
 
-  compiler::JSHeapBroker* const broker = compilation_info->broker();
-  const bool deps_committed_successfully = broker->dependencies()->Commit(code);
-  CHECK(deps_committed_successfully);
+  if (!compilation_info->broker()->dependencies()->Commit(code)) {
+    // Don't `set_maglev_compilation_failed` s.t. we may reattempt compilation.
+    // TODO(v8:7700): Make this more robust, i.e.: don't recompile endlessly,
+    // and possibly attempt to recompile as early as possible.
+    return {};
+  }
 
-  if (FLAG_print_maglev_code) {
+  if (v8_flags.print_maglev_code) {
     code->Print();
   }
 
-  Isolate* const isolate = compilation_info->isolate();
   isolate->native_context()->AddOptimizedCode(ToCodeT(*code));
   return ToCodeT(code, isolate);
 }

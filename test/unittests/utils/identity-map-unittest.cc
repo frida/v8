@@ -695,8 +695,7 @@ TEST_F(IdentityMapTest, ExplicitGC) {
   }
 
   // Do an explicit, real GC.
-  isolate()->heap()->CollectGarbage(i::NEW_SPACE,
-                                    i::GarbageCollectionReason::kTesting);
+  CollectGarbage(i::NEW_SPACE);
 
   // Check that searching for the numbers finds the same values.
   for (size_t i = 0; i < arraysize(num_keys); i++) {
@@ -786,9 +785,9 @@ TEST_F(IdentityMapTest, CanonicalHandleScope) {
 }
 
 TEST_F(IdentityMapTest, GCShortCutting) {
-  if (FLAG_single_generation) return;
+  if (v8_flags.single_generation) return;
   // We don't create ThinStrings immediately when using the forwarding table.
-  if (FLAG_always_use_string_forwarding_table) return;
+  if (v8_flags.always_use_string_forwarding_table) return;
   ManualGCScope manual_gc_scope(isolate());
   IdentityMapTester t(isolate()->heap(), zone());
   Factory* factory = isolate()->factory();
@@ -815,10 +814,9 @@ TEST_F(IdentityMapTest, GCShortCutting) {
     t.map.Insert(internalized_string, &internalized_string);
 
     // Do an explicit, real GC, this should short-cut the thin string to point
-    // to the internalized string.
-    isolate()->heap()->CollectGarbage(i::NEW_SPACE,
-                                      i::GarbageCollectionReason::kTesting);
-    DCHECK_IMPLIES(!FLAG_optimize_for_size,
+    // to the internalized string (this is not implemented for MinorMC).
+    CollectGarbage(i::NEW_SPACE);
+    DCHECK_IMPLIES(!v8_flags.minor_mc && !v8_flags.optimize_for_size,
                    *thin_string == *internalized_string);
 
     // Check that getting the object points to one of the handles.

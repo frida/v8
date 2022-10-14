@@ -87,8 +87,8 @@ const uint32_t kInternalizedTag = 0;
 //
 // TODO(v8:12007): This bit is currently ignored on internalized strings, which
 // are either always shared or always not shared depending on
-// FLAG_shared_string_table. This will be hardcoded once
-// FLAG_shared_string_table is removed.
+// v8_flags.shared_string_table. This will be hardcoded once
+// v8_flags.shared_string_table is removed.
 const uint32_t kSharedStringMask = 1 << 6;
 const uint32_t kSharedStringTag = 1 << 6;
 
@@ -148,6 +148,13 @@ enum InstanceType : uint16_t {
       kOneByteStringTag | kThinStringTag | kNotInternalizedTag,
   SHARED_STRING_TYPE = STRING_TYPE | kSharedStringTag,
   SHARED_ONE_BYTE_STRING_TYPE = ONE_BYTE_STRING_TYPE | kSharedStringTag,
+  SHARED_EXTERNAL_STRING_TYPE = EXTERNAL_STRING_TYPE | kSharedStringTag,
+  SHARED_EXTERNAL_ONE_BYTE_STRING_TYPE =
+      EXTERNAL_ONE_BYTE_STRING_TYPE | kSharedStringTag,
+  SHARED_UNCACHED_EXTERNAL_STRING_TYPE =
+      UNCACHED_EXTERNAL_STRING_TYPE | kSharedStringTag,
+  SHARED_UNCACHED_EXTERNAL_ONE_BYTE_STRING_TYPE =
+      UNCACHED_EXTERNAL_ONE_BYTE_STRING_TYPE | kSharedStringTag,
   SHARED_THIN_STRING_TYPE = THIN_STRING_TYPE | kSharedStringTag,
   SHARED_THIN_ONE_BYTE_STRING_TYPE =
       THIN_ONE_BYTE_STRING_TYPE | kSharedStringTag,
@@ -273,6 +280,7 @@ V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream& os,
   TORQUE_INSTANCE_CHECKERS_RANGE_ONLY_DECLARED(V)
 
 #define INSTANCE_TYPE_CHECKERS_CUSTOM(V) \
+  V(AbstractCode)                        \
   V(FreeSpaceOrFiller)                   \
   V(ExternalString)                      \
   V(InternalizedString)
@@ -287,11 +295,6 @@ namespace InstanceTypeChecker {
   V8_INLINE constexpr bool Is##Type(InstanceType instance_type);
 
 INSTANCE_TYPE_CHECKERS(IS_TYPE_FUNCTION_DECL)
-
-#define TYPED_ARRAY_IS_TYPE_FUNCTION_DECL(Type, ...) \
-  IS_TYPE_FUNCTION_DECL(Fixed##Type##Array)
-TYPED_ARRAYS(TYPED_ARRAY_IS_TYPE_FUNCTION_DECL)
-#undef TYPED_ARRAY_IS_TYPE_FUNCTION_DECL
 
 IS_TYPE_FUNCTION_DECL(CodeT)
 
@@ -312,8 +315,6 @@ IS_TYPE_FUNCTION_DECL(CodeT)
   V(_, BreakPointMap, break_point_map, BreakPoint)                             \
   V(_, BreakPointInfoMap, break_point_info_map, BreakPointInfo)                \
   V(_, BytecodeArrayMap, bytecode_array_map, BytecodeArray)                    \
-  V(_, CachedTemplateObjectMap, cached_template_object_map,                    \
-    CachedTemplateObject)                                                      \
   V(_, CellMap, cell_map, Cell)                                                \
   V(_, WeakCellMap, weak_cell_map, WeakCell)                                   \
   V(_, CodeMap, code_map, Code)                                                \

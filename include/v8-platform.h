@@ -13,18 +13,9 @@
 
 #include "v8config.h"  // NOLINT(build/include_directory)
 
-#ifdef __GNUC__
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wnon-virtual-dtor"
-#endif
-
 namespace v8 {
 
 class Isolate;
-class ThreadingBackend;
-class MutexImpl;
-class SharedMutexImpl;
-class ConditionVariableImpl;
 
 // Valid priorities supported by the task scheduling infrastructure.
 enum class TaskPriority : uint8_t {
@@ -166,8 +157,6 @@ class TaskRunner {
  */
 class JobDelegate {
  public:
-  virtual ~JobDelegate() = default;
-
   /**
    * Returns true if this thread *must* return from the worker task on the
    * current thread ASAP. Workers should periodically invoke ShouldYield (or
@@ -955,18 +944,6 @@ class Platform {
   virtual void OnCriticalMemoryPressure() {}
 
   /**
-   * Enables the embedder to respond in cases where V8 can't allocate large
-   * memory regions. The |length| parameter is the amount of memory needed.
-   * Returns true if memory is now available. Returns false if no memory could
-   * be made available. V8 will retry allocations until this method returns
-   * false.
-   *
-   * Embedder overrides of this function must NOT call back into V8.
-   */
-  V8_DEPRECATE_SOON("Use the method without informative parameter")
-  virtual bool OnCriticalMemoryPressure(size_t length) { return false; }
-
-  /**
    * Gets the number of worker threads used by
    * Call(BlockingTask)OnWorkerThread(). This can be used to estimate the number
    * of tasks a work package should be split into. A return value of 0 means
@@ -1101,12 +1078,6 @@ class Platform {
    */
   virtual double CurrentClockTimeMillis() = 0;
 
-  /**
-   * Returns an instance of a v8::ThreadingBackend, or nullptr to use the
-   * default.
-   */
-  virtual ThreadingBackend* GetThreadingBackend() { return nullptr; }
-
   typedef void (*StackTracePrinter)();
 
   /**
@@ -1145,110 +1116,6 @@ class Platform {
   V8_EXPORT static double SystemClockTimeMillis();
 };
 
-/**
- * V8 threading backend.
- *
- * Can be implemented by an embedder for using a custom threading
- * implementation.
- */
-class ThreadingBackend {
- public:
-  virtual ~ThreadingBackend() = default;
-
-  /**
-   * Creates a plain mutex.
-   */
-  virtual MutexImpl* CreatePlainMutex() = 0;
-
-  /**
-   * Creates a recursive mutex.
-   */
-  virtual MutexImpl* CreateRecursiveMutex() = 0;
-
-  /**
-   * Creates a shared mutex.
-   */
-  virtual SharedMutexImpl* CreateSharedMutex() = 0;
-
-  /**
-   * Creates a condition variable.
-   */
-  virtual ConditionVariableImpl* CreateConditionVariable() = 0;
-};
-
-/**
- * V8 mutex implementation.
- *
- * Can be implemented by an embedder for custom locking.
- */
-class MutexImpl {
- public:
-  virtual ~MutexImpl() = default;
-
-  /** Locks the given mutex. */
-  virtual void Lock() = 0;
-
-  /** Unlocks the given mutex. */
-  virtual void Unlock() = 0;
-
-  /** Tries to lock the given mutex. Returns true on success. */
-  virtual bool TryLock() = 0;
-};
-
-/**
- * V8 shared mutex implementation.
- *
- * Can be implemented by an embedder for custom locking.
- */
-class SharedMutexImpl {
- public:
-  virtual ~SharedMutexImpl() = default;
-
-  /** Acquires shared ownership of the given mutex. */
-  virtual void LockShared() = 0;
-
-  /** Locks the given mutex. */
-  virtual void LockExclusive() = 0;
-
-  /** Releases shared ownership of the given mutex. */
-  virtual void UnlockShared() = 0;
-
-  /** Unlocks the given mutex. */
-  virtual void UnlockExclusive() = 0;
-
-  /** Tries to lock the given mutex in shared mode. Returns true on success. */
-  virtual bool TryLockShared() = 0;
-
-  /** Tries to lock the given mutex. Returns true on success. */
-  virtual bool TryLockExclusive() = 0;
-};
-
-/**
- * V8 condition variable implementation.
- *
- * Can be implemented by an embedder for custom locking.
- */
-class ConditionVariableImpl {
- public:
-  virtual ~ConditionVariableImpl() = default;
-
-  /** Unblocks one of the waiting threads. */
-  virtual void NotifyOne() = 0;
-
-  /** Unblocks all waiting threads. */
-  virtual void NotifyAll() = 0;
-
-  /** Waits until notified. */
-  virtual void Wait(MutexImpl* mutex) = 0;
-
-  /** Waits until notified or timeout reached. */
-  virtual bool WaitFor(MutexImpl* mutex, int64_t delta_in_microseconds) = 0;
-};
-
 }  // namespace v8
-
-#ifdef __GNUC__
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // V8_V8_PLATFORM_H_

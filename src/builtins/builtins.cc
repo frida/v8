@@ -181,7 +181,7 @@ FullObjectSlot Builtins::builtin_tier0_slot(Builtin builtin) {
 
 void Builtins::set_code(Builtin builtin, CodeT code) {
   DCHECK_EQ(builtin, code.builtin_id());
-  if (V8_EXTERNAL_CODE_SPACE_BOOL) {
+  if (!V8_REMOVE_BUILTINS_CODE_OBJECTS && V8_EXTERNAL_CODE_SPACE_BOOL) {
     DCHECK_EQ(builtin, FromCodeT(code).builtin_id());
   }
   DCHECK(Internals::HasHeapObjectTag(code.ptr()));
@@ -250,16 +250,16 @@ const char* Builtins::name(Builtin builtin) {
 }
 
 void Builtins::PrintBuiltinCode() {
-  DCHECK(FLAG_print_builtin_code);
+  DCHECK(v8_flags.print_builtin_code);
 #ifdef ENABLE_DISASSEMBLER
   for (Builtin builtin = Builtins::kFirst; builtin <= Builtins::kLast;
        ++builtin) {
     const char* builtin_name = name(builtin);
     if (PassesFilter(base::CStrVector(builtin_name),
-                     base::CStrVector(FLAG_print_builtin_code_filter))) {
+                     base::CStrVector(v8_flags.print_builtin_code_filter))) {
       CodeTracer::Scope trace_scope(isolate_->GetCodeTracer());
       OFStream os(trace_scope.file());
-      Code builtin_code = FromCodeT(code(builtin));
+      CodeT builtin_code = code(builtin);
       builtin_code.Disassemble(builtin_name, os, isolate_);
       os << "\n";
     }
@@ -268,12 +268,12 @@ void Builtins::PrintBuiltinCode() {
 }
 
 void Builtins::PrintBuiltinSize() {
-  DCHECK(FLAG_print_builtin_size);
+  DCHECK(v8_flags.print_builtin_size);
   for (Builtin builtin = Builtins::kFirst; builtin <= Builtins::kLast;
        ++builtin) {
     const char* builtin_name = name(builtin);
     const char* kind = KindNameOf(builtin);
-    Code code = FromCodeT(Builtins::code(builtin));
+    CodeT code = Builtins::code(builtin);
     PrintF(stdout, "%s Builtin, %s, %d\n", kind, builtin_name,
            code.InstructionSize());
   }
@@ -457,6 +457,11 @@ Handle<Code> Builtins::CreateInterpreterEntryTrampolineForProfiling(
   DCHECK_EQ(d.SafepointTableSizeOf(builtin), 0);
   DCHECK_EQ(d.HandlerTableSizeOf(builtin), 0);
   DCHECK_EQ(d.ConstantPoolSizeOf(builtin), 0);
+  // TODO(v8:11036): currently the CodeDesc can't represent the state when the
+  // code metadata is stored separately from the instruction stream, therefore
+  // it cannot recreate code comments in the trampoline copy.
+  // The following DCHECK currently fails if the mksnapshot is run with enabled
+  // code comments.
   DCHECK_EQ(d.CodeCommentsSizeOf(builtin), 0);
   DCHECK_EQ(d.UnwindingInfoSizeOf(builtin), 0);
 
@@ -513,7 +518,7 @@ bool Builtins::IsCpp(Builtin builtin) {
 // static
 bool Builtins::AllowDynamicFunction(Isolate* isolate, Handle<JSFunction> target,
                                     Handle<JSObject> target_global_proxy) {
-  if (FLAG_allow_unsafe_function_constructor) return true;
+  if (v8_flags.allow_unsafe_function_constructor) return true;
   HandleScopeImplementer* impl = isolate->handle_scope_implementer();
   Handle<Context> responsible_context = impl->LastEnteredOrMicrotaskContext();
   // TODO(verwaest): Remove this.
@@ -571,14 +576,14 @@ bool Builtins::CodeObjectIsExecutable(Builtin builtin) {
     case Builtin::kCEntry_Return1_DontSaveFPRegs_ArgvOnStack_NoBuiltinExit:
       return true;
     default:
-#if V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
+#if V8_TARGET_ARCH_MIPS64
       // TODO(Loongson): Move non-JS linkage builtins code objects into RO_SPACE
       // caused MIPS platform to crash, and we need some time to handle it. Now
       // disable this change temporarily on MIPS platform.
       return true;
 #else
       return false;
-#endif  // V8_TARGET_ARCH_MIPS || V8_TARGET_ARCH_MIPS64
+#endif  // V8_TARGET_ARCH_MIPS64
   }
 }
 

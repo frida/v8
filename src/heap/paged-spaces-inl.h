@@ -29,7 +29,7 @@ HeapObject PagedSpaceObjectIterator::Next() {
 HeapObject PagedSpaceObjectIterator::FromCurrentPage() {
   while (cur_addr_ != cur_end_) {
     HeapObject obj = HeapObject::FromAddress(cur_addr_);
-    const int obj_size = obj.Size(cage_base());
+    const int obj_size = ALIGN_TO_ALLOCATION_ALIGNMENT(obj.Size(cage_base()));
     cur_addr_ += obj_size;
     DCHECK_LE(cur_addr_, cur_end_);
     if (!obj.IsFreeSpaceOrFiller(cage_base())) {
@@ -55,27 +55,6 @@ bool PagedSpaceBase::Contains(Address addr) const {
 bool PagedSpaceBase::Contains(Object o) const {
   if (!o.IsHeapObject()) return false;
   return Page::FromAddress(o.ptr())->owner() == this;
-}
-
-void PagedSpaceBase::UnlinkFreeListCategories(Page* page) {
-  DCHECK_EQ(this, page->owner());
-  page->ForAllFreeListCategories([this](FreeListCategory* category) {
-    free_list()->RemoveCategory(category);
-  });
-}
-
-size_t PagedSpaceBase::RelinkFreeListCategories(Page* page) {
-  DCHECK_EQ(this, page->owner());
-  size_t added = 0;
-  page->ForAllFreeListCategories([this, &added](FreeListCategory* category) {
-    added += category->available();
-    category->Relink(free_list());
-  });
-
-  DCHECK_IMPLIES(!page->IsFlagSet(Page::NEVER_ALLOCATE_ON_PAGE),
-                 page->AvailableInFreeList() ==
-                     page->AvailableInFreeListFromAllocatedBytes());
-  return added;
 }
 
 bool PagedSpaceBase::TryFreeLast(Address object_address, int object_size) {

@@ -204,7 +204,7 @@ void InstructionSelector::VisitStore(Node* node) {
 
   // TODO(riscv): I guess this could be done in a better way.
   if (write_barrier_kind != kNoWriteBarrier &&
-      V8_LIKELY(!FLAG_disable_write_barriers)) {
+      V8_LIKELY(!v8_flags.disable_write_barriers)) {
     DCHECK(CanBeTaggedPointer(rep));
     InstructionOperand inputs[3];
     size_t input_count = 0;
@@ -1309,7 +1309,6 @@ InstructionSelector::SupportedMachineOperatorFlags() {
   return flags | MachineOperatorBuilder::kWord32Ctz |
          MachineOperatorBuilder::kWord32Ctz |
          MachineOperatorBuilder::kWord32Popcnt |
-         MachineOperatorBuilder::kWord32ShiftIsSafe |
          MachineOperatorBuilder::kInt32DivIsSafe |
          MachineOperatorBuilder::kUint32DivIsSafe |
          MachineOperatorBuilder::kFloat32RoundDown |

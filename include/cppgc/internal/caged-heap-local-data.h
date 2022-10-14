@@ -25,6 +25,7 @@ namespace cppgc {
 namespace internal {
 
 class HeapBase;
+class HeapBaseHandle;
 
 #if defined(CPPGC_YOUNG_GENERATION)
 
@@ -72,7 +73,11 @@ class V8_EXPORT AgeTable final {
         __builtin_ctz(static_cast<uint32_t>(kCardSizeInBytes));
 #else   //! V8_HAS_BUILTIN_CTZ
         // Hardcode and check with assert.
+#if defined(CPPGC_2GB_CAGE)
+        11;
+#else   // !defined(CPPGC_2GB_CAGE)
         12;
+#endif  // !defined(CPPGC_2GB_CAGE)
 #endif  // !V8_HAS_BUILTIN_CTZ
     static_assert((1 << kGranularityBits) == kCardSizeInBytes);
     const size_t entry = offset >> kGranularityBits;
@@ -88,8 +93,6 @@ static_assert(sizeof(AgeTable) == 1 * api_constants::kMB,
 
 #endif  // CPPGC_YOUNG_GENERATION
 
-// TODO(v8:12231): Remove this class entirely so that it doesn't occupy space is
-// when CPPGC_YOUNG_GENERATION is off.
 struct CagedHeapLocalData final {
   V8_INLINE static CagedHeapLocalData& Get() {
     return *reinterpret_cast<CagedHeapLocalData*>(CagedHeapBase::GetBase());

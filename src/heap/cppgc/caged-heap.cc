@@ -33,8 +33,6 @@ static_assert(api_constants::kCagedHeapReservationSize ==
               kCagedHeapReservationSize);
 static_assert(api_constants::kCagedHeapReservationAlignment ==
               kCagedHeapReservationAlignment);
-static_assert(api_constants::kCagedHeapNormalPageReservationSize ==
-              kCagedHeapNormalPageReservationSize);
 
 uintptr_t CagedHeapBase::g_heap_base_ = 0u;
 
@@ -49,12 +47,11 @@ VirtualMemory ReserveCagedHeap(PageAllocator& platform_allocator) {
   static constexpr size_t kAllocationTries = 4;
   for (size_t i = 0; i < kAllocationTries; ++i) {
 #if defined(CPPGC_POINTER_COMPRESSION)
-    // If pointer compression is enabled, reserve 2x of cage size and leave the
-    // half that has the least significant bit of the most significant halfword
-    // set. This is needed for compression to make sure that compressed normal
-    // pointers have the most significant bit set to 1, so that on decompression
-    // the bit will be sign-extended. This saves us a branch and 'or' operation
-    // during compression.
+    // If pointer compression is enabled, reserve 2x of cage size and leave only
+    // the upper half. This is needed to make sure that compressed pointers have
+    // the most significant bit set to 1, so that on decompression the bit will
+    // be sign-extended. This saves us a branch and 'or' operation during
+    // compression.
     // TODO(chromium:1325007): Provide API in PageAllocator to left trim
     // allocations and return the half of the reservation back to the OS.
     static constexpr size_t kTryReserveSize = 2 * kCagedHeapReservationSize;
@@ -125,71 +122,13 @@ CagedHeap::CagedHeap(PageAllocator& platform_allocator)
   const size_t local_data_size_with_padding =
       caged_heap_start - reinterpret_cast<CagedAddress>(cage_start);
 
-  normal_page_bounded_allocator_ = std::make_unique<
-      v8::base::BoundedPageAllocator>(
+  page_bounded_allocator_ = std::make_unique<v8::base::BoundedPageAllocator>(
       &platform_allocator, caged_heap_start,
-      kCagedHeapNormalPageReservationSize - local_data_size_with_padding,
-      kPageSize,
-      v8::base::PageInitializationMode::kAllocatedPagesMustBeZeroInitialized,
-      v8::base::PageFreeingMode::kMakeInaccessible);
-
-  large_page_bounded_allocator_ = std::make_unique<
-      v8::base::BoundedPageAllocator>(
-      &platform_allocator,
-      reinterpret_cast<uintptr_t>(cage_start) +
-          kCagedHeapNormalPageReservationSize,
-      kCagedHeapNormalPageReservationSize, kPageSize,
+      kCagedHeapReservationSize - local_data_size_with_padding, kPageSize,
       v8::base::PageInitializationMode::kAllocatedPagesMustBeZeroInitialized,
       v8::base::PageFreeingMode::kMakeInaccessible);
 
   instance_ = this;
-}
-
-void CagedHeap::NotifyLargePageCreated(LargePage* page) {
-  DCHECK(page);
-  v8::base::MutexGuard guard(&large_pages_mutex_);
-  auto result = large_pages_.insert(page);
-  USE(result);
-  DCHECK(result.second);
-}
-
-void CagedHeap::NotifyLargePageDestroyed(LargePage* page) {
-  DCHECK(page);
-  v8::base::MutexGuard guard(&large_pages_mutex_);
-  auto size = large_pages_.erase(page);
-  USE(size);
-  DCHECK_EQ(1u, size);
-}
-
-BasePage& CagedHeap::LookupPageFromInnerPointer(void* ptr) const {
-  DCHECK(IsOnHeap(ptr));
-  if (V8_LIKELY(CagedHeapBase::IsWithinNormalPageReservation(ptr))) {
-    return *NormalPage::FromPayload(ptr);
-  } else {
-    return LookupLargePageFromInnerPointer(ptr);
-  }
-}
-
-LargePage& CagedHeap::LookupLargePageFromInnerPointer(void* ptr) const {
-  v8::base::MutexGuard guard(&large_pages_mutex_);
-  auto it = large_pages_.upper_bound(static_cast<LargePage*>(ptr));
-  DCHECK_NE(large_pages_.begin(), it);
-  auto* page = *std::next(it, -1);
-  DCHECK(page);
-  DCHECK(page->PayloadContains(static_cast<ConstAddress>(ptr)));
-  return *page;
-}
-
-void CagedHeap::ResetForTesting() {
-  v8::base::MutexGuard guard(&large_pages_mutex_);
-  // Clear the large pages to support tests within the same process.
-  large_pages_.clear();
-}
-
-// static
-BasePageHandle& CagedHeapBase::LookupLargePageFromInnerPointer(void* address) {
-  auto& page = CagedHeap::Instance().LookupLargePageFromInnerPointer(address);
-  return page;
 }
 
 }  // namespace internal

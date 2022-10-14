@@ -26,10 +26,28 @@ void MutableBigInt_AbsoluteAddAndCanonicalize(Address result_addr,
 int32_t MutableBigInt_AbsoluteCompare(Address x_addr, Address y_addr);
 void MutableBigInt_AbsoluteSubAndCanonicalize(Address result_addr,
                                               Address x_addr, Address y_addr);
+int32_t MutableBigInt_AbsoluteMulAndCanonicalize(Address result_addr,
+                                                 Address x_addr,
+                                                 Address y_addr);
+int32_t MutableBigInt_AbsoluteDivAndCanonicalize(Address result_addr,
+                                                 Address x_addr,
+                                                 Address y_addr);
+void MutableBigInt_BitwiseAndPosPosAndCanonicalize(Address result_addr,
+                                                   Address x_addr,
+                                                   Address y_addr);
+void MutableBigInt_BitwiseAndNegNegAndCanonicalize(Address result_addr,
+                                                   Address x_addr,
+                                                   Address y_addr);
+void MutableBigInt_BitwiseAndPosNegAndCanonicalize(Address result_addr,
+                                                   Address x_addr,
+                                                   Address y_addr);
 
 class BigInt;
 class ValueDeserializer;
 class ValueSerializer;
+class WebSnapshotSerializerDeserializer;
+class WebSnapshotSerializer;
+class WebSnapshotDeserializer;
 
 #include "torque-generated/src/objects/bigint-tq.inc"
 
@@ -252,6 +270,9 @@ class BigInt : public BigIntBase {
   friend class StringToBigIntHelper;
   friend class ValueDeserializer;
   friend class ValueSerializer;
+  friend class WebSnapshotSerializerDeserializer;
+  friend class WebSnapshotSerializer;
+  friend class WebSnapshotDeserializer;
 
   // Special functions for StringToBigIntHelper:
   template <typename IsolateT>

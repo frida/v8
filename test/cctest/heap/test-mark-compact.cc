@@ -52,8 +52,8 @@ namespace internal {
 namespace heap {
 
 TEST(Promotion) {
-  if (FLAG_single_generation) return;
-  FLAG_stress_concurrent_allocation = false;  // For SealCurrentObjects.
+  if (v8_flags.single_generation) return;
+  v8_flags.stress_concurrent_allocation = false;  // For SealCurrentObjects.
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   {
@@ -108,8 +108,8 @@ AllocationResult HeapTester::AllocateFixedArrayForTest(
 }
 
 HEAP_TEST(MarkCompactCollector) {
-  FLAG_incremental_marking = false;
-  FLAG_retain_maps_for_n_gc = 0;
+  v8_flags.incremental_marking = false;
+  v8_flags.retain_maps_for_n_gc = 0;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Heap* heap = CcTest::heap();
@@ -122,7 +122,7 @@ HEAP_TEST(MarkCompactCollector) {
   CcTest::CollectGarbage(OLD_SPACE);
 
   AllocationResult allocation;
-  if (!FLAG_single_generation) {
+  if (!v8_flags.single_generation) {
     // keep allocating garbage in new space until it fails
     const int arraysize = 100;
     do {
@@ -183,9 +183,9 @@ HEAP_TEST(MarkCompactCollector) {
 }
 
 HEAP_TEST(DoNotEvacuatePinnedPages) {
-  if (!FLAG_compact || !FLAG_single_generation) return;
+  if (!v8_flags.compact || !v8_flags.single_generation) return;
 
-  FLAG_compact_on_every_full_gc = true;
+  v8_flags.compact_on_every_full_gc = true;
 
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
@@ -205,8 +205,7 @@ HEAP_TEST(DoNotEvacuatePinnedPages) {
   page->SetFlag(MemoryChunk::PINNED);
 
   CcTest::CollectAllGarbage();
-  heap->mark_compact_collector()->EnsureSweepingCompleted(
-      MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
+  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only);
 
   // The pinned flag should prevent the page from moving.
   for (Handle<FixedArray> object : handles) {
@@ -216,8 +215,7 @@ HEAP_TEST(DoNotEvacuatePinnedPages) {
   page->ClearFlag(MemoryChunk::PINNED);
 
   CcTest::CollectAllGarbage();
-  heap->mark_compact_collector()->EnsureSweepingCompleted(
-      MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
+  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only);
 
   // `compact_on_every_full_gc` ensures that this page is an evacuation
   // candidate, so with the pin flag cleared compaction should now move it.
@@ -313,7 +311,7 @@ static Handle<Map> CreateMap(Isolate* isolate) {
 }
 
 TEST(MapCompact) {
-  FLAG_max_map_space_pages = 16;
+  v8_flags.max_map_space_pages = 16;
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   Factory* factory = isolate->factory();
@@ -435,7 +433,7 @@ intptr_t ShortLivingIsolate() {
 
 UNINITIALIZED_TEST(RegressJoinThreadsOnIsolateDeinit) {
   // Memory is measured, do not allocate in background thread.
-  FLAG_stress_concurrent_allocation = false;
+  v8_flags.stress_concurrent_allocation = false;
   intptr_t size_limit = ShortLivingIsolate() * 2;
   for (int i = 0; i < 10; i++) {
     CHECK_GT(size_limit, ShortLivingIsolate());
@@ -443,18 +441,17 @@ UNINITIALIZED_TEST(RegressJoinThreadsOnIsolateDeinit) {
 }
 
 TEST(Regress5829) {
-  if (!FLAG_incremental_marking) return;
-  FLAG_stress_concurrent_allocation = false;  // For SealCurrentObjects.
+  if (!v8_flags.incremental_marking) return;
+  v8_flags.stress_concurrent_allocation = false;  // For SealCurrentObjects.
   CcTest::InitializeVM();
   Isolate* isolate = CcTest::i_isolate();
   v8::HandleScope sc(CcTest::isolate());
   Heap* heap = isolate->heap();
   heap::SealCurrentObjects(heap);
-  i::MarkCompactCollector* collector = heap->mark_compact_collector();
   i::IncrementalMarking* marking = heap->incremental_marking();
-  if (collector->sweeping_in_progress()) {
-    collector->EnsureSweepingCompleted(
-        MarkCompactCollector::SweepingForcedFinalizationMode::kV8Only);
+  if (heap->sweeping_in_progress()) {
+    heap->EnsureSweepingCompleted(
+        Heap::SweepingForcedFinalizationMode::kV8Only);
   }
   CHECK(marking->IsMarking() || marking->IsStopped());
   if (marking->IsStopped()) {
@@ -462,7 +459,7 @@ TEST(Regress5829) {
                                   i::GarbageCollectionReason::kTesting);
   }
   CHECK(marking->IsMarking());
-  marking->StartBlackAllocationForTesting();
+  CHECK(marking->black_allocation());
   Handle<FixedArray> array =
       isolate->factory()->NewFixedArray(10, AllocationType::kOld);
   Address old_end = array->address() + array->Size();
@@ -471,7 +468,7 @@ TEST(Regress5829) {
   heap->CreateFillerObjectAt(old_end - kTaggedSize, kTaggedSize);
   heap->old_space()->FreeLinearAllocationArea();
   Page* page = Page::FromAddress(array->address());
-  MarkingState* marking_state = marking->marking_state();
+  MarkingState* marking_state = heap->marking_state();
   for (auto object_and_size :
        LiveObjectRange<kGreyObjects>(page, marking_state->bitmap(page))) {
     CHECK(!object_and_size.first.IsFreeSpaceOrFiller());

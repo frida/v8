@@ -219,6 +219,9 @@ class V8_EXPORT V8InspectorClient {
   virtual ~V8InspectorClient() = default;
 
   virtual void runMessageLoopOnPause(int contextGroupId) {}
+  virtual void runMessageLoopOnInstrumentationPause(int contextGroupId) {
+    runMessageLoopOnPause(contextGroupId);
+  }
   virtual void quitMessageLoopOnPause() {}
   virtual void runIfWaitingForDebugger(int contextGroupId) {}
 
@@ -361,12 +364,6 @@ class V8_EXPORT V8Inspector {
     virtual void sendNotification(std::unique_ptr<StringBuffer> message) = 0;
     virtual void flushProtocolNotifications() = 0;
   };
-  V8_DEPRECATED("Use version with client_is_trusted argument")
-  virtual std::unique_ptr<V8InspectorSession> connect(int contextGroupId,
-                                                      Channel* channel,
-                                                      StringView state) {
-    return connect(contextGroupId, channel, state, kFullyTrusted);
-  }
   enum ClientTrustLevel { kUntrusted, kFullyTrusted };
   virtual std::unique_ptr<V8InspectorSession> connect(
       int contextGroupId, Channel*, StringView state,

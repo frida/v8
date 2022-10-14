@@ -19,7 +19,8 @@
 
 // This has to come after windows.h.
 #include <VersionHelpers.h>
-#include <dbghelp.h>   // For SymLoadModule64 and al.
+#include <dbghelp.h>  // For SymLoadModule64 and al.
+#include <malloc.h>   // For _msize()
 #include <mmsystem.h>  // For timeGetTime().
 #include <tlhelp32.h>  // For Module32First and al.
 
@@ -41,6 +42,8 @@
 // Check that type sizes and alignments match.
 static_assert(sizeof(V8_CONDITION_VARIABLE) == sizeof(CONDITION_VARIABLE));
 static_assert(alignof(V8_CONDITION_VARIABLE) == alignof(CONDITION_VARIABLE));
+static_assert(sizeof(V8_SRWLOCK) == sizeof(SRWLOCK));
+static_assert(alignof(V8_SRWLOCK) == alignof(SRWLOCK));
 static_assert(sizeof(V8_CRITICAL_SECTION) == sizeof(CRITICAL_SECTION));
 static_assert(alignof(V8_CRITICAL_SECTION) == alignof(CRITICAL_SECTION));
 
@@ -1011,6 +1014,15 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
   if (!result) CheckIsOOMError(GetLastError());
 
   return result != nullptr;
+}
+
+void OS::SetDataReadOnly(void* address, size_t size) {
+  DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
+  DCHECK_EQ(0, size % CommitPageSize());
+
+  unsigned long old_protection;
+  CHECK(VirtualProtect(address, size, PAGE_READONLY, &old_protection));
+  CHECK_EQ(PAGE_READWRITE, old_protection);
 }
 
 // static

@@ -28,12 +28,18 @@
 #include "src/wasm/wasm-limits.h"
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
 
-// Define all of our flags.
-#define FLAG_MODE_DEFINE
-#include "src/flags/flag-definitions.h"  // NOLINT(build/include)
+// Define {v8_flags}, declared in flags.h.
+FlagValues v8_flags;
+
+// {v8_flags} needs to be aligned to a memory page, and the size needs to be a
+// multiple of a page size. This is required for memory-protection of the memory
+// holding the {v8_flags} struct.
+// Both is guaranteed by the {alignas(kMinimumOSPageSize)} annotation on
+// {FlagValues}.
+static_assert(alignof(FlagValues) == kMinimumOSPageSize);
+static_assert(sizeof(FlagValues) % kMinimumOSPageSize == 0);
 
 // Define all of our flags default values.
 #define FLAG_MODE_DEFINE_DEFAULTS
@@ -50,7 +56,16 @@ Flag* FindFlagByName(const char* name);
 // Helper struct for printing normalized flag names.
 struct FlagName {
   const char* name;
-  bool negated = false;
+  bool negated;
+
+  constexpr FlagName(const char* name, bool negated)
+      : name(name), negated(negated) {
+    DCHECK_NE('\0', name[0]);
+    DCHECK_NE('!', name[0]);
+  }
+
+  constexpr explicit FlagName(const char* name)
+      : FlagName(name[0] == '!' ? name + 1 : name, name[0] == '!') {}
 };
 
 std::ostream& operator<<(std::ostream& os, FlagName flag_name) {
@@ -199,14 +214,14 @@ struct Flag {
   }
 
   static bool ShouldCheckFlagContradictions() {
-    if (FLAG_allow_overwriting_for_next_flag) {
+    if (v8_flags.allow_overwriting_for_next_flag) {
       // Setting the flag manually to false before calling Reset() avoids this
       // becoming re-entrant.
-      FLAG_allow_overwriting_for_next_flag = false;
-      FindFlagByPointer(&FLAG_allow_overwriting_for_next_flag)->Reset();
+      v8_flags.allow_overwriting_for_next_flag = false;
+      FindFlagByPointer(&v8_flags.allow_overwriting_for_next_flag)->Reset();
       return false;
     }
-    return FLAG_abort_on_contradictory_flags && !FLAG_fuzzing;
+    return v8_flags.abort_on_contradictory_flags && !v8_flags.fuzzing;
   }
 
   // {change_flag} indicates if we're going to change the flag value.
@@ -221,8 +236,9 @@ struct Flag {
     }
     if (ShouldCheckFlagContradictions()) {
       static constexpr const char kHint[] =
-          "To fix this, it might be necessary to specify additional "
-          "contradictory flags in tools/testrunner/local/variants.py.";
+          "If a test variant caused this, it might be necessary to specify "
+          "additional contradictory flags in "
+          "tools/testrunner/local/variants.py.";
       struct FatalError : public std::ostringstream {
         // MSVC complains about non-returning destructor; disable that.
         MSVC_SUPPRESS_WARNING(4722)
@@ -261,7 +277,7 @@ struct Flag {
         case SetBy::kCommandLine:
           if (new_set_by == SetBy::kImplication && check_command_line_flags) {
             // Exit instead of abort for certain testing situations.
-            if (FLAG_exit_on_contradictory_flags) base::OS::ExitProcess(0);
+            if (v8_flags.exit_on_contradictory_flags) base::OS::ExitProcess(0);
             if (is_bool_flag) {
               FatalError{} << "Flag " << FlagName{name()}
                            << ": value implied by " << FlagName{implied_by}
@@ -274,7 +290,7 @@ struct Flag {
           } else if (new_set_by == SetBy::kCommandLine &&
                      check_command_line_flags) {
             // Exit instead of abort for certain testing situations.
-            if (FLAG_exit_on_contradictory_flags) base::OS::ExitProcess(0);
+            if (v8_flags.exit_on_contradictory_flags) base::OS::ExitProcess(0);
             if (is_bool_flag) {
               FatalError{} << "Command-line provided flag " << FlagName{name()}
                            << " specified as both true and false";
@@ -487,9 +503,9 @@ uint32_t ComputeFlagListHash() {
     if (flag.IsDefault()) continue;
     // We want to be able to flip --profile-deserialization without
     // causing the code cache to get invalidated by this hash.
-    if (flag.PointsTo(&FLAG_profile_deserialization)) continue;
-    // Skip FLAG_random_seed to allow predictable code caching.
-    if (flag.PointsTo(&FLAG_random_seed)) continue;
+    if (flag.PointsTo(&v8_flags.profile_deserialization)) continue;
+    // Skip v8_flags.random_seed to allow predictable code caching.
+    if (flag.PointsTo(&v8_flags.random_seed)) continue;
     modified_args_as_string << flag;
   }
   std::string args(modified_args_as_string.str());
@@ -688,7 +704,7 @@ int FlagList::SetFlagsFromCommandLine(int* argc, char** argv, bool remove_flags,
     }
   }
 
-  if (FLAG_help) {
+  if (v8_flags.help) {
     if (help_options.HasUsage()) {
       PrintF(stdout, "%s", help_options.usage());
     }
@@ -763,7 +779,14 @@ int FlagList::SetFlagsFromString(const char* str, size_t len) {
 
 // static
 void FlagList::FreezeFlags() {
+  // Disallow changes via the API by setting {flags_frozen}.
   flags_frozen.store(true, std::memory_order_relaxed);
+  // Also memory-protect the memory that holds the flag values. This makes it
+  // impossible for attackers to overwrite values, except if they find a way to
+  // first unprotect the memory again.
+  // Note that for string flags we only protect the pointer itself, but not the
+  // string storage. TODO(12887): Fix this.
+  base::OS::SetDataReadOnly(&v8_flags, sizeof(v8_flags));
 }
 
 // static
@@ -839,10 +862,7 @@ class ImplicationProcessor {
       return false;
     }
     if (V8_UNLIKELY(num_iterations_ >= kMaxNumIterations)) {
-      cycle_ << "\n"
-             << (premise_name[0] == '!' ? FlagName{premise_name + 1, true}
-                                        : FlagName{premise_name})
-             << " -> ";
+      cycle_ << "\n" << FlagName{premise_name} << " -> ";
       if constexpr (std::is_same_v<T, bool>) {
         cycle_ << FlagName{conclusion_flag->name(), !value};
       } else {
@@ -911,9 +931,4 @@ void FlagList::ResetFlagHash() {
   flag_hash = 0;
 }
 
-#undef FLAG_MODE_DEFINE
-#undef FLAG_MODE_DEFINE_DEFAULTS
-#undef FLAG_MODE_META
-
-}  // namespace internal
-}  // namespace v8
+}  // namespace v8::internal

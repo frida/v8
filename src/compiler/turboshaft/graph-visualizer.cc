@@ -4,6 +4,7 @@
 
 #include "src/compiler/graph-visualizer.h"
 
+#include "src/base/small-vector.h"
 #include "src/compiler/node-origin-table.h"
 #include "src/compiler/turboshaft/graph-visualizer.h"
 
@@ -34,13 +35,10 @@ void JSONTurboshaftGraphWriter::PrintNodes() {
       OpIndex index = turboshaft_graph_.Index(op);
       if (!first) os_ << ",\n";
       first = false;
-      os_ << "{\"id\":" << turboshaft_graph_.Index(op).id() << ",";
+      os_ << "{\"id\":" << index.id() << ",";
       os_ << "\"title\":\"" << OpcodeName(op.opcode) << "\",";
       os_ << "\"block_id\":" << block.index().id() << ",";
-      os_ << "\"op_properties_type\":\"" << op.properties() << "\",";
-      os_ << "\"properties\":\"";
-      op.PrintOptions(os_);
-      os_ << "\"";
+      os_ << "\"op_properties_type\":\"" << op.Properties() << "\"";
       if (origins_) {
         NodeOrigin origin = origins_->GetNodeOrigin(index.id());
         if (origin.IsKnown()) {
@@ -61,7 +59,16 @@ void JSONTurboshaftGraphWriter::PrintEdges() {
   for (const Block& block : turboshaft_graph_.blocks()) {
     for (const Operation& op : turboshaft_graph_.operations(block)) {
       int target_id = turboshaft_graph_.Index(op).id();
-      for (OpIndex input : op.inputs()) {
+      base::SmallVector<OpIndex, 32> inputs{op.inputs()};
+      // Reorder the inputs to correspond to the order used in constructor and
+      // assembler functions.
+      if (auto* store = op.TryCast<StoreOp>()) {
+        if (store->index().valid()) {
+          DCHECK_EQ(store->input_count, 3);
+          inputs = {store->base(), store->index(), store->value()};
+        }
+      }
+      for (OpIndex input : inputs) {
         if (!first) os_ << ",\n";
         first = false;
         os_ << "{\"source\":" << input.id() << ",";
@@ -95,6 +102,27 @@ std::ostream& operator<<(std::ostream& os, const TurboshaftGraphAsJSON& ad) {
                                    ad.temp_zone);
   writer.Print();
   return os;
+}
+
+void PrintTurboshaftCustomDataPerOperation(
+    OptimizedCompilationInfo* info, const char* data_name, const Graph& graph,
+    std::function<bool(std::ostream&, const Graph&, OpIndex)> printer) {
+  DCHECK(printer);
+
+  TurboJsonFile json_of(info, std::ios_base::app);
+  json_of << "{\"name\":\"" << data_name
+          << "\", \"type\":\"turboshaft_custom_data\", "
+             "\"data_target\":\"operations\", \"data\":[";
+  bool first = true;
+  for (auto index : graph.AllOperationIndices()) {
+    std::stringstream stream;
+    if (printer(stream, graph, index)) {
+      json_of << (first ? "\n" : ",\n") << "{\"key\":" << index.id()
+              << ", \"value\":\"" << stream.str() << "\"}";
+      first = false;
+    }
+  }
+  json_of << "]},\n";
 }
 
 }  // namespace v8::internal::compiler::turboshaft

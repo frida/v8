@@ -7,13 +7,17 @@
 #include "src/base/vlq.h"
 #include "src/deoptimizer/translated-state.h"
 #include "src/objects/fixed-array-inl.h"
+
+#ifdef V8_USE_ZLIB
 #include "third_party/zlib/google/compression_utils_portable.h"
+#endif  // V8_USE_ZLIB
 
 namespace v8 {
 namespace internal {
 
 namespace {
 
+#ifdef V8_USE_ZLIB
 // Constants describing compressed TranslationArray layout. Only relevant if
 // --turbo-compress-translation-arrays is enabled.
 constexpr int kUncompressedSizeOffset = 0;
@@ -21,13 +25,15 @@ constexpr int kUncompressedSizeSize = kInt32Size;
 constexpr int kCompressedDataOffset =
     kUncompressedSizeOffset + kUncompressedSizeSize;
 constexpr int kTranslationArrayElementSize = kInt32Size;
+#endif  // V8_USE_ZLIB
 
 }  // namespace
 
 TranslationArrayIterator::TranslationArrayIterator(TranslationArray buffer,
                                                    int index)
     : buffer_(buffer), index_(index) {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+#ifdef V8_USE_ZLIB
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     const int size = buffer_.get_int(kUncompressedSizeOffset);
     uncompressed_contents_.insert(uncompressed_contents_.begin(), size, 0);
 
@@ -41,13 +47,15 @@ TranslationArrayIterator::TranslationArrayIterator(TranslationArray buffer,
                  buffer_.DataSize()),
              Z_OK);
     DCHECK(index >= 0 && index < size);
-  } else {
-    DCHECK(index >= 0 && index < buffer.length());
+    return;
   }
+#endif  // V8_USE_ZLIB
+  DCHECK(!v8_flags.turbo_compress_translation_arrays);
+  DCHECK(index >= 0 && index < buffer.length());
 }
 
 int32_t TranslationArrayIterator::Next() {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     return uncompressed_contents_[index_++];
   } else {
     int32_t value = base::VLQDecode(buffer_.GetDataStartAddress(), &index_);
@@ -57,7 +65,7 @@ int32_t TranslationArrayIterator::Next() {
 }
 
 uint32_t TranslationArrayIterator::NextUnsigned() {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     return uncompressed_contents_[index_++];
   } else {
     uint32_t value =
@@ -68,7 +76,7 @@ uint32_t TranslationArrayIterator::NextUnsigned() {
 }
 
 bool TranslationArrayIterator::HasNext() const {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     return index_ < static_cast<int>(uncompressed_contents_.size());
   } else {
     return index_ < buffer_.length();
@@ -76,7 +84,7 @@ bool TranslationArrayIterator::HasNext() const {
 }
 
 void TranslationArrayBuilder::Add(int32_t value) {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     contents_for_compression_.push_back(value);
   } else {
     base::VLQEncode(&contents_, value);
@@ -85,7 +93,7 @@ void TranslationArrayBuilder::Add(int32_t value) {
 
 void TranslationArrayBuilder::AddOpcode(TranslationOpcode opcode) {
   static_assert(kNumTranslationOpcodes - 1 <= base::kDataMask);
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     contents_for_compression_.push_back(static_cast<byte>(opcode));
   } else {
     contents_.push_back(static_cast<byte>(opcode));
@@ -94,7 +102,7 @@ void TranslationArrayBuilder::AddOpcode(TranslationOpcode opcode) {
 
 void TranslationArrayBuilder::AddRegister(Register reg) {
   static_assert(Register::kNumRegisters - 1 <= base::kDataMask);
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     contents_for_compression_.push_back(static_cast<byte>(reg.code()));
   } else {
     contents_.push_back(static_cast<byte>(reg.code()));
@@ -103,7 +111,7 @@ void TranslationArrayBuilder::AddRegister(Register reg) {
 
 void TranslationArrayBuilder::AddFloatRegister(FloatRegister reg) {
   static_assert(FloatRegister::kNumRegisters - 1 <= base::kDataMask);
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     contents_for_compression_.push_back(static_cast<byte>(reg.code()));
   } else {
     contents_.push_back(static_cast<byte>(reg.code()));
@@ -112,7 +120,7 @@ void TranslationArrayBuilder::AddFloatRegister(FloatRegister reg) {
 
 void TranslationArrayBuilder::AddDoubleRegister(DoubleRegister reg) {
   static_assert(DoubleRegister::kNumRegisters - 1 <= base::kDataMask);
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     contents_for_compression_.push_back(static_cast<byte>(reg.code()));
   } else {
     contents_.push_back(static_cast<byte>(reg.code()));
@@ -121,7 +129,8 @@ void TranslationArrayBuilder::AddDoubleRegister(DoubleRegister reg) {
 
 Handle<TranslationArray> TranslationArrayBuilder::ToTranslationArray(
     Factory* factory) {
-  if (V8_UNLIKELY(FLAG_turbo_compress_translation_arrays)) {
+#ifdef V8_USE_ZLIB
+  if (V8_UNLIKELY(v8_flags.turbo_compress_translation_arrays)) {
     const int input_size = SizeInBytes();
     uLongf compressed_data_size = compressBound(input_size);
 
@@ -144,13 +153,14 @@ Handle<TranslationArray> TranslationArrayBuilder::ToTranslationArray(
                 compressed_data.data(), compressed_data_size);
 
     return result;
-  } else {
-    Handle<TranslationArray> result =
-        factory->NewByteArray(SizeInBytes(), AllocationType::kOld);
-    memcpy(result->GetDataStartAddress(), contents_.data(),
-           contents_.size() * sizeof(uint8_t));
-    return result;
   }
+#endif
+  DCHECK(!v8_flags.turbo_compress_translation_arrays);
+  Handle<TranslationArray> result =
+      factory->NewByteArray(SizeInBytes(), AllocationType::kOld);
+  memcpy(result->GetDataStartAddress(), contents_.data(),
+         contents_.size() * sizeof(uint8_t));
+  return result;
 }
 
 void TranslationArrayBuilder::BeginBuiltinContinuationFrame(
@@ -277,6 +287,20 @@ void TranslationArrayBuilder::StoreInt64Register(Register reg) {
   DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);
 }
 
+void TranslationArrayBuilder::StoreSignedBigInt64Register(Register reg) {
+  auto opcode = TranslationOpcode::SIGNED_BIGINT64_REGISTER;
+  AddOpcode(opcode);
+  AddRegister(reg);
+  DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);
+}
+
+void TranslationArrayBuilder::StoreUnsignedBigInt64Register(Register reg) {
+  auto opcode = TranslationOpcode::UNSIGNED_BIGINT64_REGISTER;
+  AddOpcode(opcode);
+  AddRegister(reg);
+  DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);
+}
+
 void TranslationArrayBuilder::StoreUint32Register(Register reg) {
   auto opcode = TranslationOpcode::UINT32_REGISTER;
   AddOpcode(opcode);
@@ -319,6 +343,20 @@ void TranslationArrayBuilder::StoreInt32StackSlot(int index) {
 
 void TranslationArrayBuilder::StoreInt64StackSlot(int index) {
   auto opcode = TranslationOpcode::INT64_STACK_SLOT;
+  AddOpcode(opcode);
+  Add(index);
+  DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);
+}
+
+void TranslationArrayBuilder::StoreSignedBigInt64StackSlot(int index) {
+  auto opcode = TranslationOpcode::SIGNED_BIGINT64_STACK_SLOT;
+  AddOpcode(opcode);
+  Add(index);
+  DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);
+}
+
+void TranslationArrayBuilder::StoreUnsignedBigInt64StackSlot(int index) {
+  auto opcode = TranslationOpcode::UNSIGNED_BIGINT64_STACK_SLOT;
   AddOpcode(opcode);
   Add(index);
   DCHECK_EQ(TranslationOpcodeOperandCount(opcode), 1);

@@ -15,9 +15,9 @@
 #include "src/objects/objects-inl.h"
 #include "src/objects/smi.h"
 #include "test/cctest/cctest.h"
-#include "test/cctest/compiler/code-assembler-tester.h"
+#include "test/cctest/compiler/codegen-tester.h"
 #include "test/cctest/compiler/function-tester.h"
-#include "test/cctest/compiler/test-codegen.h"
+#include "test/common/code-assembler-tester.h"
 
 #if V8_ENABLE_WEBASSEMBLY
 #include "src/compiler/wasm-compiler.h"
@@ -301,9 +301,7 @@ void PrintStateValue(std::ostream& os, Isolate* isolate, Handle<Object> value,
   os << ")";
 }
 
-bool TestSimd128Moves() {
-  return CpuFeatures::SupportsWasmSimd128();
-}
+bool TestSimd128Moves() { return CpuFeatures::SupportsWasmSimd128(); }
 
 }  // namespace
 
@@ -695,13 +693,13 @@ class TestEnvironment : public HandleAndZoneScope {
       // The "setup" and "teardown" functions are relatively big, and with
       // runtime assertions enabled they get so big that memory during register
       // allocation becomes a problem. Temporarily disable such assertions.
-      bool old_enable_slow_asserts = FLAG_enable_slow_asserts;
-      FLAG_enable_slow_asserts = false;
+      bool old_enable_slow_asserts = v8_flags.enable_slow_asserts;
+      v8_flags.enable_slow_asserts = false;
 #endif
       Handle<Code> setup =
           BuildSetupFunction(main_isolate(), test_descriptor_, layout_);
 #ifdef ENABLE_SLOW_DCHECKS
-      FLAG_enable_slow_asserts = old_enable_slow_asserts;
+      v8_flags.enable_slow_asserts = old_enable_slow_asserts;
 #endif
       // FunctionTester maintains its own HandleScope which means that its
       // return value will be freed along with it. Copy the result into
@@ -1272,7 +1270,7 @@ TEST(FuzzAssembleMove) {
     }
 
     Handle<Code> test = c.FinalizeForExecuting();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       test->Print();
     }
 
@@ -1311,7 +1309,7 @@ TEST(FuzzAssembleParallelMove) {
     }
 
     Handle<Code> test = c.FinalizeForExecuting();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       test->Print();
     }
 
@@ -1337,7 +1335,7 @@ TEST(FuzzAssembleSwap) {
     }
 
     Handle<Code> test = c.FinalizeForExecuting();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       test->Print();
     }
 
@@ -1375,7 +1373,7 @@ TEST(FuzzAssembleMoveAndSwap) {
     }
 
     Handle<Code> test = c.FinalizeForExecuting();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       test->Print();
     }
 
@@ -1456,7 +1454,7 @@ TEST(AssembleTailCallGap) {
     c.CheckAssembleTailCallGaps(instr, first_slot + 4,
                                 CodeGeneratorTester::kRegisterPush);
     Handle<Code> code = c.Finalize();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       code->Print();
     }
   }
@@ -1485,7 +1483,7 @@ TEST(AssembleTailCallGap) {
     c.CheckAssembleTailCallGaps(instr, first_slot + 4,
                                 CodeGeneratorTester::kStackSlotPush);
     Handle<Code> code = c.Finalize();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       code->Print();
     }
   }
@@ -1514,7 +1512,7 @@ TEST(AssembleTailCallGap) {
     c.CheckAssembleTailCallGaps(instr, first_slot + 4,
                                 CodeGeneratorTester::kScalarPush);
     Handle<Code> code = c.Finalize();
-    if (FLAG_print_code) {
+    if (v8_flags.print_code) {
       code->Print();
     }
   }

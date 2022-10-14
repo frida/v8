@@ -11,7 +11,6 @@
 #include "src/base/optional.h"
 #include "src/base/ring-buffer.h"
 #include "src/common/globals.h"
-#include "src/heap/heap.h"
 #include "src/init/heap-symbols.h"
 #include "src/logging/counters.h"
 #include "testing/gtest/include/gtest/gtest_prod.h"  // nogncheck
@@ -120,7 +119,8 @@ class V8_EXPORT_PRIVATE GCTracer {
       MARK_COMPACTOR = 1,
       INCREMENTAL_MARK_COMPACTOR = 2,
       MINOR_MARK_COMPACTOR = 3,
-      START = 4
+      INCREMENTAL_MINOR_MARK_COMPACTOR = 4,
+      START = 5,
     };
 
     // Returns true if the event corresponds to a young generation GC.
@@ -264,16 +264,14 @@ class V8_EXPORT_PRIVATE GCTracer {
   void StopInSafepoint();
 
   void NotifySweepingCompleted();
-  void NotifyFullCppGCCompleted();
 
+  void NotifyFullCppGCCompleted();
   void NotifyYoungCppGCRunning();
   void NotifyYoungCppGCCompleted();
 
-  void NotifyYoungGenerationHandling(
-      YoungGenerationHandling young_generation_handling);
-
 #ifdef DEBUG
   V8_INLINE bool IsInObservablePause() const;
+  V8_INLINE bool IsInAtomicPause() const;
 
   // Checks if the current event is consistent with a collector.
   V8_INLINE bool IsConsistentWithCollector(GarbageCollector collector) const;
@@ -401,6 +399,10 @@ class V8_EXPORT_PRIVATE GCTracer {
   V8_INLINE WorkerThreadRuntimeCallStats* worker_thread_runtime_call_stats();
 #endif  // defined(V8_RUNTIME_CALL_STATS)
 
+  bool IsCurrentGCDueToAllocationFailure() const {
+    return current_.gc_reason == GarbageCollectionReason::kAllocationFailure;
+  }
+
  private:
   FRIEND_TEST(GCTracer, AverageSpeed);
   FRIEND_TEST(GCTracerTest, AllocationThroughput);
@@ -423,6 +425,9 @@ class V8_EXPORT_PRIVATE GCTracer {
   struct BackgroundCounter {
     double total_duration_ms;
   };
+
+  void NotifyFullSweepingCompleted();
+  void NotifyYoungSweepingCompleted();
 
   void StopCycle(GarbageCollector collector);
 
@@ -553,8 +558,10 @@ class V8_EXPORT_PRIVATE GCTracer {
 
   // A full GC cycle stops only when both v8 and cppgc (if available) GCs have
   // finished sweeping.
-  bool notified_sweeping_completed_ = false;
+  bool notified_full_sweeping_completed_ = false;
   bool notified_full_cppgc_completed_ = false;
+
+  bool notified_young_sweeping_completed_ = false;
   // Similar to full GCs, a young GC cycle stops only when both v8 and cppgc GCs
   // have finished sweeping.
   bool notified_young_cppgc_completed_ = false;

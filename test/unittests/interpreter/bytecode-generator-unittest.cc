@@ -23,9 +23,9 @@ class BytecodeGeneratorTest : public TestWithContext {
  public:
   BytecodeGeneratorTest() : printer_(isolate()) {}
   static void SetUpTestSuite() {
-    i::FLAG_always_turbofan = false;
-    i::FLAG_allow_natives_syntax = true;
-    i::FLAG_enable_lazy_source_positions = false;
+    i::v8_flags.always_turbofan = false;
+    i::v8_flags.allow_natives_syntax = true;
+    i::v8_flags.enable_lazy_source_positions = false;
     TestWithContext::SetUpTestSuite();
   }
 
@@ -1444,6 +1444,9 @@ TEST_F(BytecodeGeneratorTest, CallNew) {
       "  this.z = z;\n"
       "}\n"
       "function f() { return new bar(3, 4, 5); }\n"
+      "f();\n",
+
+      "function f() { new class {}; }\n"
       "f();\n",
   };
 
@@ -3181,6 +3184,24 @@ TEST_F(BytecodeGeneratorTest, TemplateLiterals) {
 
   CHECK(CompareTexts(BuildActual(printer(), snippets),
                      LoadGolden("TemplateLiterals.golden")));
+}
+
+TEST_F(BytecodeGeneratorTest, ElideRedundantLoadOperationOfImmutableContext) {
+  printer().set_wrap(false);
+  printer().set_test_function_name("test");
+
+  std::string snippets[] = {
+      "var test;\n"
+      "(function () {\n"
+      "  var a = {b: 2, c: 3};\n"
+      "  function foo() {a.b = a.c;}\n"
+      "  foo();\n"
+      "  test = foo;\n"
+      "})();\n"};
+
+  CHECK(CompareTexts(
+      BuildActual(printer(), snippets),
+      LoadGolden("ElideRedundantLoadOperationOfImmutableContext.golden")));
 }
 
 }  // namespace interpreter

@@ -123,47 +123,16 @@ void BaselineAssembler::JumpIfImmediate(Condition cc, Register left, int right,
   JumpIf(cc, left, Immediate(right), target, distance);
 }
 
-void BaselineAssembler::CallBuiltin(Builtin builtin) {
-  if (masm()->options().short_builtin_calls) {
-    // Generate pc-relative call.
-    __ CallBuiltin(builtin);
-  } else {
-    ScratchRegisterScope temps(this);
-    Register temp = temps.AcquireScratch();
-    __ LoadEntryFromBuiltin(builtin, temp);
-    __ Call(temp);
-  }
-}
-
-void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
-  if (masm()->options().short_builtin_calls) {
-    // Generate pc-relative call.
-    __ TailCallBuiltin(builtin);
-  } else {
-    // The control flow integrity (CFI) feature allows us to "sign" code entry
-    // points as a target for calls, jumps or both. Arm64 has special
-    // instructions for this purpose, so-called "landing pads" (see
-    // TurboAssembler::CallTarget(), TurboAssembler::JumpTarget() and
-    // TurboAssembler::JumpOrCallTarget()). Currently, we generate "Call"
-    // landing pads for CPP builtins. In order to allow tail calling to those
-    // builtins we have to use a workaround.
-    // x17 is used to allow using "Call" (i.e. `bti c`) rather than "Jump" (i.e.
-    // `bti j`) landing pads for the tail-called code.
-    Register temp = x17;
-
-    // Make sure we're don't use this register as a temporary.
-    UseScratchRegisterScope temps(masm());
-    temps.Exclude(temp);
-
-    __ LoadEntryFromBuiltin(builtin, temp);
-    __ Jump(temp);
-  }
-}
-
 void BaselineAssembler::TestAndBranch(Register value, int mask, Condition cc,
                                       Label* target, Label::Distance) {
-  __ Tst(value, Immediate(mask));
-  __ B(AsMasmCondition(cc), target);
+  if (cc == Condition::kZero) {
+    __ TestAndBranchIfAllClear(value, mask, target);
+  } else if (cc == Condition::kNotZero) {
+    __ TestAndBranchIfAnySet(value, mask, target);
+  } else {
+    __ Tst(value, Immediate(mask));
+    __ B(AsMasmCondition(cc), target);
+  }
 }
 
 void BaselineAssembler::JumpIf(Condition cc, Register lhs, const Operand& rhs,
@@ -185,7 +154,7 @@ void BaselineAssembler::JumpIfInstanceType(Condition cc, Register map,
                                            Label* target, Label::Distance) {
   ScratchRegisterScope temps(this);
   Register type = temps.AcquireScratch();
-  if (FLAG_debug_code) {
+  if (v8_flags.debug_code) {
     __ AssertNotSmi(map);
     __ CompareObjectType(map, type, type, MAP_TYPE);
     __ Assert(eq, AbortReason::kUnexpectedValue);
@@ -436,6 +405,13 @@ void BaselineAssembler::LoadTaggedSignedField(Register output, Register source,
   __ LoadTaggedSignedField(output, FieldMemOperand(source, offset));
 }
 
+void BaselineAssembler::LoadTaggedSignedFieldAndUntag(Register output,
+                                                      Register source,
+                                                      int offset) {
+  LoadTaggedSignedField(output, source, offset);
+  SmiUntag(output);
+}
+
 void BaselineAssembler::LoadTaggedAnyField(Register output, Register source,
                                            int offset) {
   __ LoadAnyTaggedField(output, FieldMemOperand(source, offset));
@@ -666,7 +642,7 @@ void BaselineAssembler::EmitReturn(MacroAssembler* masm) {
     __ LoadContext(kContextRegister);
     __ LoadFunction(kJSFunctionRegister);
     __ masm()->PushArgument(kJSFunctionRegister);
-    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt, 1);
+    __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
 
     __ masm()->Pop(kInterpreterAccumulatorRegister, params_size);
     __ masm()->SmiUntag(params_size);
@@ -701,7 +677,7 @@ void BaselineAssembler::EmitReturn(MacroAssembler* masm) {
 inline void EnsureAccumulatorPreservedScope::AssertEqualToAccumulator(
     Register reg) {
   assembler_->masm()->CmpTagged(reg, kInterpreterAccumulatorRegister);
-  assembler_->masm()->Assert(eq, AbortReason::kUnexpectedValue);
+  assembler_->masm()->Assert(eq, AbortReason::kAccumulatorClobbered);
 }
 
 }  // namespace baseline

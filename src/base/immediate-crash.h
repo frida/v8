@@ -135,17 +135,14 @@
 
 #else
 
-#define WRAPPED_TRAP_SEQUENCE_()         \
-  do {                                   \
-    []() __attribute__((__noreturn__)) { \
-      TRAP_SEQUENCE_();                  \
-      __builtin_unreachable();           \
-    }();                                 \
+#define WRAPPED_TRAP_SEQUENCE_() \
+  do {                           \
+    [] { TRAP_SEQUENCE_(); }();  \
   } while (false)
 
-#endif  // !V8_CC_GNU
+#endif  // !V8_CC_GCC
 
-#if defined(__clang__)
+#if defined(__clang__) || V8_CC_GCC
 
 // __builtin_unreachable() hints to the compiler that this is noreturn and can
 // be packed in the function epilogue.

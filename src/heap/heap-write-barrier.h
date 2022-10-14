@@ -33,7 +33,6 @@ void WriteBarrierForCode(Code host, RelocInfo* rinfo, Object value,
                          WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
 void WriteBarrierForCode(Code host, RelocInfo* rinfo, HeapObject value,
                          WriteBarrierMode mode = UPDATE_WRITE_BARRIER);
-void WriteBarrierForCode(Code host);
 
 void CombinedWriteBarrier(HeapObject object, ObjectSlot slot, Object value,
                           WriteBarrierMode mode);
@@ -62,6 +61,8 @@ class V8_EXPORT_PRIVATE WriteBarrier {
 
   // It is invoked from generated code and has to take raw addresses.
   static int MarkingFromCode(Address raw_host, Address raw_slot);
+  static int SharedFromCode(Address raw_host, Address raw_slot);
+
   // Invoked from global handles where no host object is available.
   static inline void MarkingFromGlobalHandle(Object value);
   static inline void MarkingFromInternalFields(JSObject host);

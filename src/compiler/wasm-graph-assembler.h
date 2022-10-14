@@ -250,6 +250,10 @@ class WasmGraphAssembler : public GraphAssembler {
 
   Node* AssertNotNull(Node* object);
 
+  Node* WasmExternInternalize(Node* object);
+
+  Node* WasmExternExternalize(Node* object);
+
   // Generic helpers.
 
   Node* HasInstanceType(Node* heap_object, InstanceType type);

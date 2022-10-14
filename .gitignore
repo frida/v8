@@ -30,6 +30,7 @@
 .cproject
 .gclient_entries
 .gdb_history
+.idea
 .jslint-cache
 .landmines
 .project
@@ -38,6 +39,7 @@
 .torquelint-cache
 .vscode
 /_*
+/base
 /build
 /buildtools
 /check-header-includes
@@ -48,7 +50,6 @@
 /perf.data.old
 /src/inspector/build/closure-compiler
 /src/inspector/build/closure-compiler.tar.gz
-/subprojects/zlib
 /test/benchmarks/data
 /test/fuzzer/wasm_corpus
 /test/fuzzer/wasm_corpus.tar.gz
@@ -72,9 +73,6 @@
 !/third_party/test262-harness
 !/third_party/v8
 !/third_party/wasm-api
-!/third_party/jinja2
-!/third_party/markupsafe
-!/third_party/zlib
 /tools/clang
 /tools/gcmole/bootstrap
 /tools/gcmole/gcmole-tools

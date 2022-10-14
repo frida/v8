@@ -8,6 +8,7 @@
 #include "src/execution/protectors.h"
 #include "src/heap/factory.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/new-spaces.h"
 #include "src/ic/handler-configuration.h"
 #include "src/init/heap-symbols.h"
 #include "src/init/setup-isolate.h"
@@ -74,6 +75,11 @@ bool SetupIsolateDelegate::SetupHeapInternal(Heap* heap) {
 bool Heap::CreateHeapObjects() {
   // Create initial maps.
   if (!CreateInitialMaps()) return false;
+
+  // Ensure that all young generation pages are iterable. It must be after heap
+  // setup, so that the maps have been created.
+  if (new_space()) new_space()->MakeIterable();
+
   CreateApiObjects();
 
   // Create initial objects
@@ -172,7 +178,8 @@ AllocationResult Heap::AllocatePartialMap(InstanceType instance_type,
   map.set_visitor_id(Map::GetVisitorId(map));
   map.set_inobject_properties_start_or_constructor_function_index(0);
   DCHECK(!map.IsJSObjectMap());
-  map.set_prototype_validity_cell(Smi::FromInt(Map::kPrototypeChainValid));
+  map.set_prototype_validity_cell(Smi::FromInt(Map::kPrototypeChainValid),
+                                  kRelaxedStore);
   map.SetInObjectUnusedPropertyFields(0);
   map.set_bit_field(0);
   map.set_bit_field2(0);
@@ -691,7 +698,7 @@ void Heap::CreateInitialObjects() {
   // Allocate and initialize table for single character one byte strings.
   int table_size = String::kMaxOneByteCharCode + 1;
   set_single_character_string_table(
-      *factory->NewFixedArray(table_size, AllocationType::kOld));
+      *factory->NewFixedArray(table_size, AllocationType::kReadOnly));
   for (int i = 0; i < table_size; ++i) {
     uint8_t code = static_cast<uint8_t>(i);
     Handle<String> str =
@@ -871,9 +878,11 @@ void Heap::CreateInitialObjects() {
   set_feedback_vectors_for_profiling_tools(roots.undefined_value());
   set_pending_optimize_for_test_bytecode(roots.undefined_value());
   set_shared_wasm_memories(roots.empty_weak_array_list());
+  set_locals_block_list_cache(roots.undefined_value());
 #ifdef V8_ENABLE_WEBASSEMBLY
   set_active_continuation(roots.undefined_value());
   set_active_suspender(roots.undefined_value());
+  set_js_to_wasm_wrappers(roots.empty_weak_array_list());
   set_wasm_canonical_rtts(roots.empty_weak_array_list());
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -1020,8 +1029,8 @@ void Heap::CreateInitialObjects() {
     set_async_generator_await_reject_shared_fun(*info);
 
     info = CreateSharedFunctionInfo(
-        isolate(), Builtin::kAsyncGeneratorYieldResolveClosure, 1);
-    set_async_generator_yield_resolve_shared_fun(*info);
+        isolate(), Builtin::kAsyncGeneratorYieldWithAwaitResolveClosure, 1);
+    set_async_generator_yield_with_await_resolve_shared_fun(*info);
 
     info = CreateSharedFunctionInfo(
         isolate(), Builtin::kAsyncGeneratorReturnResolveClosure, 1);

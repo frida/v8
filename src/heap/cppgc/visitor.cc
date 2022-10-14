@@ -108,7 +108,8 @@ void ConservativeTracingVisitor::TraceConservativelyIfNeeded(
       static_cast<uint32_t>(reinterpret_cast<uintptr_t>(pointer) >>
                             (sizeof(uint32_t) * CHAR_BIT))));
   try_trace(decompressed_high);
-  // In addition, check half-compressed haldwords, since the compiler is free to
+#if !defined(CPPGC_2GB_CAGE)
+  // In addition, check half-compressed halfwords, since the compiler is free to
   // spill intermediate results of compression/decompression onto the stack.
   const uintptr_t base = CagedHeapBase::GetBase();
   DCHECK(base);
@@ -120,6 +121,7 @@ void ConservativeTracingVisitor::TraceConservativelyIfNeeded(
                             (sizeof(uint32_t) * CHAR_BIT)) |
       base);
   try_trace(intermediate_decompressed_high);
+#endif  // !defined(CPPGC_2GB_CAGE)
 #endif  // defined(CPPGC_POINTER_COMPRESSION)
 }
 

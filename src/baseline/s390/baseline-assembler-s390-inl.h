@@ -216,34 +216,6 @@ void BaselineAssembler::JumpIfNotSmi(Register value, Label* target,
   __ JumpIfNotSmi(value, target);
 }
 
-void BaselineAssembler::CallBuiltin(Builtin builtin) {
-  ASM_CODE_COMMENT_STRING(masm_,
-                          __ CommentForOffHeapTrampoline("call", builtin));
-  if (masm()->options().short_builtin_calls) {
-    // Generate pc-relative call.
-    __ CallBuiltin(builtin);
-  } else {
-    ScratchRegisterScope temps(this);
-    Register temp = temps.AcquireScratch();
-    __ LoadEntryFromBuiltin(builtin, temp);
-    __ Call(temp);
-  }
-}
-
-void BaselineAssembler::TailCallBuiltin(Builtin builtin) {
-  ASM_CODE_COMMENT_STRING(masm_,
-                          __ CommentForOffHeapTrampoline("tail call", builtin));
-  if (masm()->options().short_builtin_calls) {
-    // Generate pc-relative call.
-    __ TailCallBuiltin(builtin);
-  } else {
-    ScratchRegisterScope temps(this);
-    Register temp = temps.AcquireScratch();
-    __ LoadEntryFromBuiltin(builtin, temp);
-    __ Jump(temp);
-  }
-}
-
 void BaselineAssembler::TestAndBranch(Register value, int mask, Condition cc,
                                       Label* target, Label::Distance) {
   ASM_CODE_COMMENT(masm_);
@@ -280,7 +252,7 @@ void BaselineAssembler::JumpIfInstanceType(Condition cc, Register map,
   ASM_CODE_COMMENT(masm_);
   ScratchRegisterScope temps(this);
   Register type = temps.AcquireScratch();
-  if (FLAG_debug_code) {
+  if (v8_flags.debug_code) {
     __ AssertNotSmi(map);
     __ CompareObjectType(map, type, type, MAP_TYPE);
     __ Assert(eq, AbortReason::kUnexpectedValue);
@@ -315,11 +287,20 @@ void BaselineAssembler::JumpIfSmi(Condition cc, Register lhs, Register rhs,
   JumpIfHelper(masm_, cc, lhs, rhs, target);
 }
 
+constexpr static int stack_bias = 4;
+
 void BaselineAssembler::JumpIfTagged(Condition cc, Register value,
                                      MemOperand operand, Label* target,
                                      Label::Distance) {
   ASM_CODE_COMMENT(masm_);
-  __ LoadTaggedPointerField(ip, operand, r0);
+  DCHECK(operand.rb() == fp || operand.rx() == fp);
+  if (COMPRESS_POINTERS_BOOL) {
+    MemOperand addr =
+        MemOperand(operand.rx(), operand.rb(), operand.offset() + stack_bias);
+    __ LoadTaggedPointerField(ip, addr, r0);
+  } else {
+    __ LoadTaggedPointerField(ip, operand, r0);
+  }
   JumpIfHelper<COMPRESS_POINTERS_BOOL ? 32 : 64>(masm_, cc, value, ip, target);
 }
 
@@ -327,7 +308,14 @@ void BaselineAssembler::JumpIfTagged(Condition cc, MemOperand operand,
                                      Register value, Label* target,
                                      Label::Distance) {
   ASM_CODE_COMMENT(masm_);
-  __ LoadTaggedPointerField(ip, operand, r0);
+  DCHECK(operand.rb() == fp || operand.rx() == fp);
+  if (COMPRESS_POINTERS_BOOL) {
+    MemOperand addr =
+        MemOperand(operand.rx(), operand.rb(), operand.offset() + stack_bias);
+    __ LoadTaggedPointerField(ip, addr, r0);
+  } else {
+    __ LoadTaggedPointerField(ip, operand, r0);
+  }
   JumpIfHelper<COMPRESS_POINTERS_BOOL ? 32 : 64>(masm_, cc, ip, value, target);
 }
 void BaselineAssembler::JumpIfByte(Condition cc, Register value, int32_t byte,
@@ -495,6 +483,13 @@ void BaselineAssembler::LoadTaggedSignedField(Register output, Register source,
                                               int offset) {
   ASM_CODE_COMMENT(masm_);
   __ LoadTaggedSignedField(output, FieldMemOperand(source, offset));
+}
+
+void BaselineAssembler::LoadTaggedSignedFieldAndUntag(Register output,
+                                                      Register source,
+                                                      int offset) {
+  LoadTaggedSignedField(output, source, offset);
+  SmiUntag(output);
 }
 
 void BaselineAssembler::LoadTaggedAnyField(Register output, Register source,
@@ -732,7 +727,7 @@ void BaselineAssembler::EmitReturn(MacroAssembler* masm) {
       __ LoadContext(kContextRegister);
       __ LoadFunction(kJSFunctionRegister);
       __ Push(kJSFunctionRegister);
-      __ CallRuntime(Runtime::kBytecodeBudgetInterrupt, 1);
+      __ CallRuntime(Runtime::kBytecodeBudgetInterrupt_Sparkplug, 1);
 
       __ Pop(kInterpreterAccumulatorRegister, params_size);
       __ masm()->SmiUntag(params_size);
@@ -773,7 +768,7 @@ inline void EnsureAccumulatorPreservedScope::AssertEqualToAccumulator(
   } else {
     assembler_->masm()->CmpU64(reg, kInterpreterAccumulatorRegister);
   }
-  assembler_->masm()->Assert(eq, AbortReason::kUnexpectedValue);
+  assembler_->masm()->Assert(eq, AbortReason::kAccumulatorClobbered);
 }
 
 }  // namespace baseline
