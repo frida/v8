@@ -4062,13 +4062,6 @@ void Isolate::AddCrashKeysForIsolateAndHeapPointers() {
   add_crash_key_callback_(v8::CrashKeyId::kReadonlySpaceFirstPageAddress,
                           ToHexString(ro_space_firstpage_address));
 
-  if (heap()->map_space()) {
-    const uintptr_t map_space_firstpage_address =
-        heap()->map_space()->FirstPageAddress();
-    add_crash_key_callback_(v8::CrashKeyId::kMapSpaceFirstPageAddress,
-                            ToHexString(map_space_firstpage_address));
-  }
-
   if (heap()->code_range_base()) {
     const uintptr_t code_range_base_address = heap()->code_range_base();
     add_crash_key_callback_(v8::CrashKeyId::kCodeRangeBaseAddress,
@@ -4711,7 +4704,8 @@ bool Isolate::NeedsSourcePositionsForProfiling() const {
       // Static conditions.
       v8_flags.trace_deopt || v8_flags.trace_turbo ||
       v8_flags.trace_turbo_graph || v8_flags.turbo_profiling ||
-      v8_flags.perf_prof || v8_flags.log_maps || v8_flags.log_ic ||
+      v8_flags.print_maglev_code || v8_flags.perf_prof || v8_flags.log_maps ||
+      v8_flags.log_ic ||
       // Dynamic conditions; changing any of these conditions triggers source
       // position collection for the entire heap
       // (CollectSourcePositionsForAllBytecodeArrays).

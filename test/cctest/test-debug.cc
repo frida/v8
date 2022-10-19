@@ -35,8 +35,10 @@
 #include "src/base/strings.h"
 #include "src/codegen/compilation-cache.h"
 #include "src/debug/debug-interface.h"
+#include "src/debug/debug-scopes.h"
 #include "src/debug/debug.h"
 #include "src/deoptimizer/deoptimizer.h"
+#include "src/execution/frames-inl.h"
 #include "src/execution/microtask-queue.h"
 #include "src/objects/objects-inl.h"
 #include "src/utils/utils.h"
@@ -5845,4 +5847,101 @@ TEST(CreateMessageDoesNotInspectStack) {
       v8::debug::CreateMessageFromException(context->GetIsolate(), error);
   CHECK(!message.IsEmpty());
   CHECK(message->GetStackTrace().IsEmpty());
+}
+
+namespace {
+
+class ScopeListener : public v8::debug::DebugDelegate {
+ public:
+  void BreakProgramRequested(v8::Local<v8::Context> context,
+                             const std::vector<v8::debug::BreakpointId>&,
+                             v8::debug::BreakReasons break_reasons) override {
+    i::Isolate* isolate = CcTest::i_isolate();
+    i::StackTraceFrameIterator iterator_(isolate,
+                                         isolate->debug()->break_frame_id());
+    // Go up one frame so we are on the script level.
+    iterator_.Advance();
+
+    auto frame_inspector =
+        std::make_unique<i::FrameInspector>(iterator_.frame(), 0, isolate);
+    i::ScopeIterator scope_iterator(
+        isolate, frame_inspector.get(),
+        i::ScopeIterator::ReparseStrategy::kScriptIfNeeded);
+
+    // Iterate all scopes triggering block list creation along the way. This
+    // should not run into any CHECKs.
+    while (!scope_iterator.Done()) scope_iterator.Next();
+  }
+};
+
+}  // namespace
+
+TEST(ScopeIteratorDoesNotCreateBlocklistForScriptScope) {
+  i::v8_flags.experimental_reuse_locals_blocklists = true;
+
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  // Register a debug event listener which creates a ScopeIterator.
+  ScopeListener delegate;
+  v8::debug::SetDebugDelegate(isolate, &delegate);
+
+  CompileRun(R"javascript(
+    function foo() { debugger; }
+    foo();
+  )javascript");
+
+  // Get rid of the debug event listener.
+  v8::debug::SetDebugDelegate(isolate, nullptr);
+  CheckDebuggerUnloaded();
+}
+
+namespace {
+
+class DebugEvaluateListener : public v8::debug::DebugDelegate {
+ public:
+  void BreakProgramRequested(v8::Local<v8::Context> context,
+                             const std::vector<v8::debug::BreakpointId>&,
+                             v8::debug::BreakReasons break_reasons) override {
+    v8::Isolate* isolate = context->GetIsolate();
+    auto it = v8::debug::StackTraceIterator::Create(isolate);
+    v8::Local<v8::Value> result =
+        it->Evaluate(v8_str(isolate, "x"), /* throw_on_side_effect */ false)
+            .ToLocalChecked();
+    CHECK_EQ(42, result->ToInteger(context).ToLocalChecked()->Value());
+  }
+};
+
+}  // namespace
+
+// This test checks that the debug-evaluate blocklist logic correctly handles
+// scopes created by `ScriptCompiler::CompileFunction`. It creates a function
+// scope nested inside an eval scope with the exact same source positions.
+// This can confuse the blocklist mechanism if not handled correctly.
+TEST(DebugEvaluateInWrappedScript) {
+  i::v8_flags.experimental_reuse_locals_blocklists = true;
+
+  LocalContext env;
+  v8::Isolate* isolate = env->GetIsolate();
+  v8::HandleScope scope(isolate);
+
+  // Register a debug event listener which evaluates 'x'.
+  DebugEvaluateListener delegate;
+  v8::debug::SetDebugDelegate(isolate, &delegate);
+
+  static const char* source = "const x = 42; () => x; debugger;";
+
+  {
+    v8::ScriptCompiler::Source script_source(v8_str(source));
+    v8::Local<v8::Function> fun =
+        v8::ScriptCompiler::CompileFunction(env.local(), &script_source)
+            .ToLocalChecked();
+
+    fun->Call(env.local(), env->Global(), 0, nullptr).ToLocalChecked();
+  }
+
+  // Get rid of the debug event listener.
+  v8::debug::SetDebugDelegate(env->GetIsolate(), nullptr);
+  CheckDebuggerUnloaded();
 }

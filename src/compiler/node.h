@@ -338,11 +338,7 @@ class NodeWrapper {
 
 class Effect : public NodeWrapper {
  public:
-#if defined(_MSC_VER) && defined(ENABLE_SLOW_DCHECKS)
-  explicit Effect(Node* node) : NodeWrapper(node) {
-#else
   explicit constexpr Effect(Node* node) : NodeWrapper(node) {
-#endif
     // TODO(jgruber): Remove the End special case.
     SLOW_DCHECK(node == nullptr || node->op()->opcode() == IrOpcode::kEnd ||
                 node->op()->EffectOutputCount() > 0);
@@ -358,11 +354,7 @@ class Effect : public NodeWrapper {
 
 class Control : public NodeWrapper {
  public:
-#if defined(_MSC_VER) && defined(ENABLE_SLOW_DCHECKS)
-  explicit Control(Node* node) : NodeWrapper(node) {
-#else
   explicit constexpr Control(Node* node) : NodeWrapper(node) {
-#endif
     // TODO(jgruber): Remove the End special case.
     SLOW_DCHECK(node == nullptr || node->opcode() == IrOpcode::kEnd ||
                 node->op()->ControlOutputCount() > 0);

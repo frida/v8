@@ -7,12 +7,6 @@
 
 #include "include/v8config.h"
 
-#ifdef __clang__
-#if __has_feature(ptrauth_calls)
-#define V8_HOST_PTRAUTH 1
-#endif
-#endif
-
 #if defined(__ARM_ARCH_7A__) || defined(__ARM_ARCH_7R__) || \
     defined(__ARM_ARCH_7__)
 #define CAN_USE_ARMV7_INSTRUCTIONS 1

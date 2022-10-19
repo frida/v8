@@ -12,6 +12,7 @@
 #include "src/base/threaded-list.h"
 #include "src/codegen/label.h"
 #include "src/codegen/reglist.h"
+#include "src/codegen/source-position.h"
 #include "src/common/globals.h"
 #include "src/common/operation.h"
 #include "src/compiler/backend/instruction.h"
@@ -170,6 +171,7 @@ class CompactInterpreterFrameState;
   V(CheckedFloat64Unbox)           \
   V(LogicalNot)                    \
   V(SetPendingMessage)             \
+  V(StringAt)                      \
   V(StringLength)                  \
   V(ToBooleanLogicalNot)           \
   V(TaggedEqual)                   \
@@ -193,6 +195,7 @@ class CompactInterpreterFrameState;
 #define NODE_LIST(V)                  \
   V(AssertInt32)                      \
   V(CheckMaps)                        \
+  V(CheckInt32Condition)              \
   V(CheckSmi)                         \
   V(CheckNumber)                      \
   V(CheckHeapObject)                  \
@@ -680,13 +683,15 @@ class CheckpointedInterpreterState {
 class DeoptInfo {
  protected:
   DeoptInfo(Zone* zone, const MaglevCompilationUnit& compilation_unit,
-            CheckpointedInterpreterState checkpoint);
+            CheckpointedInterpreterState checkpoint,
+            SourcePosition source_position);
 
  public:
   const MaglevCompilationUnit& unit;
   CheckpointedInterpreterState state;
   InputLocation* input_locations = nullptr;
   Label deopt_entry_label;
+  SourcePosition source_position;
   int translation_index = -1;
 };
 
@@ -699,16 +704,18 @@ struct RegisterSnapshot {
 class EagerDeoptInfo : public DeoptInfo {
  public:
   EagerDeoptInfo(Zone* zone, const MaglevCompilationUnit& compilation_unit,
-                 CheckpointedInterpreterState checkpoint)
-      : DeoptInfo(zone, compilation_unit, checkpoint) {}
+                 CheckpointedInterpreterState checkpoint,
+                 SourcePosition source_position)
+      : DeoptInfo(zone, compilation_unit, checkpoint, source_position) {}
   DeoptimizeReason reason = DeoptimizeReason::kUnknown;
 };
 
 class LazyDeoptInfo : public DeoptInfo {
  public:
   LazyDeoptInfo(Zone* zone, const MaglevCompilationUnit& compilation_unit,
-                CheckpointedInterpreterState checkpoint)
-      : DeoptInfo(zone, compilation_unit, checkpoint) {}
+                CheckpointedInterpreterState checkpoint,
+                SourcePosition source_position)
+      : DeoptInfo(zone, compilation_unit, checkpoint, source_position) {}
 
   bool IsResultRegister(interpreter::Register reg) const;
 
@@ -814,15 +821,16 @@ class NodeBase : public ZoneObject {
 
   template <class Derived, typename... Args>
   static Derived* New(Zone* zone, const MaglevCompilationUnit& compilation_unit,
-                      CheckpointedInterpreterState checkpoint, Args&&... args) {
+                      CheckpointedInterpreterState checkpoint,
+                      SourcePosition source_position, Args&&... args) {
     Derived* node = New<Derived>(zone, std::forward<Args>(args)...);
     if constexpr (Derived::kProperties.can_eager_deopt()) {
       new (node->eager_deopt_info())
-          EagerDeoptInfo(zone, compilation_unit, checkpoint);
+          EagerDeoptInfo(zone, compilation_unit, checkpoint, source_position);
     } else {
       static_assert(Derived::kProperties.can_lazy_deopt());
       new (node->lazy_deopt_info())
-          LazyDeoptInfo(zone, compilation_unit, checkpoint);
+          LazyDeoptInfo(zone, compilation_unit, checkpoint, source_position);
     }
     return node;
   }
@@ -2776,6 +2784,28 @@ class CheckJSArrayBounds : public FixedInputNodeT<2, CheckJSArrayBounds> {
   DECL_NODE_INTERFACE_WITH_EMPTY_PRINT_PARAMS()
 };
 
+class CheckInt32Condition : public FixedInputNodeT<2, CheckInt32Condition> {
+  using Base = FixedInputNodeT<2, CheckInt32Condition>;
+
+ public:
+  explicit CheckInt32Condition(uint64_t bitfield, AssertCondition condition,
+                               DeoptimizeReason reason)
+      : Base(bitfield), condition_(condition), reason_(reason) {}
+
+  static constexpr OpProperties kProperties = OpProperties::EagerDeopt();
+
+  static constexpr int kLeftIndex = 0;
+  static constexpr int kRightIndex = 1;
+  Input& left_input() { return input(kLeftIndex); }
+  Input& right_input() { return input(kRightIndex); }
+
+  DECL_NODE_INTERFACE()
+
+ private:
+  AssertCondition condition_;
+  DeoptimizeReason reason_;
+};
+
 class CheckJSObjectElementsBounds
     : public FixedInputNodeT<2, CheckJSObjectElementsBounds> {
   using Base = FixedInputNodeT<2, CheckJSObjectElementsBounds>;
@@ -3128,6 +3158,23 @@ class SetNamedGeneric : public FixedInputValueNodeT<3, SetNamedGeneric> {
  private:
   const compiler::NameRef name_;
   const compiler::FeedbackSource feedback_;
+};
+
+class StringAt : public FixedInputValueNodeT<2, StringAt> {
+  using Base = FixedInputValueNodeT<2, StringAt>;
+
+ public:
+  explicit StringAt(uint64_t bitfield) : Base(bitfield) {}
+
+  static constexpr OpProperties kProperties =
+      OpProperties::Reading() | OpProperties::DeferredCall();
+
+  static constexpr int kStringIndex = 0;
+  static constexpr int kIndexIndex = 1;
+  Input& string_input() { return input(kStringIndex); }
+  Input& index_input() { return input(kIndexIndex); }
+
+  DECL_NODE_INTERFACE_WITH_EMPTY_PRINT_PARAMS()
 };
 
 class StringLength : public FixedInputValueNodeT<1, StringLength> {

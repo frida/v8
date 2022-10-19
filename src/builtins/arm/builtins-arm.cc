@@ -2966,10 +2966,6 @@ void CallApiFunctionAndReturn(MacroAssembler* masm, Register function_address,
   __ bind(&return_value_loaded);
   // No more valid handles (the result handle was the last one). Restore
   // previous handle scope.
-#if V8_OS_DARWIN
-  // r9 is considered a volatile scratch register, so we need to restore it.
-  __ Move(r9, next_address);
-#endif
   __ str(r4, MemOperand(r9, kNextOffset));
   if (v8_flags.debug_code) {
     __ ldr(r1, MemOperand(r9, kLevelOffset));

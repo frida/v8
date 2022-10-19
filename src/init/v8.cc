@@ -11,7 +11,6 @@
 #include "src/base/atomicops.h"
 #include "src/base/once.h"
 #include "src/base/platform/platform.h"
-#include "src/base/platform/threading-backend.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/common/code-memory-access.h"
@@ -74,8 +73,9 @@ void AdvanceStartupState(V8StartupState expected_next_state) {
     // isolate->Dispose();
     // v8::V8::Dispose();
     // v8::V8::DisposePlatform();
-    FATAL("Wrong initialization order: got %d expected %d!",
-          static_cast<int>(current_state), static_cast<int>(next_state));
+    FATAL("Wrong initialization order: from %d to %d, expected to %d!",
+          static_cast<int>(current_state), static_cast<int>(next_state),
+          static_cast<int>(expected_next_state));
   }
   if (!v8_startup_state_.compare_exchange_strong(current_state, next_state)) {
     FATAL(
@@ -97,7 +97,6 @@ void V8::InitializePlatform(v8::Platform* platform) {
   CHECK(!platform_);
   CHECK_NOT_NULL(platform);
   platform_ = platform;
-  v8::base::SetThreadingBackend(platform->GetThreadingBackend());
   v8::base::SetPrintStackTrace(platform_->GetStackTracePrinter());
   v8::tracing::TracingCategoryObserver::SetUp();
 #if defined(V8_OS_WIN) && defined(V8_ENABLE_ETW_STACK_WALKING)
@@ -123,8 +122,6 @@ void V8::InitializePlatform(v8::Platform* platform) {
   }
 
 void V8::Initialize() {
-  base::LazyRuntime::SetUp();
-
   AdvanceStartupState(V8StartupState::kV8Initializing);
   CHECK(platform_);
 
@@ -287,7 +284,6 @@ void V8::Dispose() {
   Isolate::DisposeOncePerProcess();
   FlagList::ReleaseDynamicAllocations();
   AdvanceStartupState(V8StartupState::kV8Disposed);
-  base::LazyRuntime::TearDown();
 }
 
 void V8::DisposePlatform() {

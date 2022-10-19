@@ -93,6 +93,7 @@ MaglevGraphBuilder::MaglevGraphBuilder(LocalIsolate* local_isolate,
       parent_(parent),
       graph_(graph),
       iterator_(bytecode().object()),
+      source_position_iterator_(bytecode().SourcePositionTable()),
       // Add an extra jump_target slot for the inline exit if needed.
       jump_targets_(zone()->NewArray<BasicBlockRef>(bytecode().length() +
                                                     (is_inline() ? 1 : 0))),
@@ -1227,7 +1228,8 @@ bool MaglevGraphBuilder::TryFoldLoadConstantDataField(
 }
 
 bool MaglevGraphBuilder::TryBuildPropertyGetterCall(
-    compiler::PropertyAccessInfo access_info, ValueNode* receiver) {
+    compiler::PropertyAccessInfo access_info, ValueNode* receiver,
+    ValueNode* lookup_start_object) {
   compiler::ObjectRef constant = access_info.constant().value();
 
   if (access_info.IsDictionaryProtoAccessorConstant()) {
@@ -1240,9 +1242,13 @@ bool MaglevGraphBuilder::TryBuildPropertyGetterCall(
 
   // Introduce the call to the getter function.
   if (constant.IsJSFunction()) {
-    Call* call = CreateNewNode<Call>(
-        Call::kFixedInputCount + 1, ConvertReceiverMode::kNotNullOrUndefined,
-        compiler::FeedbackSource(), GetConstant(constant), GetContext());
+    ConvertReceiverMode receiver_mode =
+        receiver == lookup_start_object
+            ? ConvertReceiverMode::kNotNullOrUndefined
+            : ConvertReceiverMode::kAny;
+    Call* call = CreateNewNode<Call>(Call::kFixedInputCount + 1, receiver_mode,
+                                     compiler::FeedbackSource(),
+                                     GetConstant(constant), GetContext());
     call->set_arg(0, receiver);
     SetAccumulator(AddNode(call));
     return true;
@@ -1367,7 +1373,8 @@ bool MaglevGraphBuilder::TryBuildPropertyLoad(
       return TryFoldLoadDictPrototypeConstant(access_info);
     case compiler::PropertyAccessInfo::kFastAccessorConstant:
     case compiler::PropertyAccessInfo::kDictionaryProtoAccessorConstant:
-      return TryBuildPropertyGetterCall(access_info, receiver);
+      return TryBuildPropertyGetterCall(access_info, receiver,
+                                        lookup_start_object);
     case compiler::PropertyAccessInfo::kModuleExport: {
       ValueNode* cell = GetConstant(access_info.constant().value().AsCell());
       SetAccumulator(AddNewNode<LoadTaggedField>({cell}, Cell::kValueOffset));
@@ -1465,8 +1472,62 @@ bool MaglevGraphBuilder::TryBuildNamedAccess(
   }
 }
 
+ValueNode* MaglevGraphBuilder::GetInt32ElementIndex(ValueNode* object) {
+  switch (object->properties().value_representation()) {
+    case ValueRepresentation::kTagged:
+      if (SmiConstant* constant = object->TryCast<SmiConstant>()) {
+        return GetInt32Constant(constant->value().value());
+      } else {
+        NodeInfo* node_info = known_node_aspects().GetOrCreateInfoFor(object);
+        if (node_info->is_smi()) {
+          if (!node_info->int32_alternative) {
+            // TODO(leszeks): This could be unchecked.
+            node_info->int32_alternative =
+                AddNewNode<CheckedSmiUntag>({object});
+          }
+          return node_info->int32_alternative;
+        } else {
+          // TODO(leszeks): Cache this knowledge/converted value somehow on
+          // the node info.
+          return AddNewNode<CheckedObjectToIndex>({object});
+        }
+      }
+    case ValueRepresentation::kInt32:
+      // Already good.
+      return object;
+    case ValueRepresentation::kFloat64:
+      // TODO(leszeks): Pass in the index register (probably the
+      // accumulator), so that we can save this truncation on there as a
+      // conversion node.
+      return AddNewNode<CheckedTruncateFloat64ToInt32>({object});
+  }
+}
+
+bool MaglevGraphBuilder::TryBuildElementAccessOnString(
+    ValueNode* object, ValueNode* index_object,
+    compiler::KeyedAccessMode const& keyed_mode) {
+  // Strings are immutable and `in` cannot be used on strings
+  if (keyed_mode.access_mode() != compiler::AccessMode::kLoad) return false;
+
+  // TODO(victorgomes): Deal with LOAD_IGNORE_OUT_OF_BOUNDS.
+  if (keyed_mode.load_mode() == LOAD_IGNORE_OUT_OF_BOUNDS) return false;
+
+  DCHECK_EQ(keyed_mode.load_mode(), STANDARD_LOAD);
+
+  // Ensure that {object} is actualy a String.
+  BuildCheckString(object);
+
+  ValueNode* length = AddNewNode<StringLength>({object});
+  ValueNode* index = GetInt32ElementIndex(index_object);
+  AddNewNode<CheckInt32Condition>({index, length}, AssertCondition::kLess,
+                                  DeoptimizeReason::kOutOfBounds);
+
+  SetAccumulator(AddNewNode<StringAt>({object, index}));
+  return true;
+}
+
 bool MaglevGraphBuilder::TryBuildElementAccess(
-    ValueNode* object, ValueNode* index,
+    ValueNode* object, ValueNode* index_object,
     compiler::ElementAccessFeedback const& feedback) {
   // TODO(victorgomes): Implement other access modes.
   if (feedback.keyed_mode().access_mode() != compiler::AccessMode::kLoad) {
@@ -1480,7 +1541,12 @@ bool MaglevGraphBuilder::TryBuildElementAccess(
   }
 
   // TODO(victorgomes): Add fast path for loading from HeapConstant.
-  // TODO(victorgomes): Add fast path for loading from String.
+
+  if (!feedback.transition_groups().empty() &&
+      feedback.HasOnlyStringMaps(broker())) {
+    return TryBuildElementAccessOnString(object, index_object,
+                                         feedback.keyed_mode());
+  }
 
   compiler::AccessInfoFactory access_info_factory(
       broker(), broker()->dependencies(), zone());
@@ -1510,40 +1576,7 @@ bool MaglevGraphBuilder::TryBuildElementAccess(
     }
     BuildMapCheck(object, map);
 
-    switch (index->properties().value_representation()) {
-      case ValueRepresentation::kTagged: {
-        if (SmiConstant* constant = index->TryCast<SmiConstant>()) {
-          index = GetInt32Constant(constant->value().value());
-        } else {
-          NodeInfo* node_info = known_node_aspects().GetOrCreateInfoFor(index);
-          if (node_info->is_smi()) {
-            if (!node_info->int32_alternative) {
-              // TODO(leszeks): This could be unchecked.
-              node_info->int32_alternative =
-                  AddNewNode<CheckedSmiUntag>({index});
-            }
-            index = node_info->int32_alternative;
-          } else {
-            // TODO(leszeks): Cache this knowledge/converted value somehow on
-            // the node info.
-            index = AddNewNode<CheckedObjectToIndex>({index});
-          }
-        }
-        break;
-      }
-      case ValueRepresentation::kInt32: {
-        // Already good.
-        break;
-      }
-      case ValueRepresentation::kFloat64: {
-        // TODO(leszeks): Pass in the index register (probably the
-        // accumulator), so that we can save this truncation on there as a
-        // conversion node.
-        index = AddNewNode<CheckedTruncateFloat64ToInt32>({index});
-        break;
-      }
-    }
-
+    ValueNode* index = GetInt32ElementIndex(index_object);
     if (map.IsJSArrayMap()) {
       AddNewNode<CheckJSArrayBounds>({object, index});
     } else {

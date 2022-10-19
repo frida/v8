@@ -232,7 +232,6 @@ class FullMarkingVerifier : public MarkingVerifier {
     VerifyMarking(heap_->old_space());
     VerifyMarking(heap_->code_space());
     if (heap_->shared_space()) VerifyMarking(heap_->shared_space());
-    if (heap_->map_space()) VerifyMarking(heap_->map_space());
     VerifyMarking(heap_->lo_space());
     VerifyMarking(heap_->code_lo_space());
     if (heap_->shared_lo_space()) VerifyMarking(heap_->shared_lo_space());
@@ -539,10 +538,6 @@ bool MarkCompactCollector::StartCompaction(StartCompactionMode mode) {
 
   CollectEvacuationCandidates(heap()->old_space());
 
-  if (heap()->map_space()) {
-    CollectEvacuationCandidates(heap()->map_space());
-  }
-
   if (heap()->shared_space()) {
     CollectEvacuationCandidates(heap()->shared_space());
   }
@@ -552,10 +547,6 @@ bool MarkCompactCollector::StartCompaction(StartCompactionMode mode) {
     CollectEvacuationCandidates(heap()->code_space());
   } else if (v8_flags.trace_fragmentation) {
     TraceFragmentation(heap()->code_space());
-  }
-
-  if (v8_flags.trace_fragmentation && heap()->map_space()) {
-    TraceFragmentation(heap()->map_space());
   }
 
   compacting_ = !evacuation_candidates_.empty();
@@ -650,9 +641,6 @@ void MarkCompactCollector::VerifyMarkbitsAreClean(LargeObjectSpace* space) {
 void MarkCompactCollector::VerifyMarkbitsAreClean() {
   VerifyMarkbitsAreClean(heap_->old_space());
   VerifyMarkbitsAreClean(heap_->code_space());
-  if (heap_->map_space()) {
-    VerifyMarkbitsAreClean(heap_->map_space());
-  }
   VerifyMarkbitsAreClean(heap_->new_space());
   // Read-only space should always be black since we never collect any objects
   // in it or linked from it.
@@ -714,7 +702,7 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
 
 void MarkCompactCollector::CollectEvacuationCandidates(PagedSpace* space) {
   DCHECK(space->identity() == OLD_SPACE || space->identity() == CODE_SPACE ||
-         space->identity() == MAP_SPACE || space->identity() == SHARED_SPACE);
+         space->identity() == SHARED_SPACE);
 
   int number_of_pages = space->CountTotalPages();
   size_t area_size = space->AreaSize();
@@ -959,7 +947,6 @@ void MarkCompactCollector::VerifyMarking() {
 #ifdef VERIFY_HEAP
   if (v8_flags.verify_heap) {
     heap()->old_space()->VerifyLiveBytes();
-    if (heap()->map_space()) heap()->map_space()->VerifyLiveBytes();
     heap()->code_space()->VerifyLiveBytes();
     if (heap()->shared_space()) heap()->shared_space()->VerifyLiveBytes();
     if (v8_flags.minor_mc && heap()->paged_new_space())
@@ -1639,7 +1626,7 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
       if (V8_UNLIKELY(v8_flags.minor_mc)) {
         base->record_visitor_->MarkArrayBufferExtensionPromoted(dst);
       }
-    } else if (dest == MAP_SPACE || dest == SHARED_SPACE) {
+    } else if (dest == SHARED_SPACE) {
       DCHECK_OBJECT_SIZE(size);
       DCHECK(IsAligned(size, kTaggedSize));
       base->heap_->CopyBlock(dst_addr, src_addr, size);
@@ -1673,7 +1660,8 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
         local_allocator_(local_allocator),
         shared_old_allocator_(shared_old_allocator),
         record_visitor_(record_visitor),
-        shared_string_table_(shared_old_allocator != nullptr) {
+        shared_string_table_(v8_flags.shared_string_table &&
+                             heap->isolate()->has_shared_heap()) {
     migration_function_ = RawMigrateObject<MigrationMode::kFast>;
   }
 
@@ -1694,9 +1682,14 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
     AllocationAlignment alignment = HeapObject::RequiredAlignment(map);
     AllocationResult allocation;
     if (target_space == OLD_SPACE && ShouldPromoteIntoSharedHeap(map)) {
-      DCHECK_NOT_NULL(shared_old_allocator_);
-      allocation = shared_old_allocator_->AllocateRaw(size, alignment,
-                                                      AllocationOrigin::kGC);
+      if (heap_->isolate()->is_shared_heap_isolate()) {
+        DCHECK_NULL(shared_old_allocator_);
+        allocation = local_allocator_->Allocate(
+            SHARED_SPACE, size, AllocationOrigin::kGC, alignment);
+      } else {
+        allocation = shared_old_allocator_->AllocateRaw(size, alignment,
+                                                        AllocationOrigin::kGC);
+      }
     } else {
       allocation = local_allocator_->Allocate(target_space, size,
                                               AllocationOrigin::kGC, alignment);
@@ -1738,7 +1731,7 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
   RecordMigratedSlotVisitor* record_visitor_;
   std::vector<MigrationObserver*> observers_;
   MigrateFunction migration_function_;
-  bool shared_string_table_ = false;
+  const bool shared_string_table_;
 #if DEBUG
   Address abort_evacuation_at_address_{kNullAddress};
 #endif  // DEBUG
@@ -3134,8 +3127,17 @@ void MarkCompactCollector::ProcessOldCodeCandidates() {
   SharedFunctionInfo flushing_candidate;
   while (local_weak_objects()->code_flushing_candidates_local.Pop(
       &flushing_candidate)) {
-    bool is_bytecode_live = non_atomic_marking_state()->IsBlackOrGrey(
-        flushing_candidate.GetBytecodeArray(isolate()));
+    // During flushing a BytecodeArray is transformed into an UncompiledData in
+    // place. Seeing an UncompiledData here implies that another
+    // SharedFunctionInfo had a reference to the same ByteCodeArray and flushed
+    // it before processing this candidate. This can happen when using
+    // CloneSharedFunctionInfo().
+    bool bytecode_already_decompiled =
+        flushing_candidate.function_data(isolate(), kAcquireLoad)
+            .IsUncompiledData(isolate());
+    bool is_bytecode_live = !bytecode_already_decompiled &&
+                            non_atomic_marking_state()->IsBlackOrGrey(
+                                flushing_candidate.GetBytecodeArray(isolate()));
     if (v8_flags.flush_baseline_code && flushing_candidate.HasBaselineCode()) {
       CodeT baseline_codet =
           CodeT::cast(flushing_candidate.function_data(kAcquireLoad));
@@ -3168,9 +3170,17 @@ void MarkCompactCollector::ProcessOldCodeCandidates() {
       DCHECK(v8_flags.flush_baseline_code ||
              !flushing_candidate.HasBaselineCode());
 
-      // If the BytecodeArray is dead, flush it, which will replace the field
-      // with an uncompiled data object.
-      FlushBytecodeFromSFI(flushing_candidate);
+      if (bytecode_already_decompiled) {
+        flushing_candidate.DiscardCompiledMetadata(
+            isolate(),
+            [](HeapObject object, ObjectSlot slot, HeapObject target) {
+              RecordSlot(object, slot, target);
+            });
+      } else {
+        // If the BytecodeArray is dead, flush it, which will replace the field
+        // with an uncompiled data object.
+        FlushBytecodeFromSFI(flushing_candidate);
+      }
     }
 
     // Now record the slot, which has either been updated to an uncompiled data,
@@ -3958,7 +3968,8 @@ void MarkCompactCollector::EvacuateEpilogue() {
 
 namespace {
 ConcurrentAllocator* CreateSharedOldAllocator(Heap* heap) {
-  if (v8_flags.shared_string_table && heap->isolate()->has_shared_heap()) {
+  if (v8_flags.shared_string_table && heap->isolate()->has_shared_heap() &&
+      !heap->isolate()->is_shared_heap_isolate()) {
     return new ConcurrentAllocator(nullptr, heap->shared_allocation_space());
   }
 
@@ -4973,7 +4984,6 @@ class RememberedSetUpdatingItem : public UpdatingItem {
   void UpdateTypedPointers() {
     if (chunk_->typed_slot_set<OLD_TO_NEW, AccessMode::NON_ATOMIC>() !=
         nullptr) {
-      CHECK_NE(chunk_->owner(), heap_->map_space());
       const auto check_and_update_old_to_new_slot_fn =
           [this](FullMaybeObjectSlot slot) {
             return CheckAndUpdateOldToNewSlot(slot);
@@ -4994,7 +5004,6 @@ class RememberedSetUpdatingItem : public UpdatingItem {
     if ((updating_mode_ == RememberedSetUpdatingMode::ALL) &&
         (chunk_->typed_slot_set<OLD_TO_OLD, AccessMode::NON_ATOMIC>() !=
          nullptr)) {
-      CHECK_NE(chunk_->owner(), heap_->map_space());
       RememberedSet<OLD_TO_OLD>::IterateTyped(
           chunk_, [this](SlotType slot_type, Address slot) {
             // Using UpdateStrongSlot is OK here, because there are no weak
@@ -5149,11 +5158,6 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
     if (heap()->shared_lo_space()) {
       CollectRememberedSetUpdatingItems(this, &updating_items,
                                         heap()->shared_lo_space(),
-                                        RememberedSetUpdatingMode::ALL);
-    }
-    if (heap()->map_space()) {
-      CollectRememberedSetUpdatingItems(this, &updating_items,
-                                        heap()->map_space(),
                                         RememberedSetUpdatingMode::ALL);
     }
 
@@ -5365,11 +5369,6 @@ void MarkCompactCollector::Sweep() {
     GCTracer::Scope sweep_scope(
         heap()->tracer(), GCTracer::Scope::MC_SWEEP_CODE, ThreadKind::kMain);
     StartSweepSpace(heap()->code_space());
-  }
-  if (heap()->map_space()) {
-    GCTracer::Scope sweep_scope(heap()->tracer(), GCTracer::Scope::MC_SWEEP_MAP,
-                                ThreadKind::kMain);
-    StartSweepSpace(heap()->map_space());
   }
   if (heap()->shared_space()) {
     GCTracer::Scope sweep_scope(heap()->tracer(), GCTracer::Scope::MC_SWEEP_MAP,
@@ -5640,11 +5639,6 @@ void MinorMarkCompactCollector::UpdatePointersAfterEvacuation() {
     CollectRememberedSetUpdatingItems(
         this, &updating_items, heap()->code_space(),
         RememberedSetUpdatingMode::OLD_TO_NEW_ONLY);
-    if (heap()->map_space()) {
-      CollectRememberedSetUpdatingItems(
-          this, &updating_items, heap()->map_space(),
-          RememberedSetUpdatingMode::OLD_TO_NEW_ONLY);
-    }
     CollectRememberedSetUpdatingItems(
         this, &updating_items, heap()->lo_space(),
         RememberedSetUpdatingMode::OLD_TO_NEW_ONLY);
