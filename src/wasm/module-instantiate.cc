@@ -732,25 +732,15 @@ MaybeHandle<WasmInstanceObject> InstanceBuilder::Build() {
   }
 
   //--------------------------------------------------------------------------
-  // Allocate type feedback vectors for functions.
+  // Allocate the array that will hold type feedback vectors.
   //--------------------------------------------------------------------------
   if (v8_flags.wasm_speculative_inlining) {
     int num_functions = static_cast<int>(module_->num_declared_functions);
-    Handle<FixedArray> vectors =
-        isolate_->factory()->NewFixedArray(num_functions, AllocationType::kOld);
+    // Zero-fill the array so we can do a quick Smi-check to test if a given
+    // slot was initialized.
+    Handle<FixedArray> vectors = isolate_->factory()->NewFixedArrayWithZeroes(
+        num_functions, AllocationType::kOld);
     instance->set_feedback_vectors(*vectors);
-    for (int i = 0; i < num_functions; i++) {
-      int func_index = module_->num_imported_functions + i;
-      int slots = NumFeedbackSlots(module_, func_index);
-      if (slots == 0) continue;
-      if (v8_flags.trace_wasm_speculative_inlining) {
-        PrintF("[Function %d (declared %d): allocating %d feedback slots]\n",
-               func_index, i, slots);
-      }
-      Handle<FixedArray> feedback =
-          isolate_->factory()->NewFixedArrayWithZeroes(slots);
-      vectors->set(i, *feedback);
-    }
   }
 
   //--------------------------------------------------------------------------
@@ -1747,9 +1737,8 @@ bool InstanceBuilder::AllocateMemory() {
   int maximum_pages = module_->has_maximum_pages
                           ? static_cast<int>(module_->maximum_pages)
                           : WasmMemoryObject::kNoMaximum;
-  auto shared = (module_->has_shared_memory && enabled_.has_threads())
-                    ? SharedFlag::kShared
-                    : SharedFlag::kNotShared;
+  auto shared =
+      module_->has_shared_memory ? SharedFlag::kShared : SharedFlag::kNotShared;
 
   auto mem_type = module_->is_memory64 ? WasmMemoryFlag::kWasmMemory64
                                        : WasmMemoryFlag::kWasmMemory32;

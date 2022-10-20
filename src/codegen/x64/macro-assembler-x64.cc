@@ -1897,10 +1897,23 @@ void MacroAssembler::Cmp(Register dst, Handle<Object> source) {
 void MacroAssembler::Cmp(Operand dst, Handle<Object> source) {
   if (source->IsSmi()) {
     Cmp(dst, Smi::cast(*source));
+  } else if (root_array_available_ && options().isolate_independent_code) {
+    // TODO(jgruber,v8:8887): Also consider a root-relative load when generating
+    // non-isolate-independent code. In many cases it might be cheaper than
+    // embedding the relocatable value.
+    // TODO(v8:9706): Fix-it! This load will always uncompress the value
+    // even when we are loading a compressed embedded object.
+    IndirectLoadConstant(kScratchRegister, Handle<HeapObject>::cast(source));
+    cmp_tagged(dst, kScratchRegister);
+  } else if (COMPRESS_POINTERS_BOOL) {
+    EmbeddedObjectIndex index =
+        AddEmbeddedObject(Handle<HeapObject>::cast(source));
+    DCHECK(is_uint32(index));
+    cmpl(dst, Immediate(static_cast<int>(index),
+                        RelocInfo::COMPRESSED_EMBEDDED_OBJECT));
   } else {
     Move(kScratchRegister, Handle<HeapObject>::cast(source),
-         COMPRESS_POINTERS_BOOL ? RelocInfo::COMPRESSED_EMBEDDED_OBJECT
-                                : RelocInfo::FULL_EMBEDDED_OBJECT);
+         RelocInfo::FULL_EMBEDDED_OBJECT);
     cmp_tagged(dst, kScratchRegister);
   }
 }
@@ -2081,9 +2094,24 @@ void TurboAssembler::Jump(const ExternalReference& reference) {
 
 void TurboAssembler::Jump(Operand op) { jmp(op); }
 
+void TurboAssembler::Jump(Operand op, Condition cc) {
+  Label skip;
+  j(NegateCondition(cc), &skip, Label::kNear);
+  Jump(op);
+  bind(&skip);
+}
+
 void TurboAssembler::Jump(Address destination, RelocInfo::Mode rmode) {
   Move(kScratchRegister, destination, rmode);
   jmp(kScratchRegister);
+}
+
+void TurboAssembler::Jump(Address destination, RelocInfo::Mode rmode,
+                          Condition cc) {
+  Label skip;
+  j(NegateCondition(cc), &skip, Label::kNear);
+  Jump(destination, rmode);
+  bind(&skip);
 }
 
 void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode) {
@@ -2104,10 +2132,7 @@ void TurboAssembler::Jump(Handle<CodeT> code_object, RelocInfo::Mode rmode,
                  Builtins::IsIsolateIndependentBuiltin(*code_object));
   Builtin builtin = Builtin::kNoBuiltinId;
   if (isolate()->builtins()->IsBuiltinHandle(code_object, &builtin)) {
-    Label skip;
-    j(NegateCondition(cc), &skip, Label::kNear);
-    TailCallBuiltin(builtin);
-    bind(&skip);
+    TailCallBuiltin(builtin, cc);
     return;
   }
   DCHECK(RelocInfo::IsCodeTarget(rmode));
@@ -2212,6 +2237,27 @@ void TurboAssembler::TailCallBuiltin(Builtin builtin) {
     case BuiltinCallJumpMode::kForMksnapshot: {
       Handle<CodeT> code = isolate()->builtins()->code_handle(builtin);
       jmp(code, RelocInfo::CODE_TARGET);
+      break;
+    }
+  }
+}
+
+void TurboAssembler::TailCallBuiltin(Builtin builtin, Condition cc) {
+  ASM_CODE_COMMENT_STRING(this,
+                          CommentForOffHeapTrampoline("tail call", builtin));
+  switch (options().builtin_call_jump_mode) {
+    case BuiltinCallJumpMode::kAbsolute:
+      Jump(BuiltinEntry(builtin), RelocInfo::OFF_HEAP_TARGET, cc);
+      break;
+    case BuiltinCallJumpMode::kPCRelative:
+      near_j(cc, static_cast<intptr_t>(builtin), RelocInfo::NEAR_BUILTIN_ENTRY);
+      break;
+    case BuiltinCallJumpMode::kIndirect:
+      Jump(EntryFromBuiltinAsOperand(builtin), cc);
+      break;
+    case BuiltinCallJumpMode::kForMksnapshot: {
+      Handle<CodeT> code = isolate()->builtins()->code_handle(builtin);
+      j(cc, code, RelocInfo::CODE_TARGET);
       break;
     }
   }

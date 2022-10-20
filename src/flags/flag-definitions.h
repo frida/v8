@@ -753,6 +753,11 @@ DEFINE_IMPLICATION(stress_concurrent_inlining, concurrent_recompilation)
 DEFINE_NEG_IMPLICATION(stress_concurrent_inlining, lazy_feedback_allocation)
 DEFINE_WEAK_VALUE_IMPLICATION(stress_concurrent_inlining, interrupt_budget,
                               15 * KB)
+DEFINE_BOOL(maglev_overwrite_budget, true,
+            "whether maglev resets the interrupt budget")
+DEFINE_NEG_IMPLICATION(stress_concurrent_inlining, maglev_overwrite_budget)
+DEFINE_WEAK_VALUE_IMPLICATION(maglev_overwrite_budget, interrupt_budget,
+                              110 * KB)
 DEFINE_BOOL(stress_concurrent_inlining_attach_code, false,
             "create additional concurrent optimization jobs")
 DEFINE_IMPLICATION(stress_concurrent_inlining_attach_code,
@@ -943,6 +948,8 @@ DEFINE_BOOL(turbo_force_mid_tier_regalloc, false,
             "always use the mid-tier register allocator (for testing)")
 
 DEFINE_BOOL(turbo_optimize_apply, true, "optimize Function.prototype.apply")
+DEFINE_BOOL(turbo_optimize_math_minmax, true,
+            "optimize call math.min/max with double array")
 
 DEFINE_BOOL(turbo_collect_feedback_in_generic_lowering, true,
             "enable experimental feedback collection in generic lowering.")
@@ -1695,7 +1702,7 @@ DEFINE_BOOL(experimental_async_stack_tagging_api, true,
             "enable experimental async stacks tagging API")
 DEFINE_BOOL(experimental_value_unavailable, false,
             "enable experimental <value unavailable> in scopes")
-DEFINE_BOOL(experimental_reuse_locals_blocklists, false,
+DEFINE_BOOL(experimental_reuse_locals_blocklists, true,
             "enable reuse of local blocklists across multiple debug-evaluates")
 
 DEFINE_BOOL(experimental_remove_internal_scopes_property, true,

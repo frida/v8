@@ -92,6 +92,8 @@ MaglevGraphBuilder::MaglevGraphBuilder(LocalIsolate* local_isolate,
       compilation_unit_(compilation_unit),
       parent_(parent),
       graph_(graph),
+      bytecode_analysis_(bytecode().object(), zone(), BytecodeOffset::None(),
+                         true),
       iterator_(bytecode().object()),
       source_position_iterator_(bytecode().SourcePositionTable()),
       // Add an extra jump_target slot for the inline exit if needed.
@@ -889,6 +891,31 @@ void MaglevGraphBuilder::VisitTestTypeOf() {
   SetAccumulator(AddNewNode<TestTypeOf>({value}, literal));
 }
 
+bool MaglevGraphBuilder::TryBuildScriptContextConstantAccess(
+    const compiler::GlobalAccessFeedback& global_access_feedback) {
+  if (!global_access_feedback.immutable()) return false;
+
+  base::Optional<compiler::ObjectRef> maybe_slot_value =
+      global_access_feedback.script_context().get(
+          global_access_feedback.slot_index());
+  if (!maybe_slot_value) return false;
+
+  SetAccumulator(GetConstant(maybe_slot_value.value()));
+  return true;
+}
+
+bool MaglevGraphBuilder::TryBuildScriptContextAccess(
+    const compiler::GlobalAccessFeedback& global_access_feedback) {
+  if (!global_access_feedback.IsScriptContextSlot()) return false;
+  if (TryBuildScriptContextConstantAccess(global_access_feedback)) return true;
+
+  auto script_context = GetConstant(global_access_feedback.script_context());
+  SetAccumulator(AddNewNode<LoadTaggedField>(
+      {script_context},
+      Context::OffsetOfElementAt(global_access_feedback.slot_index())));
+  return true;
+}
+
 bool MaglevGraphBuilder::TryBuildPropertyCellAccess(
     const compiler::GlobalAccessFeedback& global_access_feedback) {
   // TODO(leszeks): A bunch of this is copied from
@@ -1114,6 +1141,11 @@ void MaglevGraphBuilder::BuildCheckString(ValueNode* object) {
 
   AddNewNode<CheckString>({object}, GetCheckType(known_info));
   known_info->type = NodeType::kString;
+}
+
+void MaglevGraphBuilder::BuildCheckNumber(ValueNode* object) {
+  // TODO(victorgomes): Add Number to known_node_aspects and update it here.
+  AddNewNode<CheckNumber>({object}, Object::Conversion::kToNumber);
 }
 
 void MaglevGraphBuilder::BuildCheckSymbol(ValueNode* object) {
@@ -1459,6 +1491,9 @@ bool MaglevGraphBuilder::TryBuildNamedAccess(
       // check. Primitive strings always get the prototype from the native
       // context they're operated on, so they don't need the access check.
       BuildCheckString(lookup_start_object);
+    } else if (map.IsHeapNumberMap()) {
+      AddNewNode<CheckNumber>({lookup_start_object},
+                              Object::Conversion::kToNumber);
     } else {
       BuildMapCheck(lookup_start_object, map);
     }
@@ -1805,9 +1840,8 @@ void MaglevGraphBuilder::BuildLoadGlobal(
   const compiler::GlobalAccessFeedback& global_access_feedback =
       access_feedback.AsGlobalAccess();
 
+  if (TryBuildScriptContextAccess(global_access_feedback)) return;
   if (TryBuildPropertyCellAccess(global_access_feedback)) return;
-
-  // TODO(leszeks): Handle the IsScriptContextSlot case.
 
   ValueNode* context = GetContext();
   SetAccumulator(

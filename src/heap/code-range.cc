@@ -27,8 +27,7 @@ base::LazyMutex process_wide_code_range_creation_mutex_ =
 base::LazyInstance<std::weak_ptr<CodeRange>>::type process_wide_code_range_ =
     LAZY_INSTANCE_INITIALIZER;
 
-base::LazyInstance<CodeRangeAddressHint>::type process_wide_address_hinter_ =
-    LAZY_INSTANCE_INITIALIZER;
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(CodeRangeAddressHint, GetCodeRangeAddressHint)
 
 void FunctionInStaticBinaryForAddressHint() {}
 }  // anonymous namespace
@@ -141,8 +140,8 @@ bool CodeRange::InitReservation(v8::PageAllocator* page_allocator,
   params.base_alignment = base_alignment;
   params.base_bias_size = RoundUp(reserved_area, allocate_page_size);
   params.page_size = MemoryChunk::kPageSize;
-  params.requested_start_hint = process_wide_address_hinter_.Pointer()
-      ->GetAddressHint(requested, allocate_page_size);
+  params.requested_start_hint =
+      GetCodeRangeAddressHint()->GetAddressHint(requested, allocate_page_size);
   params.jit =
       v8_flags.jitless ? JitPermission::kNoJit : JitPermission::kMapAsJittable;
 
@@ -181,7 +180,7 @@ bool CodeRange::InitReservation(v8::PageAllocator* page_allocator,
 
 void CodeRange::Free() {
   if (IsReserved()) {
-    process_wide_address_hinter_.Pointer()->NotifyFreedCodeRange(
+    GetCodeRangeAddressHint()->NotifyFreedCodeRange(
         reservation()->region().begin(), reservation()->region().size());
     VirtualMemoryCage::Free();
   }

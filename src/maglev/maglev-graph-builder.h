@@ -69,6 +69,7 @@ class MaglevGraphBuilder {
 
   void BuildBody() {
     for (iterator_.Reset(); !iterator_.done(); iterator_.Advance()) {
+      local_isolate_->heap()->Safepoint();
       VisitSingleBytecode();
     }
   }
@@ -945,10 +946,15 @@ class MaglevGraphBuilder {
   void BuildCallFromRegisters(int argc_count,
                               ConvertReceiverMode receiver_mode);
 
+  bool TryBuildScriptContextConstantAccess(
+      const compiler::GlobalAccessFeedback& global_access_feedback);
+  bool TryBuildScriptContextAccess(
+      const compiler::GlobalAccessFeedback& global_access_feedback);
   bool TryBuildPropertyCellAccess(
       const compiler::GlobalAccessFeedback& global_access_feedback);
 
   void BuildCheckSmi(ValueNode* object);
+  void BuildCheckNumber(ValueNode* object);
   void BuildCheckHeapObject(ValueNode* object);
   void BuildCheckString(ValueNode* object);
   void BuildCheckSymbol(ValueNode* object);
@@ -1094,7 +1100,7 @@ class MaglevGraphBuilder {
     return compilation_unit_->bytecode();
   }
   const compiler::BytecodeAnalysis& bytecode_analysis() const {
-    return compilation_unit_->bytecode_analysis();
+    return bytecode_analysis_;
   }
   LocalIsolate* local_isolate() const { return local_isolate_; }
   Zone* zone() const { return compilation_unit_->zone(); }
@@ -1125,6 +1131,7 @@ class MaglevGraphBuilder {
   MaglevCompilationUnit* const compilation_unit_;
   MaglevGraphBuilder* const parent_;
   Graph* const graph_;
+  compiler::BytecodeAnalysis bytecode_analysis_;
   interpreter::BytecodeArrayIterator iterator_;
   SourcePositionTableIterator source_position_iterator_;
   uint32_t* predecessors_;

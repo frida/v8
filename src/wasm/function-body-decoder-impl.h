@@ -2288,7 +2288,7 @@ class WasmDecoder : public Decoder {
   }
 
   // TODO(clemensb): This is only used by the interpreter; move there.
-  std::pair<uint32_t, uint32_t> StackEffect(const byte* pc) {
+  V8_EXPORT_PRIVATE std::pair<uint32_t, uint32_t> StackEffect(const byte* pc) {
     WasmOpcode opcode = static_cast<WasmOpcode>(*pc);
     // Handle "simple" opcodes with a fixed signature first.
     const FunctionSig* sig = WasmOpcodes::Signature(opcode);
@@ -3815,7 +3815,7 @@ class WasmFullDecoder : public WasmDecoder<validate, decoding_mode> {
   }
 
   DECODE(Atomic) {
-    CHECK_PROTOTYPE_OPCODE(threads);
+    this->detected_->Add(kFeature_threads);
     uint32_t opcode_length = 0;
     WasmOpcode full_opcode = this->template read_prefixed_opcode<validate>(
         this->pc_, &opcode_length, "atomic index");

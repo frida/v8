@@ -338,7 +338,8 @@ void PagedSpaceBase::RemovePage(Page* page) {
   // Pages are only removed from new space when they are promoted to old space
   // during a GC. This happens after sweeping as started and the allocation
   // counters have been reset.
-  DCHECK_IMPLIES(identity() == NEW_SPACE, Size() == 0);
+  DCHECK_IMPLIES(identity() == NEW_SPACE,
+                 heap()->gc_state() != Heap::NOT_IN_GC);
   if (identity() != NEW_SPACE) {
     DecreaseAllocatedBytes(page->allocated_bytes(), page);
   }
@@ -912,11 +913,10 @@ bool PagedSpaceBase::RawRefillLabMain(int size_in_bytes,
 
   const bool is_main_thread =
       heap()->IsMainThread() || heap()->IsSharedMainThread();
-  const auto sweeping_scope_id =
-      is_main_thread ? heap()->sweeper()->GetTracingScope()
-                     : heap()->sweeper()->GetBackgroundTracingScope();
   const auto sweeping_scope_kind =
       is_main_thread ? ThreadKind::kMain : ThreadKind::kBackground;
+  const auto sweeping_scope_id =
+      heap()->sweeper()->GetTracingScope(identity(), is_main_thread);
   // Sweeping is still in progress.
   if (heap()->sweeping_in_progress()) {
     // First try to refill the free-list, concurrent sweeper threads

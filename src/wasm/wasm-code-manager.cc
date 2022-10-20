@@ -785,7 +785,6 @@ base::Vector<byte> WasmCodeAllocator::AllocateForCodeInRegion(
     }
   }
   DCHECK(IsAligned(code_space.begin(), kCodeAlignment));
-  allocated_code_space_.Merge(code_space);
   generated_code_size_.fetch_add(code_space.size(), std::memory_order_relaxed);
 
   TRACE_HEAP("Code alloc for %p: 0x%" PRIxPTR ",+%zu\n", this,
@@ -2551,26 +2550,24 @@ WasmCode* WasmCodeManager::LookupCode(Address pc) const {
 }
 
 namespace {
-base::LazyInstance<base::ThreadLocalPointer<WasmCodeRefScope>>::type
-    current_code_refs_scope = LAZY_INSTANCE_INITIALIZER;
+thread_local WasmCodeRefScope* current_code_refs_scope = nullptr;
 }  // namespace
 
 WasmCodeRefScope::WasmCodeRefScope()
-    : previous_scope_(current_code_refs_scope.Pointer()->Get()) {
-  current_code_refs_scope.Pointer()->Set(this);
+    : previous_scope_(current_code_refs_scope) {
+  current_code_refs_scope = this;
 }
 
 WasmCodeRefScope::~WasmCodeRefScope() {
-  auto current = current_code_refs_scope.Pointer();
-  DCHECK_EQ(this, current->Get());
-  current->Set(previous_scope_);
+  DCHECK_EQ(this, current_code_refs_scope);
+  current_code_refs_scope = previous_scope_;
   WasmCode::DecrementRefCount(base::VectorOf(code_ptrs_));
 }
 
 // static
 void WasmCodeRefScope::AddRef(WasmCode* code) {
   DCHECK_NOT_NULL(code);
-  WasmCodeRefScope* current_scope = current_code_refs_scope.Pointer()->Get();
+  WasmCodeRefScope* current_scope = current_code_refs_scope;
   DCHECK_NOT_NULL(current_scope);
   current_scope->code_ptrs_.push_back(code);
   code->IncRef();

@@ -1842,6 +1842,16 @@ void Heap::StartIncrementalMarking(int gc_flags,
   VerifyCountersAfterSweeping();
 #endif
 
+  if (isolate()->is_shared_heap_isolate()) {
+    isolate()->global_safepoint()->IterateClientIsolates([](Isolate* client) {
+      if (client->is_shared_heap_isolate()) return;
+
+      if (v8_flags.concurrent_marking) {
+        client->heap()->concurrent_marking()->Pause();
+      }
+    });
+  }
+
   // Now that sweeping is completed, we can start the next full GC cycle.
   tracer()->StartCycle(collector, gc_reason, nullptr,
                        GCTracer::MarkingType::kIncremental);
@@ -1850,6 +1860,17 @@ void Heap::StartIncrementalMarking(int gc_flags,
   current_gc_callback_flags_ = gc_callback_flags;
 
   incremental_marking()->Start(collector, gc_reason);
+
+  if (isolate()->is_shared_heap_isolate()) {
+    isolate()->global_safepoint()->IterateClientIsolates([](Isolate* client) {
+      if (client->is_shared_heap_isolate()) return;
+
+      if (v8_flags.concurrent_marking &&
+          client->heap()->incremental_marking()->IsMarking()) {
+        client->heap()->concurrent_marking()->Resume();
+      }
+    });
+  }
 }
 
 void Heap::CompleteSweepingFull() {
@@ -2148,6 +2169,11 @@ size_t Heap::PerformGarbageCollection(
   if (isolate()->is_shared_heap_isolate()) {
     isolate()->global_safepoint()->IterateClientIsolates([](Isolate* client) {
       if (client->is_shared_heap_isolate()) return;
+
+      if (v8_flags.concurrent_marking) {
+        client->heap()->concurrent_marking()->Pause();
+      }
+
       HeapVerifier::VerifyHeapIfEnabled(client->heap());
     });
   }
@@ -2233,6 +2259,12 @@ size_t Heap::PerformGarbageCollection(
   if (isolate()->is_shared_heap_isolate()) {
     isolate()->global_safepoint()->IterateClientIsolates([](Isolate* client) {
       if (client->is_shared_heap_isolate()) return;
+
+      if (v8_flags.concurrent_marking &&
+          client->heap()->incremental_marking()->IsMarking()) {
+        client->heap()->concurrent_marking()->Resume();
+      }
+
       HeapVerifier::VerifyHeapIfEnabled(client->heap());
     });
   }
@@ -2351,15 +2383,13 @@ void Heap::CompleteSweepingYoung(GarbageCollector collector) {
     array_buffer_sweeper()->EnsureFinished();
   }
 
-  if (v8_flags.minor_mc) {
-    DCHECK(v8_flags.separate_gc_phases);
-    // Do not interleave sweeping.
-    EnsureSweepingCompleted(SweepingForcedFinalizationMode::kV8Only);
-  } else {
-    // If sweeping is in progress and there are no sweeper tasks running, finish
-    // the sweeping here, to avoid having to pause and resume during the young
-    // generation GC.
-    FinishSweepingIfOutOfWork();
+  // If sweeping is in progress and there are no sweeper tasks running, finish
+  // the sweeping here, to avoid having to pause and resume during the young
+  // generation GC.
+  FinishSweepingIfOutOfWork();
+
+  if (v8_flags.minor_mc && sweeping_in_progress()) {
+    PauseSweepingAndEnsureYoungSweepingCompleted();
   }
 
 #if defined(CPPGC_YOUNG_GENERATION)
@@ -3794,24 +3824,46 @@ void Heap::NotifyObjectLayoutChange(
 #endif
 }
 
-void Heap::NotifyObjectSizeChange(HeapObject object, int old_size, int new_size,
-                                  ClearRecordedSlots clear_recorded_slots) {
+void Heap::NotifyObjectSizeChange(
+    HeapObject object, int old_size, int new_size,
+    ClearRecordedSlots clear_recorded_slots,
+    enum UpdateInvalidatedObjectSize update_invalidated_object_size) {
   old_size = ALIGN_TO_ALLOCATION_ALIGNMENT(old_size);
   new_size = ALIGN_TO_ALLOCATION_ALIGNMENT(new_size);
   DCHECK_LE(new_size, old_size);
   if (new_size == old_size) return;
 
-  UpdateInvalidatedObjectSize(object, new_size);
+  const bool is_main_thread = LocalHeap::Current() == nullptr;
 
-  const bool is_background = LocalHeap::Current() != nullptr;
-  DCHECK_IMPLIES(is_background,
+  DCHECK_IMPLIES(!is_main_thread,
                  clear_recorded_slots == ClearRecordedSlots::kNo);
+  DCHECK_IMPLIES(!is_main_thread, update_invalidated_object_size ==
+                                      UpdateInvalidatedObjectSize::kNo);
 
-  const VerifyNoSlotsRecorded verify_no_slots_recorded =
-      is_background ? VerifyNoSlotsRecorded::kNo : VerifyNoSlotsRecorded::kYes;
+  if (update_invalidated_object_size == UpdateInvalidatedObjectSize::kYes) {
+    UpdateInvalidatedObjectSize(object, new_size);
+  } else {
+    DCHECK_EQ(update_invalidated_object_size, UpdateInvalidatedObjectSize::kNo);
 
-  const ClearFreedMemoryMode clear_memory_mode =
-      ClearFreedMemoryMode::kDontClearFreedMemory;
+#if DEBUG
+    if (is_main_thread) {
+      // When running on the main thread we can actually DCHECK that this object
+      // wasn't recorded in the invalidated_slots map yet.
+      MemoryChunk* chunk = MemoryChunk::FromHeapObject(object);
+      DCHECK(!chunk->RegisteredObjectWithInvalidatedSlots<OLD_TO_NEW>(object));
+      DCHECK(
+          !chunk->RegisteredObjectWithInvalidatedSlots<OLD_TO_SHARED>(object));
+      DCHECK_IMPLIES(
+          incremental_marking()->IsCompacting(),
+          !chunk->RegisteredObjectWithInvalidatedSlots<OLD_TO_OLD>(object));
+    }
+#endif
+  }
+
+  const auto verify_no_slots_recorded =
+      is_main_thread ? VerifyNoSlotsRecorded::kYes : VerifyNoSlotsRecorded::kNo;
+
+  const auto clear_memory_mode = ClearFreedMemoryMode::kDontClearFreedMemory;
 
   const Address filler = object.address() + new_size;
   const int filler_size = old_size - new_size;
@@ -3821,6 +3873,11 @@ void Heap::NotifyObjectSizeChange(HeapObject object, int old_size, int new_size,
 
 void Heap::UpdateInvalidatedObjectSize(HeapObject object, int new_size) {
   if (!MayContainRecordedSlots(object)) return;
+
+  // Updating invalidated_slots is unsychronized and thus needs to happen on the
+  // main thread.
+  DCHECK_NULL(LocalHeap::Current());
+  DCHECK_EQ(isolate()->thread_id(), ThreadId::Current());
 
   if (incremental_marking()->IsCompacting() || gc_state() == MARK_COMPACT) {
     MemoryChunk::FromHeapObject(object)
@@ -7286,7 +7343,7 @@ void Heap::EnsureSweepingCompleted(SweepingForcedFinalizationMode mode) {
       paged_new_space()->paged_space()->RefillFreeList();
     }
 
-    tracer()->NotifySweepingCompleted();
+    tracer()->NotifyFullSweepingCompleted();
 
 #ifdef VERIFY_HEAP
     if (v8_flags.verify_heap && !evacuation()) {
@@ -7306,6 +7363,25 @@ void Heap::EnsureSweepingCompleted(SweepingForcedFinalizationMode mode) {
   DCHECK_IMPLIES(
       mode == SweepingForcedFinalizationMode::kUnifiedHeap || !cpp_heap(),
       !tracer()->IsSweepingInProgress());
+}
+
+void Heap::PauseSweepingAndEnsureYoungSweepingCompleted() {
+  if (sweeper()->sweeping_in_progress()) {
+    TRACE_GC_EPOCH(tracer(), sweeper()->GetTracingScopeForCompleteYoungSweep(),
+                   ThreadKind::kMain);
+
+    sweeper()->PauseAndEnsureNewSpaceCompleted();
+    paged_new_space()->paged_space()->RefillFreeList();
+
+    tracer()->NotifyYoungSweepingCompleted();
+
+#ifdef VERIFY_HEAP
+    if (v8_flags.verify_heap && !evacuation()) {
+      YoungGenerationEvacuationVerifier verifier(this);
+      verifier.Run();
+    }
+#endif
+  }
 }
 
 void Heap::DrainSweepingWorklistForSpace(AllocationSpace space) {

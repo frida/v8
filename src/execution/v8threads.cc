@@ -56,12 +56,6 @@ bool Locker::IsLocked(v8::Isolate* isolate) {
   return i_isolate->thread_manager()->IsLockedByCurrentThread();
 }
 
-bool Locker::IsLockedByAnyThread(v8::Isolate* isolate) {
-  DCHECK_NOT_NULL(isolate);
-  i::Isolate* i_isolate = reinterpret_cast<i::Isolate*>(isolate);
-  return i_isolate->thread_manager()->IsLockedByAnyThread();
-}
-
 Locker::~Locker() {
   DCHECK(isolate_->thread_manager()->IsLockedByCurrentThread());
   if (has_lock_) {

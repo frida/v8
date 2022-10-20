@@ -2291,7 +2291,7 @@ bool WebSnapshotDeserializer::Deserialize(
     return false;
   }
   deserialized_ = true;
-  size_t buffer_size = deserializer_->end_ - deserializer_->position_;
+  auto buffer_size = deserializer_->end_ - deserializer_->position_;
 
   base::ElapsedTimer timer;
   if (v8_flags.trace_web_snapshot) {
