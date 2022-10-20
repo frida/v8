@@ -14,11 +14,6 @@
 #include "v8-object.h"        // NOLINT(build/include_directory)
 #include "v8config.h"         // NOLINT(build/include_directory)
 
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#endif
-
 namespace v8 {
 
 class ArrayBuffer;
@@ -201,9 +196,5 @@ class V8_EXPORT WasmStreaming final {
 };
 
 }  // namespace v8
-
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #endif  // INCLUDE_V8_WASM_H_

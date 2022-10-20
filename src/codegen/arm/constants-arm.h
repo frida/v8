@@ -14,7 +14,7 @@
 #include "src/utils/utils.h"
 
 // ARM EABI is required.
-#if defined(__arm__) && !defined(__ARM_EABI__) && !V8_OS_DARWIN
+#if defined(__arm__) && !defined(__ARM_EABI__)
 #error ARM EABI support is required.
 #endif
 

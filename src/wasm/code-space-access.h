@@ -49,13 +49,14 @@ class V8_NODISCARD CodeSpaceWriteScope final {
   CodeSpaceWriteScope(const CodeSpaceWriteScope&) = delete;
   CodeSpaceWriteScope& operator=(const CodeSpaceWriteScope&) = delete;
 
-  static bool IsInScope();
+  static bool IsInScope() { return current_native_module_ != nullptr; }
 
  private:
   // The M1 implementation knows implicitly from the {MAP_JIT} flag during
   // allocation which region to switch permissions for. On non-M1 hardware
   // without memory protection key support, we need the code space from the
   // {NativeModule}.
+  static thread_local NativeModule* current_native_module_;
 
   // {SetWritable} and {SetExecutable} implicitly operate on
   // {current_native_module_} (for mprotect-based protection).

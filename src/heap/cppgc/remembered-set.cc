@@ -69,12 +69,11 @@ void InvalidateUncompressedRememberedSlots(
 #endif  // DEBUG
 #if defined(ENABLE_SLOW_DCHECKS)
   // Check that no remembered slots are referring to the freed area.
-  bool result = std::none_of(slots.begin(), slots.end(), [begin, end](void* slot) {
+  DCHECK(std::none_of(slots.begin(), slots.end(), [begin, end](void* slot) {
     void* value = nullptr;
     value = *reinterpret_cast<void**>(slot);
     return begin <= value && value < end;
-  });
-  DCHECK(result);
+  }));
 #endif  // defined(ENABLE_SLOW_DCHECKS)
 }
 

@@ -16,10 +16,7 @@
 namespace v8 {
 namespace internal {
 
-namespace {
-base::LazyInstance<BasicBlockProfiler>::type profiler_instance =
-    LAZY_INSTANCE_INITIALIZER;
-}
+DEFINE_LAZY_LEAKY_OBJECT_GETTER(BasicBlockProfiler, BasicBlockProfiler::Get)
 
 BasicBlockProfilerData::BasicBlockProfilerData(size_t n_blocks)
     : block_ids_(n_blocks), counts_(n_blocks, 0) {}
@@ -140,10 +137,6 @@ Handle<OnHeapBasicBlockProfilerData> BasicBlockProfilerData::CopyToJSHeap(
   return isolate->factory()->NewOnHeapBasicBlockProfilerData(
       block_ids, counts, branches, name, schedule, code, hash_,
       AllocationType::kOld);
-}
-
-BasicBlockProfiler* BasicBlockProfiler::Get() {
-  return profiler_instance.Pointer();
 }
 
 void BasicBlockProfiler::ResetCounts(Isolate* isolate) {

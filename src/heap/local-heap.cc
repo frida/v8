@@ -29,11 +29,10 @@ namespace v8 {
 namespace internal {
 
 namespace {
-base::LazyInstance<base::ThreadLocalPointer<LocalHeap>>::type
-    current_local_heap = LAZY_INSTANCE_INITIALIZER;
+thread_local LocalHeap* current_local_heap = nullptr;
 }  // namespace
 
-LocalHeap* LocalHeap::Current() { return current_local_heap.Pointer()->Get(); }
+LocalHeap* LocalHeap::Current() { return current_local_heap; }
 
 #ifdef DEBUG
 void LocalHeap::VerifyCurrent() {
@@ -76,9 +75,8 @@ LocalHeap::LocalHeap(Heap* heap, ThreadKind kind,
   if (persistent_handles_) {
     persistent_handles_->Attach(this);
   }
-  auto current = current_local_heap.Pointer();
-  DCHECK_NULL(current->Get());
-  if (!is_main_thread()) current->Set(this);
+  DCHECK_NULL(current_local_heap);
+  if (!is_main_thread()) current_local_heap = this;
 }
 
 LocalHeap::~LocalHeap() {
@@ -99,9 +97,8 @@ LocalHeap::~LocalHeap() {
   });
 
   if (!is_main_thread()) {
-    auto current = current_local_heap.Pointer();
-    DCHECK_EQ(current->Get(), this);
-    current->Set(nullptr);
+    DCHECK_EQ(current_local_heap, this);
+    current_local_heap = nullptr;
   }
 
   DCHECK(gc_epilogue_callbacks_.IsEmpty());

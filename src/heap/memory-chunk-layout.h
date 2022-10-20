@@ -73,9 +73,6 @@ class V8_EXPORT_PRIVATE MemoryChunkLayout {
     FIELD(ObjectStartBitmap, ObjectStartBitmap),
 #endif  // V8_ENABLE_INNER_POINTER_RESOLUTION_OSB
     FIELD(size_t, WasUsedForAllocation),
-#if defined(_MSC_VER) && defined(_M_IX86)
-    kPaddingOffset = kWasUsedForAllocationEnd + 4,
-#endif
     kMarkingBitmapOffset,
     kMemoryChunkHeaderSize = kMarkingBitmapOffset,
     kMemoryChunkHeaderStart = kSlotSetOffset,
