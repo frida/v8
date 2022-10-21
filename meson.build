@@ -65,13 +65,34 @@ host_arch = v8_arch_from_cpu_family[host_machine.cpu_family()]
 
 build_os_frida = (build_os == 'win') ? 'windows' : build_os
 host_os_frida = (host_os == 'win') ? 'windows' : host_os
+
+have_ptrauth_src = '''
+#ifdef __clang__
+# if __has_feature (ptrauth_calls)
+#  define HAVE_PTRAUTH 1
+# endif
+#endif
+
+#ifndef HAVE_PTRAUTH
+# error Pointer authentication not supported
+#endif
+'''
+
 build_arch_frida = build_arch.startswith('arm') ? build_arch : build_machine.cpu_family()
 if build_arch_frida == 'arm' and cpp_native.get_define('__ARM_PCS_VFP') != ''
   build_arch_frida = 'armhf'
+elif build_arch_frida == 'arm64' \
+    and build_machine.system() == 'darwin' \
+    and cpp_native.compiles(have_ptrauth_src, name: 'build machine ABI is arm64e')
+  build_arch_frida = 'arm64e'
 endif
 host_arch_frida = host_arch.startswith('arm') ? host_arch : host_machine.cpu_family()
 if host_arch_frida == 'arm' and cpp.get_define('__ARM_PCS_VFP') != ''
   host_arch_frida = 'armhf'
+elif host_arch_frida == 'arm64' \
+    and host_machine.system() == 'darwin' \
+    and cpp.compiles(have_ptrauth_src, name: 'host machine ABI is arm64e')
+  host_arch_frida = 'arm64e'
 endif
 
 build_ptrsize = cpp_native.sizeof('void *')
@@ -88,22 +109,6 @@ Possible solutions:
 A) Use a matching build machine.
 B) Define a Meson exe_wrapper for the host, such as wine, qemu-user, etc.
 C) Configure qemu-user-binfmt and set needs_exe_wrapper to false.'''.format(host_os, host_arch, host_ptrsize, build_ptrsize))
-endif
-
-if host_os in ['macos', 'ios'] and host_arch == 'arm64'
-  have_ptrauth_src = '''#ifdef __clang__
-# if __has_feature (ptrauth_calls)
-#  define HAVE_PTRAUTH 1
-# endif
-#endif
-
-#ifndef HAVE_PTRAUTH
-# error Pointer authentication not supported
-#endif
-'''
-  have_ptrauth = cpp.compiles(have_ptrauth_src, name: 'pointer authentication')
-else
-  have_ptrauth = false
 endif
 
 is_clang_or_non_windows = cpp.get_id() == 'clang' or host_os != 'win'
@@ -278,7 +283,7 @@ if enable_test_features
   ]
 endif
 
-if have_ptrauth
+if host_arch_frida == 'arm64e'
   config_args += '-DV8_TARGET_PTRAUTH'
 endif
 
