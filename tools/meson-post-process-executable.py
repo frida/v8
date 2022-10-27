@@ -13,19 +13,17 @@ def main():
                         help="executable to use as input")
     parser.add_argument("--output-file", dest="output_path", required=True,
                         help="where to write the result")
-    parser.add_argument("--strip-tool", dest="strip_tool", required=True,
-                        help="path to strip tool")
     parser.add_argument("--strip-option", dest="strip_option", required=True, choices=["true", "false"],
                         help="whether to strip the executable")
+    parser.add_argument("strip_tool", nargs="+",
+                        help="strip tool, including any arguments to it")
     args = parser.parse_args()
 
     input_path = Path(args.input_path)
     output_path = Path(args.output_path)
 
     strip_tool = args.strip_tool
-    if strip_tool != "":
-        strip_tool = Path(strip_tool)
-    else:
+    if strip_tool[0] == "":
         strip_tool = None
 
     strip_requested = args.strip_option == "true"
@@ -38,7 +36,7 @@ def main():
 
     try:
         if strip_tool is not None and strip_requested:
-            subprocess.run([strip_tool, intermediate_path], check=True)
+            subprocess.run(strip_tool + [intermediate_path], check=True)
     except:
         intermediate_path.unlink()
         raise
