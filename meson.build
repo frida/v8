@@ -562,7 +562,7 @@ commit_codegen = [python, files('tools' / 'meson-commit-codegen.py')]
 post_process_executable = [python, files('tools' / 'meson-post-process-executable.py')]
 
 if build_os != 'win'
-  strip = find_program('strip', native: true)
+  strip = find_program('strip', native: not meson.can_run_host_binaries())
 else
   strip = ''
 endif
