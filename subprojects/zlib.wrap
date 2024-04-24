@@ -1,6 +1,6 @@
 [wrap-git]
 url = https://github.com/frida/zlib.git
-revision = main
+revision = a912d314d0812518d4bbd715a981e6c9484b550d
 depth = 1
 
 [provide]
