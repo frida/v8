@@ -420,9 +420,10 @@ if host_os == 'win'
     '-D_ITERATOR_DEBUG_LEVEL=0',
   ]
   if cpp.get_define('_WIN32_WINNT') == ''
+    minver = (build_machine.cpu_family() == 'aarch64') ? '0x0a00' : '0x0501'
     config_args += [
-      '-DWINVER=0x0501',
-      '-D_WIN32_WINNT=0x0501',
+      '-DWINVER=' + minver,
+      '-D_WIN32_WINNT=' + minver,
     ]
   endif
   if host_is_64bit
