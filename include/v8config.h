@@ -713,7 +713,7 @@ V8 shared library set USING_V8_SHARED.
 #elif defined(_M_IX86) || defined(__i386__)
 #define V8_HOST_ARCH_IA32 1
 #define V8_HOST_ARCH_32_BIT 1
-#elif defined(__AARCH64EL__) || defined(_M_ARM64)
+#elif defined(__AARCH64EL__) || defined(__AARCH64EB__) || defined(_M_ARM64)
 #define V8_HOST_ARCH_ARM64 1
 #define V8_HOST_ARCH_64_BIT 1
 #elif defined(__ARMEL__) || defined(__ARMEB__)
@@ -766,7 +766,7 @@ V8 shared library set USING_V8_SHARED.
 #define V8_TARGET_ARCH_X64 1
 #elif defined(_M_IX86) || defined(__i386__)
 #define V8_TARGET_ARCH_IA32 1
-#elif defined(__AARCH64EL__) || defined(_M_ARM64)
+#elif defined(__AARCH64EL__) || defined(__AARCH64EB__) || defined(_M_ARM64)
 #define V8_TARGET_ARCH_ARM64 1
 #elif defined(__ARMEL__) || defined(__ARMEB__)
 #define V8_TARGET_ARCH_ARM 1
