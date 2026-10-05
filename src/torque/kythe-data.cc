@@ -8,8 +8,6 @@ namespace v8 {
 namespace internal {
 namespace torque {
 
-DEFINE_CONTEXTUAL_VARIABLE(KytheData)
-
 namespace {
 
 KythePosition MakeKythePosition(const SourcePosition& pos) {
@@ -62,7 +60,8 @@ kythe_entity_t KytheData::AddFunctionDefinition(Callable* callable) {
   auto ident_pos = callable->IdentifierPosition();
   kythe_entity_t callable_id = that->consumer_->AddDefinition(
       KytheConsumer::Kind::Function, callable->ExternalName(),
-      MakeKythePosition(ident_pos));
+      MakeKythePosition(ident_pos), callable->IsExternal(),
+      callable->ReadableName());
   that->callables_.insert(it, std::make_pair(callable, callable_id));
   return callable_id;
 }

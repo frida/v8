@@ -8,7 +8,7 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
 let builder = new WasmModuleBuilder();
 
-builder.addMemory(16, 17, false, false);
+builder.addMemory(16, 17);
 
 let main_func = builder.addFunction('main', kSig_i_v).exportFunc().addBody([
   ...wasmI32Const(1),
@@ -25,5 +25,5 @@ let instance = builder.instantiate();
 let main = instance.exports.main;
 
 for (let i = 0; i < 20; i++) assertEquals(0, main());
-%WasmTierUpFunction(instance, main_func.index);
+%WasmTierUpFunction(main);
 assertEquals(0, main());

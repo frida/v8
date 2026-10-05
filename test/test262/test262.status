@@ -28,6 +28,10 @@
 [
 
 [ALWAYS, {
+  # tc39/test262 PR #4999: these tests have incorrect expectations.
+  # They assume super.prop = val on a deferred namespace doesn't trigger
+  # [[GetOwnProperty]], but OrdinarySetWithOwnDescriptor requires it.
+
   ###################### MISSING ES6 FEATURES #######################
 
   # https://code.google.com/p/v8/issues/detail?id=4248
@@ -47,7 +51,6 @@
   'language/statements/with/unscopables-inc-dec': [FAIL],
 
   # https://code.google.com/p/v8/issues/detail?id=4249
-  'language/expressions/assignment/S11.13.1_A7_T3': [FAIL],
   'language/expressions/postfix-increment/S11.3.1_A6_T3': [FAIL],
   'language/expressions/postfix-decrement/S11.3.2_A6_T3': [FAIL],
   'language/expressions/prefix-decrement/S11.4.5_A6_T3': [FAIL],
@@ -65,13 +68,6 @@
   'language/expressions/prefix-decrement/S11.4.5_A5_*': [FAIL],
   'language/expressions/prefix-increment/S11.4.4_A5_*': [FAIL],
   'language/statements/variable/binding-resolution': [FAIL],
-
-  # https://code.google.com/p/v8/issues/detail?id=10958
-  'language/module-code/eval-gtbndng-indirect-faux-assertion': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=4951
-  'language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order': [FAIL],
-  'language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=4628
   'language/eval-code/direct/async-gen-func-decl-fn-body-cntns-arguments-func-decl-declare-arguments': [FAIL],
@@ -206,25 +202,6 @@
   'language/statements/try/tco-finally': [SKIP],
   'language/statements/while/tco-body': [SKIP],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=6049
-  'built-ins/Object/internals/DefineOwnProperty/consistent-value-function-caller': [FAIL_SLOPPY],
-  'built-ins/Object/internals/DefineOwnProperty/consistent-value-function-arguments': [FAIL_SLOPPY],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=5690
-  'language/expressions/call/eval-spread': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=7472
-  'intl402/NumberFormat/currency-digits': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=12209
-  'intl402/Intl/supportedValuesOf/collations-accepted-by-Collator': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=7831
-  'language/statements/generators/generator-created-after-decl-inst': [FAIL],
-  'language/expressions/generators/generator-created-after-decl-inst': [FAIL],
-  'language/expressions/async-generator/generator-created-after-decl-inst': [FAIL],
-  'language/statements/async-generator/generator-created-after-decl-inst': [FAIL],
-
   # https://bugs.chromium.org/p/v8/issues/detail?id=9875
   'language/expressions/coalesce/tco-pos-undefined': [FAIL],
   'language/expressions/coalesce/tco-pos-null': [FAIL],
@@ -237,9 +214,6 @@
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=10381
   'built-ins/Array/prototype/concat/arg-length-near-integer-limit': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=10383
-  'built-ins/RegExp/prototype/Symbol.replace/fn-invoke-args-empty-result': [FAIL],
 
   # https://crbug.com/v8/10789
   'built-ins/Function/prototype/toString/built-in-function-object': [FAIL],
@@ -274,335 +248,34 @@
   # http://crbug/v8/10905
   'language/identifier-resolution/assign-to-global-undefined': [FAIL],
 
-  # http://crbug/v8/11531
-  'built-ins/RegExp/prototype/flags/get-order': [FAIL],
+  # Begin Temporal test expectations
+  # Temporal work is tracked in b/42201538
 
-  # http://crbug/v8/11533
-  'language/statements/class/subclass/default-constructor-spread-override': [FAIL],
+  # Some of these tests need updating to the newer spec, and
+  # there are only 16 tests. Skip for now.
+  'staging/sm/Temporal/*': [SKIP],
 
-  # See also https://github.com/tc39/test262/issues/3380
-  'built-ins/TypedArray/prototype/map/callbackfn-resize': [FAIL],
+  # DateTimeFormat doesn't respect hourCycle for Temporal
+  # b/468559222
+  'intl402/Temporal/Instant/prototype/toLocaleString/hourcycle': [SKIP],
+  'intl402/Temporal/PlainDateTime/prototype/toLocaleString/hourcycle': [SKIP],
+  'intl402/Temporal/PlainTime/prototype/toLocaleString/hourcycle': [SKIP],
+  'intl402/Temporal/ZonedDateTime/prototype/toLocaleString/hourcycle': [SKIP],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=11935
-  # regexp-v-flag not yet fully implemented.
-  'built-ins/RegExp/property-escapes/generated/strings/Basic_Emoji': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Basic_Emoji-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Basic_Emoji-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Basic_Emoji-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Keycap_Sequence': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Keycap_Sequence-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Keycap_Sequence-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Keycap_Sequence-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Test': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Test-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Test-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/Emoji_Test-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Flag_Sequence': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Flag_Sequence-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Flag_Sequence-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Flag_Sequence-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Modifier_Sequence': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Modifier_Sequence-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Modifier_Sequence-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Modifier_Sequence-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Tag_Sequence': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Tag_Sequence-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Tag_Sequence-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_Tag_Sequence-negative-u': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_ZWJ_Sequence': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_ZWJ_Sequence-negative-CharacterClass': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_ZWJ_Sequence-negative-P': [SKIP],
-  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji_ZWJ_Sequence-negative-u': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-union-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-union-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-union-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-string-literal': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-character-class-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-character-class': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-character': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-character-property-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-property-of-strings-escape': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/string-literal-union-string-literal': [SKIP],
+  # ICU4X and ICU4C do not implement the same algorithm for Chinese
+  # b/434224293
+  'intl402/DateTimeFormat/prototype/formatToParts/compare-to-temporal-lunisolar': [SKIP],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=13173
-  'built-ins/RegExp/named-groups/duplicate-names': [FAIL],
-  'built-ins/RegExp/named-groups/duplicate-names-group-property-enumeration-order': [FAIL],
-  'built-ins/RegExp/named-groups/duplicate-names-match-indices': [FAIL],
-  'built-ins/RegExp/named-groups/duplicate-names-replace': [FAIL],
+  # End Temporal test expectations
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=13174
-  'built-ins/RegExp/prototype/Symbol.match/flags-tostring-error': [FAIL],
-  'built-ins/RegExp/prototype/Symbol.match/get-flags-err': [FAIL],
-  'built-ins/RegExp/prototype/Symbol.match/get-unicode-error': [FAIL],
-  'built-ins/RegExp/prototype/Symbol.replace/flags-tostring-error': [FAIL],
-  'built-ins/RegExp/prototype/Symbol.replace/get-flags-err': [FAIL],
-  'built-ins/RegExp/prototype/Symbol.replace/get-unicode-error': [FAIL],
+  # https://github.com/tc39/test262/pull/3988
+  'intl402/DurationFormat/prototype/format/precision-exact-mathematical-values': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=11544
-  'built-ins/Temporal/Duration/prototype/total/balance-negative-result': [FAIL],
-  'intl402/Temporal/Calendar/prototype/dateFromFields/infinity-throws-rangeerror': [FAIL],
-  'intl402/Temporal/Calendar/prototype/monthDayFromFields/infinity-throws-rangeerror': [FAIL],
-  'intl402/Temporal/Calendar/prototype/yearMonthFromFields/infinity-throws-rangeerror': [FAIL],
-  'intl402/Temporal/Duration/prototype/total/relativeto-string-datetime': [FAIL],
-  'intl402/Temporal/PlainYearMonth/from/argument-object': [FAIL],
-
-  'intl402/Temporal/PlainDateTime/prototype/withPlainDate/argument-string-calendar': [FAIL],
-
-  'intl402/Temporal/Calendar/prototype/dateFromFields/order-of-operations': [FAIL],
-  'intl402/Temporal/Calendar/prototype/monthDayFromFields/order-of-operations': [FAIL],
-  'intl402/Temporal/Calendar/prototype/yearMonthFromFields/order-of-operations': [FAIL],
-  'built-ins/Temporal/Duration/prototype/total/relativeto-zoneddatetime-with-fractional-days-different-sign': [FAIL],
-  'built-ins/Temporal/Duration/prototype/total/relativeto-zoneddatetime-with-fractional-days': [FAIL],
-
-  'staging/Temporal/Duration/old/round': [FAIL],
-  'staging/Temporal/Duration/old/total': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/construction-and-properties': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/dst-math': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/equals': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toPlainMonthDay': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toPlainYearMonth': [FAIL],
-
-  # UBSan complain about static_cast<int32_t> from double in AddISODate()
-  'built-ins/Temporal/Calendar/prototype/dateAdd/argument-duration-years-and-months-number-max-value': [SKIP],
-
-  'harness/temporalHelpers-one-shift-time-zone': [SKIP],
-
-  'staging/Intl402/Temporal/old/addition-across-lunisolar-leap-months': [FAIL],
-  'staging/Intl402/Temporal/old/date-time-format': [FAIL],
-  'staging/Intl402/Temporal/old/datetime-toLocaleString': [FAIL],
-  'staging/Intl402/Temporal/old/date-toLocaleString': [FAIL],
-  'staging/Intl402/Temporal/old/hebrew-leap-months': [FAIL],
-  'staging/Intl402/Temporal/old/indian-calendar': [FAIL],
-  'staging/Intl402/Temporal/old/instant-toLocaleString': [FAIL],
-  'staging/Intl402/Temporal/old/japanese-era': [FAIL],
-  'staging/Intl402/Temporal/old/monthday-toLocaleString': [FAIL],
-  'staging/Intl402/Temporal/old/non-iso-calendars': [FAIL],
-  'staging/Intl402/Temporal/old/yearmonth-toLocaleString': [FAIL],
-  'staging/Intl402/Temporal/old/zoneddatetime-toLocaleString': [FAIL],
-
-  'built-ins/Temporal/Calendar/from/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/dateAdd/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/day/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/dayOfWeek/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/dayOfYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/daysInMonth/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/daysInWeek/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/daysInYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/inLeapYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/month/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/monthCode/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/monthsInYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/weekOfYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Calendar/prototype/year/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Instant/prototype/toZonedDateTime/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Now/plainDate/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Now/plainDateTime/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/Now/zonedDateTime/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/from/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/prototype/equals/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/prototype/since/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/prototype/until/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDate/prototype/withCalendar/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/from/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/equals/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/since/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/until/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/withCalendar/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/withPlainDate/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainMonthDay/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainMonthDay/from/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainMonthDay/prototype/equals/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/toPlainDateTime/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/toZonedDateTime/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainYearMonth/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainYearMonth/from/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainYearMonth/prototype/equals/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainYearMonth/prototype/since/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/PlainYearMonth/prototype/until/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/TimeZone/prototype/getInstantFor/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/TimeZone/prototype/getPlainDateTimeFor/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/TimeZone/prototype/getPossibleInstantsFor/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/from/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/equals/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/since/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/until/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/withCalendar/calendar-case-insensitive': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/withPlainDate/argument-propertybag-calendar-case-insensitive': [FAIL],
-  # intl402
-  'intl402/Temporal/Calendar/calendar-case-insensitive': [FAIL],
-  'intl402/Temporal/Calendar/from/calendar-case-insensitive': [FAIL],
-  'intl402/Temporal/Calendar/prototype/era/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'intl402/Temporal/Calendar/prototype/eraYear/argument-propertybag-calendar-case-insensitive': [FAIL],
-  'intl402/Temporal/TimeZone/from/timezone-case-insensitive': [FAIL],
-
-  'built-ins/Temporal/Duration/compare/precision-exact-mathematical-values-1': [FAIL],
-  'built-ins/Temporal/Duration/compare/precision-exact-mathematical-values-2': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-balance-duration-relative-months': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-balance-duration-relative-weeks': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-balance-duration-relative-years-days': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-balance-duration-relative-years-months': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-balance-duration-relative-years-with-calendar': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/precision-exact-in-round-duration': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/roundingmode-ceil': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/roundingmode-floor': [FAIL],
-  'built-ins/Temporal/Duration/prototype/round/roundingmode-trunc': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/since/roundingmode-ceil': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/since/roundingmode-expand': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/since/roundingmode-floor': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/until/roundingmode-ceil': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/until/roundingmode-expand': [FAIL],
-  'built-ins/Temporal/PlainDateTime/prototype/until/roundingmode-floor': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/add/precision-exact-mathematical-values-1': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/add/precision-exact-mathematical-values-2': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/add/precision-exact-mathematical-values-3': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/subtract/precision-exact-mathematical-values-1': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/subtract/precision-exact-mathematical-values-2': [FAIL],
-  'built-ins/Temporal/PlainTime/prototype/subtract/precision-exact-mathematical-values-3': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/since/roundingmode-ceil': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/since/roundingmode-expand': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/since/roundingmode-floor': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/until/roundingmode-ceil': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/until/roundingmode-expand': [FAIL],
-  'built-ins/Temporal/ZonedDateTime/prototype/until/roundingmode-floor': [FAIL],
-  'intl402/Temporal/ZonedDateTime/prototype/withCalendar/calendar-case-insensitive': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=13342
-  'built-ins/RegExp/property-escapes/generated/Alphabetic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Assigned': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Cased': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Case_Ignorable': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Changes_When_NFKC_Casefolded': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Diacritic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Emoji': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Emoji_Modifier_Base': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Emoji_Presentation': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Cased_Letter': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Decimal_Number': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Format': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Letter': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Lowercase_Letter': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Mark': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Modifier_Letter': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Nonspacing_Mark': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Number': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Other': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Other_Letter': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Other_Number': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Other_Punctuation': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Other_Symbol': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Punctuation': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Spacing_Mark': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Symbol': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/General_Category_-_Unassigned': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Grapheme_Base': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Grapheme_Extend': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/ID_Continue': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Ideographic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/ID_Start': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Lowercase': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Arabic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Common': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Cyrillic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Devanagari': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Egyptian_Hieroglyphs': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Arabic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Common': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Cyrillic': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Devanagari': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Egyptian_Hieroglyphs': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Han': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Hiragana': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Kannada': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Katakana': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Kawi': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Khojki': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Lao': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Latin': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_Extensions_-_Nag_Mundari': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Han': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Hiragana': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Kannada': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Katakana': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Kawi': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Khojki': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Lao': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Latin': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Script_-_Nag_Mundari': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Sentence_Terminal': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Soft_Dotted': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Terminal_Punctuation': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/Unified_Ideograph': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/XID_Continue': [FAIL],
-  'built-ins/RegExp/property-escapes/generated/XID_Start': [FAIL],
-  'language/identifiers/part-unicode-15.0.0-class-escaped': [FAIL],
-  'language/identifiers/part-unicode-15.0.0-class': [FAIL],
-  'language/identifiers/part-unicode-15.0.0-escaped': [FAIL],
-  'language/identifiers/part-unicode-15.0.0': [FAIL],
-  'language/identifiers/start-unicode-15.0.0-class-escaped': [FAIL],
-  'language/identifiers/start-unicode-15.0.0-class': [FAIL],
-  'language/identifiers/start-unicode-15.0.0-escaped': [FAIL],
-  'language/identifiers/start-unicode-15.0.0': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=11660
-  # https://github.com/tc39/proposal-intl-duration-format/issues/114
-  'intl402/DurationFormat/prototype/format/style-options-en': [FAIL],
+  # https://bugs.chromium.org/p/v8/issues/detail?id=12763
+  'language/statements/class/decorator/syntax/valid/class-element-decorator-call-expr-identifier-reference': [FAIL],
+  'language/statements/class/decorator/syntax/valid/class-element-decorator-member-expr-decorator-member-expr': [FAIL],
+  'language/statements/class/decorator/syntax/valid/class-element-decorator-member-expr-identifier-reference': [FAIL],
+  'language/statements/class/decorator/syntax/valid/class-element-decorator-parenthesized-expr-identifier-reference': [FAIL],
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=12763
   'language/expressions/class/decorator/syntax/class-valid/decorator-member-expr-private-identifier': [FAIL],
@@ -613,7 +286,6 @@
   'language/expressions/class/decorator/syntax/valid/decorator-member-expr-identifier-reference-yield': [FAIL],
   'language/expressions/class/decorator/syntax/valid/decorator-parenthesized-expr-identifier-reference': [FAIL],
   'language/expressions/class/decorator/syntax/valid/decorator-parenthesized-expr-identifier-reference-yield': [FAIL],
-  'language/expressions/class/elements/syntax/valid/grammar-field-accessor': [FAIL],
   'language/statements/class/decorator/syntax/class-valid/decorator-member-expr-private-identifier': [FAIL],
   'language/statements/class/decorator/syntax/valid/decorator-call-expr-identifier-reference': [FAIL],
   'language/statements/class/decorator/syntax/valid/decorator-call-expr-identifier-reference-yield': [FAIL],
@@ -622,40 +294,24 @@
   'language/statements/class/decorator/syntax/valid/decorator-member-expr-identifier-reference-yield': [FAIL],
   'language/statements/class/decorator/syntax/valid/decorator-parenthesized-expr-identifier-reference': [FAIL],
   'language/statements/class/decorator/syntax/valid/decorator-parenthesized-expr-identifier-reference-yield': [FAIL],
-  'language/statements/class/elements/syntax/valid/grammar-field-accessor': [FAIL],
-
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=11989
   'built-ins/ShadowRealm/prototype/evaluate/globalthis-ordinary-object': [FAIL],
   'built-ins/ShadowRealm/prototype/importValue/throws-if-exportname-not-string': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=12085
-  'language/statements/class/subclass/derived-class-return-override-catch-finally': [FAIL],
-  'language/statements/class/subclass/derived-class-return-override-catch-finally-arrow': [FAIL],
-  'language/statements/class/subclass/derived-class-return-override-finally-super': [FAIL],
-  'language/statements/class/subclass/derived-class-return-override-finally-super-arrow': [FAIL],
-  'language/statements/class/subclass/derived-class-return-override-for-of-arrow': [FAIL],
+  # https://bugs.chromium.org/p/v8/issues/detail?id=14288
+  'intl402/DateTimeFormat/timezone-case-insensitive': [FAIL],
+  'intl402/DateTimeFormat/timezone-not-canonicalized': [FAIL],
 
-  # https://bugs.chromium.org/p/v8/issues/detail?id=12524
-  'built-ins/Date/prototype/setHours/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setMinutes/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setMonth/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setSeconds/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setUTCHours/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setUTCMinutes/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setUTCMonth/arg-coercion-order': [FAIL],
-  'built-ins/Date/prototype/setUTCSeconds/arg-coercion-order': [FAIL],
-
-  # https://bugs.chromium.org/p/v8/issues/detail?id=12681
-  'built-ins/Array/prototype/push/set-length-zero-array-length-is-non-writable': [FAIL],
+  # https://issues.chromium.org/u/1/issues/368222754
+  'language/statements/with/get-binding-value-call-with-proxy-env': [FAIL],
+  'language/statements/with/get-binding-value-idref-with-proxy-env': [FAIL],
+  'language/statements/with/set-mutable-binding-idref-compound-assign-with-proxy-env': [FAIL],
+  'language/statements/with/set-mutable-binding-idref-with-proxy-env': [FAIL],
 
   ######################## NEEDS INVESTIGATION ###########################
 
   # https://bugs.chromium.org/p/v8/issues/detail?id=7833
-  #
-  # Test262 needs to expose CanBlock.
-  'built-ins/Atomics/wait/bigint/cannot-suspend-throws': [SKIP],
-  'built-ins/Atomics/wait/cannot-suspend-throws': [SKIP],
   # Flaky.
   'built-ins/Atomics/wait/undefined-index-defaults-to-zero': [SKIP],
 
@@ -664,10 +320,29 @@
   # https://github.com/tc39/ecma262/pull/889
   'annexB/language/function-code/block-decl-func-skip-arguments': [FAIL],
 
+  # https://tc39.es/ecma262/#sec-web-compat-blockdeclarationinstantiation
+  'annexB/language/function-code/block-decl-nested-blocks-with-fun-decl': [FAIL],
+
   # Non-simple assignment targets are runtime errors instead of syntax errors
   # for web compat. https://crbug.com/358346
-  'language/expressions/assignmenttargettype/direct-callexpression-arguments': [FAIL],
-  'language/expressions/assignmenttargettype/parenthesized-callexpression-arguments': [FAIL],
+
+  # We replace U+202F (narrow-width space) with U+0020 (regular space).
+  # https://crbug.com/1414292
+  'intl402/DateTimeFormat/prototype/format/timedatestyle-en': [FAIL],
+
+  # In alignment with Firefox and Safari, Function.prototype.arguments and
+  # .caller are ordinary accessors instead of the "poison pill thrower" when V8 is
+  # compiled without V8_FUNCTION_ARGUMENTS_CALLER_ARE_OWN_PROPS.
+  #
+  # These expectations should be negated if the build time flag is true.
+  #
+  # See also https://bugs.chromium.org/p/v8/issues/detail?id=6049
+  'built-ins/Function/prototype/arguments/prop-desc': [FAIL],
+  'built-ins/Function/prototype/caller-arguments/accessor-properties': [FAIL],
+  'built-ins/Function/prototype/caller/prop-desc': [FAIL],
+  'built-ins/Object/internals/DefineOwnProperty/consistent-value-function-caller': [PASS],
+  'built-ins/Object/internals/DefineOwnProperty/consistent-value-function-arguments': [PASS],
+  'built-ins/ThrowTypeError/unique-per-realm-function-proto': [FAIL],
 
   ############################ INVALID TESTS #############################
 
@@ -686,6 +361,9 @@
   # Test against internals of harness; we plug in differently.
   'harness/detachArrayBuffer': [SKIP],
   'harness/detachArrayBuffer-host-detachArrayBuffer': [SKIP],
+
+  # https://github.com/tc39/test262/pull/3987
+  'language/module-code/import-attributes/allow-nlt-before-with': [FAIL],
 
   ############################ SKIPPED TESTS #############################
 
@@ -709,16 +387,19 @@
   # https://bugs.chromium.org/p/v8/issues/detail?id=7187
   'built-ins/Function/prototype/toString/line-terminator-normalisation-CR': [SKIP],
 
+  # May OOM fatally
+  'staging/sm/regress/regress-610026': [SKIP],
+
   ############################ SLOW TESTS #############################
 
   'annexB/built-ins/RegExp/RegExp-leading-escape-BMP': [PASS, SLOW],
   'annexB/built-ins/RegExp/RegExp-trailing-escape-BMP': [PASS, SLOW],
   'language/comments/S7.4_A5': [PASS, SLOW],
   'language/comments/S7.4_A6': [PASS, SLOW],
-
+  'staging/sm/Date/dst-offset-caching-*': [PASS, SLOW],
 }],  # ALWAYS
 
-['no_i18n == True', {
+['not i18n', {
   # Unicode canonicalization is not available with i18n turned off.
   'built-ins/String/prototype/localeCompare/15.5.4.9_CE': [SKIP],
 
@@ -752,81 +433,139 @@
   'intl402/String/prototype/toLocaleUpperCase/special_casing_Turkish': [FAIL],
 
   # Unicode features unavaible without i18n, e.g. property escapes.
+  'built-ins/RegExp/prototype/exec/regexp-builtin-exec-v-u-flag': [SKIP],
+  'built-ins/RegExp/unicode_full_case_folding': [SKIP],
   'built-ins/RegExp/property-escapes/*': [SKIP],
   'built-ins/RegExp/named-groups/unicode-property-names': [SKIP],
   'built-ins/RegExp/named-groups/unicode-property-names-valid': [SKIP],
-  'built-ins/RegExp/named-groups/non-unicode-property-names-valid': [FAIL],
+  'built-ins/RegExp/named-groups/non-unicode-property-names-valid': [SKIP],
   'built-ins/RegExp/match-indices/indices-array-unicode-property-names': [SKIP],
-  'built-ins/RegExp/unicodeSets/generated/character-class-difference-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-difference-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-union-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-class-escape-intersection-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-class-intersection-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-class-union-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-difference-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-intersection-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-class-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-class-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-class': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-class': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-class-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-union-character-property-escape': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-class': [PASS,FAIL],
-  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-property-escape': [PASS,FAIL],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-lower-b': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-lower-p': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-lower-w': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-upper-b': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-upper-p': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/add-ignoreCase-affects-slash-upper-w': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/remove-ignoreCase-affects-slash-lower-p': [SKIP],
+  'built-ins/RegExp/regexp-modifiers/remove-ignoreCase-affects-slash-upper-p': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-escape-union-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-class-union-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-difference-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-intersection-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-property-escape-union-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/character-union-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-difference-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-intersection-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-class-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-class': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/property-of-strings-escape-union-string-literal': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-13.1': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-14.0': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-15.0': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-15.1': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-16.0': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-difference-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-intersection-property-of-strings-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-union-character-property-escape': [SKIP],
+  'built-ins/RegExp/unicodeSets/generated/string-literal-union-property-of-strings-escape': [SKIP],
+  'built-ins/String/prototype/match/regexp-prototype-match-v-u-flag': [SKIP],
+  'built-ins/String/prototype/matchAll/regexp-prototype-matchAll-v-u-flag': [SKIP],
+  'built-ins/String/prototype/replace/regexp-prototype-replace-v-u-flag': [SKIP],
+  'built-ins/String/prototype/search/regexp-prototype-search-v-flag': [SKIP],
+  'built-ins/String/prototype/search/regexp-prototype-search-v-u-flag': [SKIP],
 
   # Unicode in identifiers.
-  'language/identifiers/part-unicode-*': [FAIL],
+  'language/identifiers/part-unicode*': [FAIL],
   'language/identifiers/start-unicode-1*': [FAIL],
+  'language/identifiers/start-unicode-2*': [FAIL],
+  'language/identifiers/start-unicode-3*': [FAIL],
+  'language/identifiers/start-unicode-4*': [FAIL],
   'language/identifiers/start-unicode-5*': [FAIL],
   'language/identifiers/start-unicode-6*': [FAIL],
   'language/identifiers/start-unicode-7*': [FAIL],
   'language/identifiers/start-unicode-8*': [FAIL],
   'language/identifiers/start-unicode-9*': [FAIL],
 
-  # Temporal staging test which use timeZone other than "UTC" or
-  # calendar other than "iso8601" which are not supported in no i18n mode.
-  'staging/Temporal/Duration/old/add': [FAIL],
-  'staging/Temporal/Duration/old/subtract': [FAIL],
-  'staging/Temporal/Instant/old/toZonedDateTime': [FAIL],
-  'staging/Temporal/Instant/old/toZonedDateTimeISO': [FAIL],
-  'staging/Temporal/Regex/old/timezone': [FAIL],
-  'staging/Temporal/TimeZone/old/dst-change': [FAIL],
-  'staging/Temporal/TimeZone/old/getInstantFor': [FAIL],
-  'staging/Temporal/TimeZone/old/getInstantFor-disambiguation': [FAIL],
-  'staging/Temporal/TimeZone/old/getNextTransition': [FAIL],
-  'staging/Temporal/TimeZone/old/getPossibleInstantsFor': [FAIL],
-  'staging/Temporal/TimeZone/old/getPreviousTransition': [FAIL],
-  'staging/Temporal/TimeZone/old/timezone-america-la': [FAIL],
-  'staging/Temporal/UserTimezone/old/subminute-offset': [FAIL],
-  'staging/Temporal/UserTimezone/old/trivial-protocol': [FAIL],
-  'staging/Temporal/UserTimezone/old/trivial-subclass': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/add': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/compare': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/date-time-hours-overflow': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/dst-properties': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/order-of-operations': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/property-bags': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/reversibility-of-differences': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/round': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/since': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/string-parsing': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/subtract': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toInstant': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toPlainDate': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toPlainTime': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/toString': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/until': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/with': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/withCalendar': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/withPlainDate': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/withPlainTime': [FAIL],
-  'staging/Temporal/ZonedDateTime/old/withTimezone': [FAIL],
-}],  # no_i18n == True
+  # SpiderMonkey tests that depend on Unicode data.
+  'staging/sm/PrivateName/parse-utf8-non-ascii-identifier': [FAIL],
+  'staging/sm/RegExp/ignoreCase-non-latin1-to-latin1': [FAIL],
+  'staging/sm/RegExp/unicode-class-ignoreCase': [FAIL],
+  'staging/sm/RegExp/unicode-ignoreCase': [FAIL],
+  'staging/sm/RegExp/unicode-ignoreCase-ascii': [FAIL],
+  'staging/sm/RegExp/unicode-ignoreCase-escape': [FAIL],
+  'staging/sm/RegExp/unicode-ignoreCase-word-boundary': [FAIL],
+  'staging/sm/String/normalize-generic': [FAIL],
+  'staging/sm/String/normalize-rope': [FAIL],
+  'staging/sm/String/string-code-point-upper-lower-mapping': [FAIL],
+  'staging/sm/String/string-upper-lower-mapping': [FAIL],
+
+  # UnicodeSets require i18n data
+  'built-ins/RegExp/unicodeSets/generated/rgi-emoji-17.0': [FAIL],
+}],  # not i18n
+
+
+['system == android', {
+  # Fails on Android (b/433933898, likely due to b/434224293):
+  'intl402/Temporal/Instant/prototype/toLocaleString/dateStyle': [SKIP],
+  'intl402/Temporal/PlainDate/prototype/toLocaleString/dateStyle': [SKIP],
+  'intl402/Temporal/PlainDateTime/prototype/toLocaleString/dateStyle': [SKIP],
+  'intl402/Temporal/PlainYearMonth/prototype/toLocaleString/dateStyle': [SKIP],
+  'intl402/Temporal/ZonedDateTime/prototype/toLocaleString/dateStyle': [SKIP],
+  'intl402/Temporal/PlainMonthDay/prototype/toLocaleString/dateStyle': [SKIP],
+
+  # Older ICU4C revision with different era codes
+  'intl402/DateTimeFormat/prototype/formatToParts/chinese-calendar-dates': [SKIP],
+  'intl402/DateTimeFormat/prototype/formatToParts/dangi-calendar-dates': [SKIP],
+  'intl402/DateTimeFormat/prototype/formatRangeToParts/chinese-calendar-dates': [SKIP],
+  'intl402/DateTimeFormat/prototype/formatRangeToParts/dangi-calendar-dates': [SKIP],
+
+  # Somehow passes on Android (b/433933898):
+}], # 'system == android'
 
 ['arch == arm or arch == arm64 or arch == mips64 or arch == mips64el', {
 
@@ -872,18 +611,31 @@
   'intl402/supportedLocalesOf-unicode-extensions-ignored': [SKIP],
 }],  # asan == True or msan == True or tsan == True
 
-['system == android', {
-  # Android Arm64 failures
-  # https://bugs.chromium.org/p/v8/issues/detail?id=9845
-  'intl402/DateTimeFormat/prototype/formatToParts/related-year': [FAIL],
-}], # system == android
+['msan == True', {
+  # # TODO(497880139): We need https://github.com/unicode-org/icu/commit/0cc965c49b9c8766a55b1bc3abd019f90edd9783 to resolve the failures.
+  'intl402/Collator/numeric-and-caseFirst': [FAIL],
+  'intl402/Collator/test-option-usage': [FAIL],
+  'intl402/Collator/unicode-ext-value-collation': [FAIL],
+  'intl402/Collator/prototype/resolvedOptions/resolved-case-first-unicode-extensions-and-options': [FAIL],
+  'intl402/Collator/prototype/resolvedOptions/resolved-collation-unicode-extensions-and-options': [FAIL],
+  'intl402/Collator/prototype/resolvedOptions/resolved-numeric-unicode-extensions-and-options': [FAIL],
+  'intl402/DateTimeFormat/numbering-system-calendar-options': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/resolved-hour-cycle-unicode-extensions-and-options': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/hourCycle-dateStyle': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/hourCycle': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/resolved-locale-with-hc-unicode': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/resolved-calendar-unicode-extensions-and-options': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/hourCycle-timeStyle': [FAIL],
+  'intl402/DateTimeFormat/prototype/resolvedOptions/resolved-numbering-system-unicode-extensions-and-options': [FAIL],
+  'intl402/DurationFormat/prototype/resolvedOptions/resolved-numbering-system-unicode-extensions-and-options': [FAIL],
+  'intl402/NumberFormat/numbering-system-options': [FAIL],
+  'intl402/NumberFormat/prototype/resolvedOptions/resolved-numbering-system-unicode-extensions-and-options': [FAIL],
+  'intl402/RelativeTimeFormat/prototype/resolvedOptions/resolved-numbering-system-unicode-extensions-and-options': [FAIL],
+}],  # msan == True
 
 ##############################################################################
 ['variant == jitless', {
   # https://crbug.com/v8/7777
-  'built-ins/RegExp/CharacterClassEscapes/character-class-non-digit-class-escape-plus-quantifier-flags-u': [SKIP],
-  'built-ins/RegExp/CharacterClassEscapes/character-class-non-whitespace-class-escape-plus-quantifier-flags-u': [SKIP],
-  'built-ins/RegExp/CharacterClassEscapes/character-class-non-word-class-escape-plus-quantifier-flags-u': [SKIP],
 }], # variant == jitless
 
 ['variant == no_wasm_traps', {
@@ -905,4 +657,572 @@
   '*': [SKIP],  # only relevant for mjsunit tests.
 }],
 
+
+
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/module-code/import-attributes/allow-nlt-before-with': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DateTimeFormat/timezone-legacy-non-iana': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DateTimeFormat/prototype/resolvedOptions/hourCycle-default': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/expressions/assignment/target-super-computed-reference': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/expressions/assignment/destructuring/iterator-destructuring-property-reference-target-evaluation-order': [SKIP],
+  'language/expressions/assignment/destructuring/keyed-destructuring-property-reference-target-evaluation-order': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  # https://github.com/tc39/test262/pull/4146
+  'intl402/DateTimeFormat/offset-timezone-no-unicode-minus-sign': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/TypedArray/prototype/reduce/resizable-buffer-grow-mid-iteration': [SKIP],
+  'built-ins/TypedArray/prototype/reduce/resizable-buffer-shrink-mid-iteration': [SKIP],
+  'harness/asyncHelpers-throwsAsync-func-throws-sync': [SKIP],
+  'harness/asyncHelpers-throwsAsync-no-arg': [SKIP],
+  'intl402/NumberFormat/prototype/format/useGrouping-extended-en-IN': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/statements/with/get-mutable-binding-binding-deleted-in-get-unscopables-strict-mode': [SKIP],
+  'language/statements/with/set-mutable-binding-binding-deleted-in-get-unscopables-strict-mode': [SKIP],
+  'language/statements/with/set-mutable-binding-binding-deleted-with-typed-array-in-proto-chain-strict-mode': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/destructuring/binding/keyed-destructuring-property-reference-target-evaluation-order-with-bindings': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DurationFormat/prototype/format/duration-out-of-range-3': [SKIP],
+  'intl402/DurationFormat/prototype/format/duration-out-of-range-4': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# import test262@d49db639a89df9cc2b6c02554beb41acaec95c38
+[ALWAYS, {
+  'staging/sm/class/superCallOrder': [FAIL],
+  'staging/sm/class/superPropOrdering': [FAIL],
+  'staging/sm/eval/redeclared-arguments-in-param-expression-eval': [FAIL],
+  'staging/sm/expressions/short-circuit-compound-assignment-property-key-evaluation': [FAIL],
+  'staging/sm/extensions/recursion': [FAIL],
+  'staging/sm/extensions/regress-650753': [FAIL],
+  'staging/sm/extensions/weakmap': [FAIL],
+  'staging/sm/Function/function-caller-restrictions': [FAIL],
+  'staging/sm/generators/gen-with-call-obj': [FAIL],
+  'staging/sm/lexical-environment/block-scoped-functions-deprecated-redecl': [FAIL],
+  'staging/sm/lexical-environment/block-scoped-functions-hoisted-tdz': [FAIL],
+  'staging/sm/lexical-environment/var-in-catch-body-annex-b-eval': [FAIL],
+  'staging/sm/object/clear-dictionary-accessor-getset': [FAIL],
+  'staging/sm/regress/regress-1507322-deep-weakmap': [FAIL],
+  'staging/sm/regress/regress-563221': [FAIL],
+  'staging/sm/regress/regress-592556-c35': [FAIL],
+  'staging/sm/regress/regress-596103': [FAIL],
+  'staging/sm/statements/for-in-with-gc-and-unvisited-deletion': [FAIL],
+  'staging/sm/statements/property-reference-self-assignment': [FAIL],
+  'staging/sm/TypedArray/constructor-buffer-sequence': [FAIL],
+  'staging/sm/TypedArray/seal-and-freeze': [FAIL],
+  'staging/sm/TypedArray/test-integrity-level': [FAIL],
+  'staging/sm/TypedArray/test-integrity-level-detached': [SKIP],
+}],
+# end import test262@d49db639a89df9cc2b6c02554beb41acaec95c38
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DurationFormat/prototype/format/digital-style-with-hours-display-auto-with-zero-hour': [SKIP],
+  'staging/sm/lexical-environment/block-scoped-functions-deprecated-redecl': [SKIP],
+  'staging/sm/lexical-environment/block-scoped-functions-hoisted-tdz': [SKIP],
+  'staging/sm/lexical-environment/var-in-catch-body-annex-b-eval': [SKIP],
+  'staging/sm/regress/regress-563221': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# import test262@bc5c14176e2b11a78859571eb693f028c8822458
+[ALWAYS, {
+ 'annexB/built-ins/RegExp/RegExp-trailing-escape-BMP': [SKIP],
+}],
+# end import test262@bc5c14176e2b11a78859571eb693f028c8822458
+###
+
+####
+# import test262@44d71fbe7dccabcc071cbe66cc4b105d896d3c2a
+[ALWAYS, {
+ 'built-ins/SuppressedError/order-of-args-evaluation': [SKIP],
+ 'intl402/Locale/getters': [SKIP],
+}],
+# end import test262@44d71fbe7dccabcc071cbe66cc4b105d896d3c2a
+###
+
+####
+# import test262@4ba104a21c5f8ede20ee5105bc89fa9693c2bfe1
+[ALWAYS, {
+  'intl402/DateTimeFormat/canonicalize-timezone': [FAIL],
+  'intl402/Intl/supportedValuesOf/timeZones-include-non-continental': [FAIL],
+}],
+# end import test262@44d71fbe7dccabcc071cbe66cc4b105d896d3c2a
+###
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DateTimeFormat/canonicalize-utc-timezone': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+
+[ALWAYS, {
+  'harness/verifyProperty-value-error': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/TypedArray/prototype/with/negative-index-resize-to-in-bounds': [SKIP],
+  'built-ins/TypedArray/prototype/with/negative-index-resize-to-out-of-bounds': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/expressions/assignmenttargettype/direct-callexpression': [SKIP],
+  'language/expressions/assignmenttargettype/direct-callexpression-as-for-in-lhs': [SKIP],
+  'language/expressions/assignmenttargettype/direct-callexpression-as-for-of-lhs': [SKIP],
+  'language/expressions/assignmenttargettype/direct-callexpression-in-compound-assignment': [SKIP],
+  'language/expressions/assignmenttargettype/direct-callexpression-in-postfix-update': [SKIP],
+  'language/expressions/assignmenttargettype/direct-callexpression-in-prefix-update': [SKIP],
+  'language/expressions/assignmenttargettype/parenthesized-callexpression': [SKIP],
+  'language/expressions/assignmenttargettype/parenthesized-callexpression-in-compound-assignment': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/String/prototype/toLocaleLowerCase/validates-all-locale-identifiers': [SKIP],
+  'intl402/String/prototype/toLocaleUpperCase/validates-all-locale-identifiers': [SKIP],
+  'staging/sm/DataView/get-set-index-range': [SKIP],
+  'staging/sm/Math/acosh-exact': [SKIP],
+  'staging/sm/Math/atanh-exact': [SKIP],
+  'staging/sm/Math/log1p-exact': [SKIP],
+  'staging/sm/Math/trunc': [SKIP],
+  'staging/sm/TypedArray/iterator-next-with-detached': [SKIP],
+  'staging/sm/TypedArray/set-wrapped': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-call': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-class': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-function': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-function-nested': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-simple': [SKIP],
+  'staging/sm/expressions/destructuring-array-default-yield': [SKIP],
+  'staging/sm/extensions/recursion': [SKIP],
+  'staging/sm/extensions/regress-650753': [SKIP],
+  'staging/sm/extensions/weakmap': [SKIP],
+  'staging/sm/generators/gen-with-call-obj': [SKIP],
+  'staging/sm/object/clear-dictionary-accessor-getset': [SKIP],
+  'staging/sm/regress/regress-1507322-deep-weakmap': [SKIP],
+  'staging/sm/regress/regress-592556-c35': [SKIP],
+  'staging/sm/regress/regress-596103': [SKIP],
+  'staging/sm/statements/for-in-with-gc-and-unvisited-deletion': [SKIP],
+  'staging/sm/strict/10.4.2': [SKIP],
+  'staging/sm/strict/10.6': [SKIP],
+  'staging/sm/strict/12.10.1': [SKIP],
+  'staging/sm/strict/15.10.7': [SKIP],
+  'staging/sm/strict/15.3.5.1': [SKIP],
+  'staging/sm/strict/15.3.5.2': [SKIP],
+  'staging/sm/strict/15.5.5.1': [SKIP],
+  'staging/sm/strict/15.5.5.2': [SKIP],
+  'staging/sm/strict/8.12.5': [SKIP],
+  'staging/sm/strict/8.12.7': [SKIP],
+  'staging/sm/strict/8.12.7-2': [SKIP],
+  'staging/sm/strict/8.7.2': [SKIP],
+  'staging/sm/strict/eval-variable-environment': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/ThrowTypeError/distinct-cross-realm': [SKIP],
+  'built-ins/Uint8Array/prototype/setFromBase64/trailing-garbage': [SKIP],
+  'intl402/Intl/supportedValuesOf/calendars-required-by-intl-era-monthcode': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DateTimeFormat/constructor-options-calendar-islamic-fallback': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/DateTimeFormat/prototype/formatToParts/era': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+
+####
+# import test262@bc5c6fe5bc9c82f031058e3bbe16bf3937a81fc5
+[ALWAYS, {
+  # Times out
+  'built-ins/RegExp/property-escapes/generated/strings/RGI_Emoji': [SKIP],
+}],
+# end import test262@bc5c6fe5bc9c82f031058e3bbe16bf3937a81fc5
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/Intl/supportedValuesOf/numberingSystems-with-simple-digit-mappings': [SKIP],
+  'intl402/NumberFormat/prototype/format/numbering-systems': [SKIP],
+  'staging/sm/String/string-upper-lower-mapping': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Promise/allKeyed/extensible': [SKIP],
+  'built-ins/Promise/allKeyed/length': [SKIP],
+  'built-ins/Promise/allKeyed/name': [SKIP],
+  'built-ins/Promise/allKeyed/not-a-constructor': [SKIP],
+  'built-ins/Promise/allKeyed/prop-desc': [SKIP],
+  'built-ins/Promise/allKeyed/proto': [SKIP],
+  'built-ins/Promise/allSettledKeyed/extensible': [SKIP],
+  'built-ins/Promise/allSettledKeyed/length': [SKIP],
+  'built-ins/Promise/allSettledKeyed/name': [SKIP],
+  'built-ins/Promise/allSettledKeyed/not-a-constructor': [SKIP],
+  'built-ins/Promise/allSettledKeyed/prop-desc': [SKIP],
+  'built-ins/Promise/allSettledKeyed/proto': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Promise/allKeyed/arg-is-function': [SKIP],
+  'built-ins/Promise/allKeyed/arg-not-object-reject': [SKIP],
+  'built-ins/Promise/allKeyed/arg-not-object-reject-bigint': [SKIP],
+  'built-ins/Promise/allKeyed/key-order-preserved': [SKIP],
+  'built-ins/Promise/allKeyed/non-enumerable-properties-ignored': [SKIP],
+  'built-ins/Promise/allKeyed/prototype-keys-ignored': [SKIP],
+  'built-ins/Promise/allKeyed/reject-deferred': [SKIP],
+  'built-ins/Promise/allKeyed/reject-immed': [SKIP],
+  'built-ins/Promise/allKeyed/resolve-not-callable-reject-with-typeerror': [SKIP],
+  'built-ins/Promise/allKeyed/resolves-empty-object': [SKIP],
+  'built-ins/Promise/allKeyed/symbol-keys': [SKIP],
+  'built-ins/Promise/allSettledKeyed/arg-is-function': [SKIP],
+  'built-ins/Promise/allSettledKeyed/arg-not-object-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/arg-not-object-reject-bigint': [SKIP],
+  'built-ins/Promise/allSettledKeyed/key-order-preserved': [SKIP],
+  'built-ins/Promise/allSettledKeyed/non-enumerable-properties-ignored': [SKIP],
+  'built-ins/Promise/allSettledKeyed/prototype-keys-ignored': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolve-not-callable-reject-with-typeerror': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolved-all-fulfilled': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolved-all-mixed': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolved-all-rejected': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolves-empty-object': [SKIP],
+  'built-ins/Promise/allSettledKeyed/symbol-keys': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Error/prototype/stack/getter-cross-realm': [SKIP],
+  'built-ins/Error/prototype/stack/getter-data-property-shadows': [SKIP],
+  'built-ins/Error/prototype/stack/getter-error-as-prototype': [SKIP],
+  'built-ins/Error/prototype/stack/getter-error-instance': [SKIP],
+  'built-ins/Error/prototype/stack/getter-error-prototype': [SKIP],
+  'built-ins/Error/prototype/stack/getter-foreign-new-target': [SKIP],
+  'built-ins/Error/prototype/stack/getter-no-error-data': [SKIP],
+  'built-ins/Error/prototype/stack/getter-not-a-constructor': [SKIP],
+  'built-ins/Error/prototype/stack/getter-receiver-is-proxy': [SKIP],
+  'built-ins/Error/prototype/stack/getter-subclass': [SKIP],
+  'built-ins/Error/prototype/stack/getter-this-not-object': [SKIP],
+  'built-ins/Error/prototype/stack/instance-no-own-stack': [SKIP],
+  'built-ins/Error/prototype/stack/instance-not-enumerable': [SKIP],
+  'built-ins/Error/prototype/stack/prop-desc': [SKIP],
+  'built-ins/Error/prototype/stack/setter-creates-own-property': [SKIP],
+  'built-ins/Error/prototype/stack/setter-cross-realm': [SKIP],
+  'built-ins/Error/prototype/stack/setter-delete-round-trip': [SKIP],
+  'built-ins/Error/prototype/stack/setter-empty-string': [SKIP],
+  'built-ins/Error/prototype/stack/setter-existing-own-property': [SKIP],
+  'built-ins/Error/prototype/stack/setter-no-argument': [SKIP],
+  'built-ins/Error/prototype/stack/setter-non-error-receiver': [SKIP],
+  'built-ins/Error/prototype/stack/setter-non-extensible-receiver': [SKIP],
+  'built-ins/Error/prototype/stack/setter-non-string-value': [SKIP],
+  'built-ins/Error/prototype/stack/setter-non-writable-stack': [SKIP],
+  'built-ins/Error/prototype/stack/setter-not-a-constructor': [SKIP],
+  'built-ins/Error/prototype/stack/setter-own-accessor': [SKIP],
+  'built-ins/Error/prototype/stack/setter-proxy-trap-rejects': [SKIP],
+  'built-ins/Error/prototype/stack/setter-proxy-trap-throws': [SKIP],
+  'built-ins/Error/prototype/stack/setter-proxy-wrapping-prototype': [SKIP],
+  'built-ins/Error/prototype/stack/setter-receiver-is-null-proto': [SKIP],
+  'built-ins/Error/prototype/stack/setter-receiver-is-other-prototype': [SKIP],
+  'built-ins/Error/prototype/stack/setter-receiver-is-prototype': [SKIP],
+  'built-ins/Error/prototype/stack/setter-receiver-is-proxy': [SKIP],
+  'built-ins/Error/prototype/stack/setter-this-not-object': [SKIP],
+  'built-ins/Error/prototype/stack/setter-via-assignment': [SKIP],
+  'intl402/Temporal/ZonedDateTime/prototype/round/same-date-starts-twice': [SKIP],
+  'language/module-code/ambiguous-export-bindings/namespace-unambiguous-if-import-source-and-export': [SKIP],
+  'language/module-code/source-phase-import/reexport-source-binding-named-import': [SKIP],
+  'language/module-code/source-phase-import/reexport-source-binding-namespace-get': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/FallbackSymbol/per-realm': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Promise/allKeyed/capability-executor-not-callable': [SKIP],
+  'built-ins/Promise/allKeyed/ctx-ctor-constructed': [SKIP],
+  'built-ins/Promise/allKeyed/ctx-ctor-throws': [SKIP],
+  'built-ins/Promise/allKeyed/getownproperty-not-enumerable': [SKIP],
+  'built-ins/Promise/allKeyed/getownproperty-returns-undefined': [SKIP],
+  'built-ins/Promise/allKeyed/getownproperty-throws': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-resolve-error-reject': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-resolve-get-error-reject': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-then-error-reject': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-then-get-error-reject': [SKIP],
+  'built-ins/Promise/allKeyed/ownkeys-throws': [SKIP],
+  'built-ins/Promise/allKeyed/reject-last': [SKIP],
+  'built-ins/Promise/allKeyed/reject-second': [SKIP],
+  'built-ins/Promise/allKeyed/resolve-before-loop-exit': [SKIP],
+  'built-ins/Promise/allSettledKeyed/capability-executor-not-callable': [SKIP],
+  'built-ins/Promise/allSettledKeyed/ctx-ctor-constructed': [SKIP],
+  'built-ins/Promise/allSettledKeyed/ctx-ctor-throws': [SKIP],
+  'built-ins/Promise/allSettledKeyed/getownproperty-not-enumerable': [SKIP],
+  'built-ins/Promise/allSettledKeyed/getownproperty-returns-undefined': [SKIP],
+  'built-ins/Promise/allSettledKeyed/getownproperty-throws': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-resolve-error-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-resolve-get-error-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-then-error-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-then-get-error-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/ownkeys-throws': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolve-before-loop-exit': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Promise/allKeyed/capability-resolve-throws-reject': [SKIP],
+  'built-ins/Promise/allKeyed/get-value-not-called-for-non-enumerable': [SKIP],
+  'built-ins/Promise/allKeyed/get-value-throws-reject': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-resolve-custom': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-resolve-get-once': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-resolve-return': [SKIP],
+  'built-ins/Promise/allKeyed/invoke-then-not-callable-reject': [SKIP],
+  'built-ins/Promise/allKeyed/non-enumerable-properties-only': [SKIP],
+  'built-ins/Promise/allKeyed/reject-first': [SKIP],
+  'built-ins/Promise/allKeyed/resolve-element-function-properties': [SKIP],
+  'built-ins/Promise/allKeyed/resolve-from-same-thenable': [SKIP],
+  'built-ins/Promise/allKeyed/resolve-missing-reject-with-typeerror': [SKIP],
+  'built-ins/Promise/allKeyed/result-property-descriptors': [SKIP],
+  'built-ins/Promise/allSettledKeyed/capability-resolve-throws-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/element-function-properties': [SKIP],
+  'built-ins/Promise/allSettledKeyed/get-value-not-called-for-non-enumerable': [SKIP],
+  'built-ins/Promise/allSettledKeyed/get-value-throws-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-resolve-custom': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-resolve-get-once': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-resolve-return': [SKIP],
+  'built-ins/Promise/allSettledKeyed/invoke-then-not-callable-reject': [SKIP],
+  'built-ins/Promise/allSettledKeyed/non-enumerable-properties-only': [SKIP],
+  'built-ins/Promise/allSettledKeyed/reject-from-same-thenable': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolve-from-same-thenable': [SKIP],
+  'built-ins/Promise/allSettledKeyed/resolve-missing-reject-with-typeerror': [SKIP],
+  'built-ins/Promise/allSettledKeyed/result-property-descriptors': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'language/statements/await-using/initializer-Symbol.asyncDispose-disposed-at-end-of-imported-module': [SKIP],
+  'language/statements/await-using/initializer-Symbol.dispose-disposed-at-end-of-imported-module': [SKIP],
+  'language/statements/using/initializer-disposed-at-end-of-imported-module': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Iterator/prototype/chunks/argument-effect-order': [SKIP],
+  'built-ins/Iterator/prototype/chunks/argument-validation-failure-close-throws': [SKIP],
+  'built-ins/Iterator/prototype/chunks/argument-validation-failure-closes-underlying': [SKIP],
+  'built-ins/Iterator/prototype/chunks/callable': [SKIP],
+  'built-ins/Iterator/prototype/chunks/chunkSize-out-of-range': [SKIP],
+  'built-ins/Iterator/prototype/chunks/chunks-evenly-divisible': [SKIP],
+  'built-ins/Iterator/prototype/chunks/chunks-last-chunk-partial': [SKIP],
+  'built-ins/Iterator/prototype/chunks/chunks-size-1': [SKIP],
+  'built-ins/Iterator/prototype/chunks/chunks-size-larger-than-iterator': [SKIP],
+  'built-ins/Iterator/prototype/chunks/exhaustion-does-not-call-return': [SKIP],
+  'built-ins/Iterator/prototype/chunks/get-next-method-only-once': [SKIP],
+  'built-ins/Iterator/prototype/chunks/get-next-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/chunks/get-return-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/chunks/is-function': [SKIP],
+  'built-ins/Iterator/prototype/chunks/iterator-already-exhausted': [SKIP],
+  'built-ins/Iterator/prototype/chunks/iterator-return-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/chunks/length': [SKIP],
+  'built-ins/Iterator/prototype/chunks/name': [SKIP],
+  'built-ins/Iterator/prototype/chunks/next-method-returns-non-object': [SKIP],
+  'built-ins/Iterator/prototype/chunks/next-method-returns-throwing-done': [SKIP],
+  'built-ins/Iterator/prototype/chunks/next-method-returns-throwing-value': [SKIP],
+  'built-ins/Iterator/prototype/chunks/next-method-returns-throwing-value-done': [SKIP],
+  'built-ins/Iterator/prototype/chunks/next-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/chunks/prop-desc': [SKIP],
+  'built-ins/Iterator/prototype/chunks/proto': [SKIP],
+  'built-ins/Iterator/prototype/chunks/result-is-iterator': [SKIP],
+  'built-ins/Iterator/prototype/chunks/return-is-forwarded-to-underlying-iterator': [SKIP],
+  'built-ins/Iterator/prototype/chunks/return-is-not-forwarded-after-exhaustion': [SKIP],
+  'built-ins/Iterator/prototype/chunks/this-non-callable-next': [SKIP],
+  'built-ins/Iterator/prototype/chunks/this-plain-iterator': [SKIP],
+  'built-ins/Iterator/prototype/chunks/throws-typeerror-when-generator-is-running': [SKIP],
+  'built-ins/Iterator/prototype/chunks/underlying-iterator-advanced-in-parallel': [SKIP],
+  'built-ins/Iterator/prototype/chunks/underlying-iterator-closed-in-parallel': [SKIP],
+  'built-ins/Iterator/prototype/chunks/yields-distinct-arrays': [SKIP],
+  'built-ins/Iterator/prototype/windows/argument-effect-order': [SKIP],
+  'built-ins/Iterator/prototype/windows/argument-validation-failure-close-throws': [SKIP],
+  'built-ins/Iterator/prototype/windows/argument-validation-failure-closes-underlying': [SKIP],
+  'built-ins/Iterator/prototype/windows/callable': [SKIP],
+  'built-ins/Iterator/prototype/windows/exhaustion-does-not-call-return': [SKIP],
+  'built-ins/Iterator/prototype/windows/get-next-method-only-once': [SKIP],
+  'built-ins/Iterator/prototype/windows/get-next-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/windows/get-return-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/windows/is-function': [SKIP],
+  'built-ins/Iterator/prototype/windows/iterator-already-exhausted': [SKIP],
+  'built-ins/Iterator/prototype/windows/iterator-return-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/windows/length': [SKIP],
+  'built-ins/Iterator/prototype/windows/name': [SKIP],
+  'built-ins/Iterator/prototype/windows/next-method-returns-non-object': [SKIP],
+  'built-ins/Iterator/prototype/windows/next-method-returns-throwing-done': [SKIP],
+  'built-ins/Iterator/prototype/windows/next-method-returns-throwing-value': [SKIP],
+  'built-ins/Iterator/prototype/windows/next-method-returns-throwing-value-done': [SKIP],
+  'built-ins/Iterator/prototype/windows/next-method-throws': [SKIP],
+  'built-ins/Iterator/prototype/windows/prop-desc': [SKIP],
+  'built-ins/Iterator/prototype/windows/proto': [SKIP],
+  'built-ins/Iterator/prototype/windows/result-is-iterator': [SKIP],
+  'built-ins/Iterator/prototype/windows/return-is-forwarded-to-underlying-iterator': [SKIP],
+  'built-ins/Iterator/prototype/windows/return-is-not-forwarded-after-exhaustion': [SKIP],
+  'built-ins/Iterator/prototype/windows/this-non-callable-next': [SKIP],
+  'built-ins/Iterator/prototype/windows/this-plain-iterator': [SKIP],
+  'built-ins/Iterator/prototype/windows/throws-typeerror-when-generator-is-running': [SKIP],
+  'built-ins/Iterator/prototype/windows/underlying-iterator-advanced-in-parallel': [SKIP],
+  'built-ins/Iterator/prototype/windows/underlying-iterator-closed-in-parallel': [SKIP],
+  'built-ins/Iterator/prototype/windows/undersized-default': [SKIP],
+  'built-ins/Iterator/prototype/windows/windowSize-out-of-range': [SKIP],
+  'built-ins/Iterator/prototype/windows/windows-allow-partial': [SKIP],
+  'built-ins/Iterator/prototype/windows/windows-basic': [SKIP],
+  'built-ins/Iterator/prototype/windows/windows-size-1': [SKIP],
+  'built-ins/Iterator/prototype/windows/windows-size-3': [SKIP],
+  'built-ins/Iterator/prototype/windows/yields-distinct-arrays': [SKIP],
+  'staging/source-phase-imports/module-source-prototype-chain': [SKIP],
+}],
+# End roll-watcher patch
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'intl402/Locale/constructor-options-firstDayOfWeek-valid': [SKIP],
+  'intl402/Locale/constructor-unicode-extension-uvalue-yes': [SKIP],
+  'intl402/Locale/prototype/calendar/canonicalize-case': [SKIP],
+  'intl402/Locale/prototype/collation/canonicalize-case': [SKIP],
+  'intl402/Locale/prototype/firstDayOfWeek/valid-id': [SKIP],
+  'intl402/Locale/prototype/firstDayOfWeek/valid-options': [SKIP],
+  'intl402/Locale/prototype/numberingSystem/canonicalize-case': [SKIP],
+}],
+# End roll-watcher patch
+####
 ]

@@ -2,13 +2,21 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+@cppObjectLayoutDefinition
 extern class HeapNumber extends PrimitiveHeapObject {
-  // Marked as a relaxed store because of a race with reading on the
-  // compiler thread.
   // TODO(v8:13070): With 8GB+ pointer compression, the number in a HeapNumber
   // is unaligned. Modify the HeapNumber layout so it remains aligned.
-  @cppRelaxedStore value: float64;
+  value: float64;
 }
 
 // The HeapNumber value NaN
 type NaN extends HeapNumber;
+
+// This object is used for reserving space for mutable HeapNumber and for
+// representing an uninitialized state of a double field, so it's layout must
+// be equal to the layout of HeapNumber for simple transition from
+// uninitialized to initialized state.
+@cppObjectLayoutDefinition
+extern class UninitializedHeapNumber extends HeapObject {
+  value: float64;
+}

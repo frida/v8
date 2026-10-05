@@ -10,8 +10,10 @@
 #include "src/base/platform/time.h"
 #include "src/execution/isolate.h"
 #include "src/flags/flags.h"
+#include "src/heap/cppgc-js/cpp-heap.h"
 #include "src/init/v8.h"
 #include "src/objects/objects-inl.h"
+#include "test/unittests/heap/heap-utils.h"
 
 namespace v8 {
 
@@ -22,13 +24,19 @@ namespace {
 CounterMap* kCurrentCounterMap = nullptr;
 }  // namespace
 
-IsolateWrapper::IsolateWrapper(CountersMode counters_mode)
+std::unique_ptr<CppHeap> IsolateWrapper::cpp_heap_;
+
+IsolateWrapper::IsolateWrapper(CountersMode counters_mode,
+                               bool use_statically_set_cpp_heap)
     : array_buffer_allocator_(
           v8::ArrayBuffer::Allocator::NewDefaultAllocator()) {
   CHECK_NULL(kCurrentCounterMap);
 
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator = array_buffer_allocator_.get();
+  if (use_statically_set_cpp_heap) {
+    create_params.cpp_heap = cpp_heap_.release();
+  }
 
   if (counters_mode == kEnableCounters) {
     counter_map_ = std::make_unique<CounterMap>();
@@ -53,7 +61,9 @@ IsolateWrapper::IsolateWrapper(CountersMode counters_mode)
 IsolateWrapper::~IsolateWrapper() {
   v8::Platform* platform = internal::V8::GetCurrentPlatform();
   CHECK_NOT_NULL(platform);
+  isolate_->Enter();
   while (platform::PumpMessageLoop(platform, isolate())) continue;
+  isolate_->Exit();
   isolate_->Dispose();
   if (counter_map_) {
     CHECK_EQ(kCurrentCounterMap, counter_map_.get());
@@ -65,44 +75,48 @@ IsolateWrapper::~IsolateWrapper() {
 
 namespace internal {
 
-SaveFlags::SaveFlags() {
-  // For each flag, save the current flag value.
-#define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) \
-  SAVED_##nam = v8_flags.nam.value();
-#include "src/flags/flag-definitions.h"
-#undef FLAG_MODE_APPLY
+std::unordered_set<std::string> CrashKeyStore::KeyNames() const {
+  std::unordered_set<std::string> names;
+  names.reserve(entries_.size());
+  for (const auto& [name, unused] : entries_) {
+    static_cast<void>(unused);
+    names.insert(name);
+  }
+  return names;
 }
 
-SaveFlags::~SaveFlags() {
-  // For each flag, set back the old flag value if it changed (don't write the
-  // flag if it didn't change, to keep TSAN happy).
-#define FLAG_MODE_APPLY(ftype, ctype, nam, def, cmt) \
-  if (SAVED_##nam != v8_flags.nam.value()) {         \
-    v8_flags.nam = SAVED_##nam;                      \
-  }
-#include "src/flags/flag-definitions.h"  // NOLINT
-#undef FLAG_MODE_APPLY
+void CrashKeyStore::InstallCallbacks() {
+  isolate_->SetCrashKeyStringCallbacks(
+      [this](const char key[], CrashKeySize size) {
+        return AllocateKey(key, size);
+      },
+      [this](CrashKey crash_key, const std::string_view value) {
+        SetValue(crash_key, value);
+      });
 }
 
-ManualGCScope::ManualGCScope(i::Isolate* isolate) {
-  // Some tests run threaded (back-to-back) and thus the GC may already be
-  // running by the time a ManualGCScope is created. Finalizing existing marking
-  // prevents any undefined/unexpected behavior.
-  if (isolate && isolate->heap()->incremental_marking()->IsMarking()) {
-    isolate->heap()->CollectGarbage(i::OLD_SPACE,
-                                    i::GarbageCollectionReason::kTesting);
-    // Make sure there is no concurrent sweeping running in the background.
-    isolate->heap()->CompleteSweepingFull();
+CrashKey CrashKeyStore::AllocateKey(const char key[], CrashKeySize size) {
+  auto [it, inserted] = entries_.emplace(key, nullptr);
+  if (inserted || it->second == nullptr) {
+    it->second = std::make_unique<Entry>();
   }
+  Entry* entry_ptr = it->second.get();
+  entry_ptr->size = size;
+  entry_ptr->value.clear();
+  return static_cast<CrashKey>(entry_ptr);
+}
 
-  i::v8_flags.concurrent_marking = false;
-  i::v8_flags.concurrent_sweeping = false;
-  i::v8_flags.concurrent_minor_mc_marking = false;
-  i::v8_flags.stress_incremental_marking = false;
-  i::v8_flags.stress_concurrent_allocation = false;
-  // Parallel marking has a dependency on concurrent marking.
-  i::v8_flags.parallel_marking = false;
-  i::v8_flags.detect_ineffective_gcs_near_heap_limit = false;
+void CrashKeyStore::SetValue(CrashKey crash_key, const std::string_view value) {
+  auto* entry = static_cast<Entry*>(crash_key);
+  bool found = false;
+  for (const auto& [name, entry_holder] : entries_) {
+    if (entry_holder.get() == entry) {
+      found = true;
+      break;
+    }
+  }
+  CHECK(found);
+  entry->value.assign(value.begin(), value.end());
 }
 
 }  // namespace internal

@@ -4,20 +4,27 @@
 
 #include "src/heap/marking-barrier.h"
 
+#include <memory>
+
 #include "src/base/logging.h"
+#include "src/common/globals.h"
 #include "src/heap/heap-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap-write-barrier.h"
 #include "src/heap/heap.h"
-#include "src/heap/incremental-marking-inl.h"
 #include "src/heap/incremental-marking.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/mark-compact.h"
 #include "src/heap/marking-barrier-inl.h"
 #include "src/heap/marking-worklist-inl.h"
 #include "src/heap/marking-worklist.h"
+#include "src/heap/minor-mark-sweep.h"
+#include "src/heap/mutable-page.h"
 #include "src/heap/safepoint.h"
+#include "src/objects/descriptor-array.h"
 #include "src/objects/heap-object.h"
 #include "src/objects/js-array-buffer.h"
+#include "src/objects/objects-inl.h"
 
 namespace v8 {
 namespace internal {
@@ -25,64 +32,109 @@ namespace internal {
 MarkingBarrier::MarkingBarrier(LocalHeap* local_heap)
     : heap_(local_heap->heap()),
       major_collector_(heap_->mark_compact_collector()),
-      minor_collector_(heap_->minor_mark_compact_collector()),
+      minor_collector_(heap_->minor_mark_sweep_collector()),
       incremental_marking_(heap_->incremental_marking()),
-      major_worklist_(*major_collector_->marking_worklists()->shared()),
-      minor_worklist_(*minor_collector_->marking_worklists()->shared()),
-      marking_state_(heap_->isolate()),
+      marking_state_(isolate()),
       is_main_thread_barrier_(local_heap->is_main_thread()),
-      uses_shared_heap_(heap_->isolate()->has_shared_heap()),
-      is_shared_heap_isolate_(heap_->isolate()->is_shared_heap_isolate()) {}
+      uses_shared_heap_(isolate()->has_shared_space()),
+      is_shared_space_isolate_(isolate()->is_shared_space_isolate()) {}
 
 MarkingBarrier::~MarkingBarrier() { DCHECK(typed_slots_map_.empty()); }
 
-void MarkingBarrier::Write(HeapObject host, HeapObjectSlot slot,
-                           HeapObject value) {
-  DCHECK(IsCurrentMarkingBarrier());
-  if (MarkValue(host, value)) {
-    if (is_compacting_ && slot.address()) {
-      DCHECK(is_major());
-      major_collector_->RecordSlot(host, slot, value);
+void MarkingBarrier::Write(Tagged<HeapObject> host, IndirectPointerSlot slot) {
+#ifdef V8_ENABLE_SANDBOX
+  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(is_activated_ || shared_heap_worklists_.has_value());
+  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+
+  // An indirect pointer slot can only contain a Smi if it is uninitialized (in
+  // which case the vaue will be Smi::zero()). However, at this point the slot
+  // must have been initialized because it was just written to.
+  // During deserialization, the referenced object may not yet have been
+  // published. We can still mark it here.
+  Tagged<HeapObject> value =
+      Cast<HeapObject>(slot.Relaxed_Load_AllowUnpublished(isolate()));
+
+  // If the host is in shared space, the target must be in the shared trusted
+  // space. No other edges indirect pointers are currently possible in shared
+  // space.
+  DCHECK_IMPLIES(
+      HeapLayout::InWritableSharedSpace(host),
+      MemoryChunk::FromHeapObject(value)->Metadata()->owner()->identity() ==
+          SHARED_TRUSTED_SPACE);
+
+  if (HeapLayout::InReadOnlySpace(value)) return;
+
+  DCHECK(!HeapLayout::InYoungGeneration(value));
+
+  if (V8_UNLIKELY(uses_shared_heap_) && !is_shared_space_isolate_) {
+    if (HeapLayout::InWritableSharedSpace(value)) {
+      // References to the shared trusted space may only originate from the
+      // shared space.
+      CHECK(HeapLayout::InWritableSharedSpace(host));
+      DCHECK(MemoryChunk::FromHeapObject(value)->Metadata()->is_trusted());
+      MarkValueShared(value);
+    } else {
+      MarkValueLocal(value);
     }
+  } else {
+    MarkValueLocal(value);
   }
+
+  // We don't need to record a slot here because the entries in the pointer
+  // tables are not compacted and because the pointers stored in the table
+  // entries are updated after compacting GC.
+  static_assert(!TrustedPointerTable::kSupportsCompaction);
+#else
+  UNREACHABLE();
+#endif
 }
 
-void MarkingBarrier::WriteWithoutHost(HeapObject value) {
+void MarkingBarrier::WriteWithoutHost(Tagged<HeapObject> value) {
   DCHECK(is_main_thread_barrier_);
-  if (is_minor() && !Heap::InYoungGeneration(value)) return;
+  DCHECK(is_activated_);
 
-  if (WhiteToGreyAndPush(value)) {
-    if (V8_UNLIKELY(v8_flags.track_retaining_path) && is_major()) {
-      heap_->AddRetainingRoot(Root::kWriteBarrier, value);
+  // Without a shared heap and on the shared space isolate (= main isolate) all
+  // objects are considered local.
+  if (V8_UNLIKELY(uses_shared_heap_) && !is_shared_space_isolate_) {
+    // On client isolates (= worker isolates) shared values can be ignored.
+    if (HeapLayout::InWritableSharedSpace(value)) {
+      return;
+    }
+  }
+  if (HeapLayout::InReadOnlySpace(value)) return;
+  MarkValueLocal(value);
+}
+
+void MarkingBarrier::Write(Tagged<InstructionStream> host,
+                           RelocInfo* reloc_info, Tagged<HeapObject> value) {
+  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(!HeapLayout::InWritableSharedSpace(host));
+  DCHECK(is_activated_ || shared_heap_worklists_.has_value());
+  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+
+  MarkValue(host, value);
+
+  if (is_compacting_) {
+    DCHECK(is_major());
+    if (is_main_thread_barrier_) {
+      // An optimization to avoid allocating additional typed slots for the
+      // main thread.
+      major_collector_->RecordRelocSlot(host, reloc_info, value);
+    } else {
+      RecordRelocSlot(host, reloc_info, value);
     }
   }
 }
 
-void MarkingBarrier::Write(Code host, RelocInfo* reloc_info, HeapObject value) {
-  DCHECK(IsCurrentMarkingBarrier());
-  if (MarkValue(host, value)) {
-    if (is_compacting_) {
-      DCHECK(is_major());
-      if (is_main_thread_barrier_) {
-        // An optimization to avoid allocating additional typed slots for the
-        // main thread.
-        major_collector_->RecordRelocSlot(host, reloc_info, value);
-      } else {
-        RecordRelocSlot(host, reloc_info, value);
-      }
-    }
-  }
-}
-
-void MarkingBarrier::Write(JSArrayBuffer host,
+void MarkingBarrier::Write(Tagged<JSArrayBuffer> host,
                            ArrayBufferExtension* extension) {
-  DCHECK(IsCurrentMarkingBarrier());
-  if (!V8_CONCURRENT_MARKING_BOOL && !marking_state_.IsBlack(host)) {
-    // The extension will be marked when the marker visits the host object.
-    return;
-  }
+  DCHECK(IsCurrentMarkingBarrier(host));
+  DCHECK(!HeapLayout::InWritableSharedSpace(host));
+  DCHECK(MemoryChunk::FromHeapObject(host)->IsMarking());
+
   if (is_minor()) {
-    if (Heap::InYoungGeneration(host)) {
+    if (HeapLayout::InYoungGeneration(host)) {
       extension->YoungMark();
     }
   } else {
@@ -90,99 +142,262 @@ void MarkingBarrier::Write(JSArrayBuffer host,
   }
 }
 
-void MarkingBarrier::Write(DescriptorArray descriptor_array,
-                           int number_of_own_descriptors) {
-  DCHECK(IsCurrentMarkingBarrier());
-  DCHECK(IsReadOnlyHeapObject(descriptor_array.map()));
-
-  if (is_minor() && !heap_->InYoungGeneration(descriptor_array)) return;
-
-  // The DescriptorArray needs to be marked black here to ensure that slots are
-  // recorded by the Scavenger in case the DescriptorArray is promoted while
-  // incremental marking is running. This is needed as the regular marking
-  // visitor does not re-process any already marked descriptors. If we don't
-  // mark it black here, the Scavenger may promote a DescriptorArray and any
-  // already marked descriptors will not have any slots recorded.
-  if (!marking_state_.IsBlack(descriptor_array)) {
-    marking_state_.WhiteToGrey(descriptor_array);
-    marking_state_.GreyToBlack(descriptor_array);
-    MarkRange(descriptor_array, descriptor_array.GetFirstPointerSlot(),
-              descriptor_array.GetDescriptorSlot(0));
-  }
-
-  // Concurrent MinorMC always marks the full young generation DescriptorArray.
-  // We cannot use epoch like MajorMC does because only the lower 2 bits are
-  // used, and with many MinorMC cycles this could lead to correctness issues.
-  const int16_t old_marked =
-      is_minor() ? 0
-                 : descriptor_array.UpdateNumberOfMarkedDescriptors(
-                       major_collector_->epoch(), number_of_own_descriptors);
-  if (old_marked < number_of_own_descriptors) {
-    // This marks the range from [old_marked, number_of_own_descriptors) instead
-    // of registering weak slots which may temporarily hold alive more objects
-    // for the current GC cycle. Weakness is not needed for actual trimming, see
-    // `MarkCompactCollector::TrimDescriptorArray()`.
-    MarkRange(descriptor_array,
-              MaybeObjectSlot(descriptor_array.GetDescriptorSlot(old_marked)),
-              MaybeObjectSlot(descriptor_array.GetDescriptorSlot(
-                  number_of_own_descriptors)));
-  }
-}
-
-void MarkingBarrier::RecordRelocSlot(Code host, RelocInfo* rinfo,
-                                     HeapObject target) {
-  DCHECK(IsCurrentMarkingBarrier());
+void MarkingBarrier::RecordRelocSlot(Tagged<InstructionStream> host,
+                                     RelocInfo* rinfo,
+                                     Tagged<HeapObject> target) {
+  DCHECK(IsCurrentMarkingBarrier(host));
   if (!MarkCompactCollector::ShouldRecordRelocSlot(host, rinfo, target)) return;
 
   MarkCompactCollector::RecordRelocSlotInfo info =
       MarkCompactCollector::ProcessRelocInfo(host, rinfo, target);
 
-  auto& typed_slots = typed_slots_map_[info.memory_chunk];
+  auto& typed_slots = typed_slots_map_[info.page_metadata];
   if (!typed_slots) {
     typed_slots.reset(new TypedSlots());
   }
   typed_slots->Insert(info.slot_type, info.offset);
 }
 
+namespace {
+template <typename Space>
+void SetGenerationPageFlags(Space* space, MarkingMode marking_mode) {
+  if constexpr (std::is_same_v<Space, OldSpace> ||
+                std::is_same_v<Space, SharedSpace> ||
+                std::is_same_v<Space, SharedTrustedSpace> ||
+                std::is_same_v<Space, TrustedSpace> ||
+                std::is_same_v<Space, CodeSpace>) {
+    for (auto* p : *space) {
+      p->SetOldGenerationPageFlags(marking_mode);
+    }
+  } else if constexpr (std::is_same_v<Space, OldLargeObjectSpace> ||
+                       std::is_same_v<Space, SharedLargeObjectSpace> ||
+                       std::is_same_v<Space, SharedTrustedLargeObjectSpace> ||
+                       std::is_same_v<Space, TrustedLargeObjectSpace> ||
+                       std::is_same_v<Space, CodeLargeObjectSpace>) {
+    for (auto* p : *space) {
+      DCHECK(p->Chunk()->IsLargePage());
+      p->SetOldGenerationPageFlags(marking_mode);
+    }
+  } else if constexpr (std::is_same_v<Space, NewSpace>) {
+    for (auto* p : *space) {
+      p->SetYoungGenerationPageFlags(marking_mode);
+    }
+  } else {
+    static_assert(std::is_same_v<Space, NewLargeObjectSpace>);
+    for (auto* p : *space) {
+      DCHECK(p->Chunk()->IsLargePage());
+      p->SetYoungGenerationPageFlags(marking_mode);
+    }
+  }
+}
+
+template <typename Space>
+void ActivateSpace(Space* space, MarkingMode marking_mode) {
+  SetGenerationPageFlags(space, marking_mode);
+}
+
+template <typename Space>
+void DeactivateSpace(Space* space) {
+  SetGenerationPageFlags(space, MarkingMode::kNoMarking);
+}
+
+void ActivateSpaces(Heap* heap, MarkingMode marking_mode) {
+  ActivateSpace(heap->old_space(), marking_mode);
+  ActivateSpace(heap->lo_space(), marking_mode);
+  if (heap->new_space()) {
+    DCHECK(!v8_flags.sticky_mark_bits);
+    ActivateSpace(heap->new_space(), marking_mode);
+  }
+  ActivateSpace(heap->new_lo_space(), marking_mode);
+  {
+    RwxMemoryWriteScope scope("For writing flags.");
+    ActivateSpace(heap->code_space(), marking_mode);
+    ActivateSpace(heap->code_lo_space(), marking_mode);
+  }
+
+  if (marking_mode == MarkingMode::kMajorMarking) {
+    if (heap->shared_space()) {
+      ActivateSpace(heap->shared_space(), marking_mode);
+    }
+    if (heap->shared_lo_space()) {
+      ActivateSpace(heap->shared_lo_space(), marking_mode);
+    }
+    if (heap->shared_trusted_space()) {
+      ActivateSpace(heap->shared_trusted_space(), marking_mode);
+    }
+    if (heap->shared_trusted_lo_space()) {
+      ActivateSpace(heap->shared_trusted_lo_space(), marking_mode);
+    }
+  }
+
+  ActivateSpace(heap->trusted_space(), marking_mode);
+  ActivateSpace(heap->trusted_lo_space(), marking_mode);
+}
+
+void DeactivateSpaces(Heap* heap, MarkingMode marking_mode) {
+  DeactivateSpace(heap->old_space());
+  DeactivateSpace(heap->lo_space());
+  if (heap->new_space()) {
+    DCHECK(!v8_flags.sticky_mark_bits);
+    DeactivateSpace(heap->new_space());
+  }
+  DeactivateSpace(heap->new_lo_space());
+  {
+    RwxMemoryWriteScope scope("For writing flags.");
+    DeactivateSpace(heap->code_space());
+    DeactivateSpace(heap->code_lo_space());
+  }
+
+  if (marking_mode == MarkingMode::kMajorMarking) {
+    if (heap->shared_space()) {
+      DeactivateSpace(heap->shared_space());
+    }
+    if (heap->shared_lo_space()) {
+      DeactivateSpace(heap->shared_lo_space());
+    }
+    if (heap->shared_trusted_space()) {
+      DeactivateSpace(heap->shared_trusted_space());
+    }
+    if (heap->shared_trusted_lo_space()) {
+      DeactivateSpace(heap->shared_trusted_lo_space());
+    }
+  }
+
+  DeactivateSpace(heap->trusted_space());
+  DeactivateSpace(heap->trusted_lo_space());
+}
+}  // namespace
+
 // static
-void MarkingBarrier::ActivateAll(Heap* heap, bool is_compacting,
-                                 MarkingBarrierType marking_barrier_type) {
-  heap->safepoint()->IterateLocalHeaps(
-      [is_compacting, marking_barrier_type](LocalHeap* local_heap) {
-        local_heap->marking_barrier()->Activate(is_compacting,
-                                                marking_barrier_type);
-      });
+void MarkingBarrier::ActivateAll(Heap* heap, bool is_compacting) {
+  ActivateSpaces(heap, MarkingMode::kMajorMarking);
+
+  heap->safepoint()->IterateLocalHeaps([is_compacting](LocalHeap* local_heap) {
+    local_heap->marking_barrier()->Activate(is_compacting,
+                                            MarkingMode::kMajorMarking);
+  });
+
+  if (heap->isolate()->is_shared_space_isolate()) {
+    heap->isolate()->global_safepoint()->IterateClientIsolates(
+        [](Isolate* client) {
+          // Force the RecordWrite builtin into the incremental marking code
+          // path.
+          client->heap()->SetIsMarkingFlag(true);
+          client->heap()->safepoint()->IterateLocalHeaps(
+              [](LocalHeap* local_heap) {
+                local_heap->marking_barrier()->ActivateShared();
+              });
+        });
+  }
+}
+
+// static
+void MarkingBarrier::ActivateYoung(Heap* heap) {
+  ActivateSpaces(heap, MarkingMode::kMinorMarking);
+
+  heap->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
+    local_heap->marking_barrier()->Activate(false, MarkingMode::kMinorMarking);
+  });
+}
+
+void MarkingBarrier::Activate(bool is_compacting, MarkingMode marking_mode) {
+  DCHECK(!is_activated_);
+  is_compacting_ = is_compacting;
+  marking_mode_ = marking_mode;
+  current_worklists_ = std::make_unique<MarkingWorklists::Local>(
+      is_minor() ? minor_collector_->marking_worklists()
+                 : major_collector_->marking_worklists());
+  is_activated_ = true;
+}
+
+void MarkingBarrier::ActivateShared() {
+  DCHECK(!shared_heap_worklists_.has_value());
+  Isolate* shared_isolate = isolate()->shared_space_isolate();
+  shared_heap_worklists_.emplace(
+      shared_isolate->heap()->mark_compact_collector()->marking_worklists());
 }
 
 // static
 void MarkingBarrier::DeactivateAll(Heap* heap) {
+  DeactivateSpaces(heap, MarkingMode::kMajorMarking);
+
+  heap->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
+    local_heap->marking_barrier()->Deactivate();
+  });
+
+  if (heap->isolate()->is_shared_space_isolate()) {
+    heap->isolate()->global_safepoint()->IterateClientIsolates(
+        [](Isolate* client) {
+          // We can't just simply disable the marking barrier for all clients. A
+          // client may still need it to be set for incremental marking in the
+          // local heap.
+          const bool is_marking =
+              client->heap()->incremental_marking()->IsMarking();
+          client->heap()->SetIsMarkingFlag(is_marking);
+          client->heap()->safepoint()->IterateLocalHeaps(
+              [](LocalHeap* local_heap) {
+                local_heap->marking_barrier()->DeactivateShared();
+              });
+        });
+  }
+}
+
+// static
+void MarkingBarrier::DeactivateYoung(Heap* heap) {
+  DeactivateSpaces(heap, MarkingMode::kMinorMarking);
+
   heap->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
     local_heap->marking_barrier()->Deactivate();
   });
 }
 
-// static
-void MarkingBarrier::PublishAll(Heap* heap) {
-  heap->safepoint()->IterateLocalHeaps(
-      [](LocalHeap* local_heap) { local_heap->marking_barrier()->Publish(); });
+void MarkingBarrier::Deactivate() {
+  DCHECK(is_activated_);
+  is_activated_ = false;
+  is_compacting_ = false;
+  marking_mode_ = MarkingMode::kNoMarking;
+  DCHECK(typed_slots_map_.empty());
+  DCHECK(current_worklists_->IsEmpty());
+  current_worklists_.reset();
 }
 
-void MarkingBarrier::Publish() {
+void MarkingBarrier::DeactivateShared() {
+  DCHECK(shared_heap_worklists_->IsEmpty());
+  shared_heap_worklists_.reset();
+}
+
+// static
+void MarkingBarrier::PublishAll(Heap* heap) {
+  heap->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
+    local_heap->marking_barrier()->PublishIfNeeded();
+  });
+
+  if (heap->isolate()->is_shared_space_isolate()) {
+    heap->isolate()->global_safepoint()->IterateClientIsolates(
+        [](Isolate* client) {
+          client->heap()->safepoint()->IterateLocalHeaps(
+              [](LocalHeap* local_heap) {
+                local_heap->marking_barrier()->PublishSharedIfNeeded();
+              });
+        });
+  }
+}
+
+// static
+void MarkingBarrier::PublishYoung(Heap* heap) {
+  heap->safepoint()->IterateLocalHeaps([](LocalHeap* local_heap) {
+    local_heap->marking_barrier()->PublishIfNeeded();
+  });
+}
+
+void MarkingBarrier::PublishIfNeeded() {
   if (is_activated_) {
-    current_worklist_->Publish();
-    base::Optional<CodePageHeaderModificationScope> optional_rwx_write_scope;
-    if (!typed_slots_map_.empty()) {
-      optional_rwx_write_scope.emplace(
-          "Merging typed slots may require allocating a new typed slot set.");
-    }
+    current_worklists_->Publish();
     for (auto& it : typed_slots_map_) {
-      MemoryChunk* memory_chunk = it.first;
+      MutablePage* memory_chunk = it.first;
       // Access to TypeSlots need to be protected, since LocalHeaps might
       // publish code in the background thread.
-      base::Optional<base::MutexGuard> opt_guard;
-      if (v8_flags.concurrent_sparkplug) {
-        opt_guard.emplace(memory_chunk->mutex());
-      }
+      base::MutexGuard guard(memory_chunk->mutex());
       std::unique_ptr<TypedSlots>& typed_slots = it.second;
       RememberedSet<OLD_TO_OLD>::MergeTyped(memory_chunk,
                                             std::move(typed_slots));
@@ -191,113 +406,32 @@ void MarkingBarrier::Publish() {
   }
 }
 
-void MarkingBarrier::DeactivateSpace(PagedSpace* space) {
-  DCHECK(is_main_thread_barrier_);
-  for (Page* p : *space) {
-    p->SetOldGenerationPageFlags(false);
+void MarkingBarrier::PublishSharedIfNeeded() {
+  if (shared_heap_worklists_) {
+    shared_heap_worklists_->Publish();
   }
 }
 
-void MarkingBarrier::DeactivateSpace(NewSpace* space) {
-  DCHECK(is_main_thread_barrier_);
-  for (Page* p : *space) {
-    p->SetYoungGenerationPageFlags(false);
-  }
+bool MarkingBarrier::IsCurrentMarkingBarrier(
+    Tagged<HeapObject> verification_candidate) {
+  return WriteBarrier::CurrentMarkingBarrier(verification_candidate) == this;
 }
 
-void MarkingBarrier::Deactivate() {
-  is_activated_ = false;
-  is_compacting_ = false;
-  if (is_main_thread_barrier_) {
-    DeactivateSpace(heap_->old_space());
-    DeactivateSpace(heap_->code_space());
-    DeactivateSpace(heap_->new_space());
-    if (heap_->shared_space()) {
-      DeactivateSpace(heap_->shared_space());
-    }
-    for (LargePage* p : *heap_->new_lo_space()) {
-      p->SetYoungGenerationPageFlags(false);
-      DCHECK(p->IsLargePage());
-    }
-    for (LargePage* p : *heap_->lo_space()) {
-      p->SetOldGenerationPageFlags(false);
-    }
-    for (LargePage* p : *heap_->code_lo_space()) {
-      p->SetOldGenerationPageFlags(false);
-    }
-    if (heap_->shared_lo_space()) {
-      for (LargePage* p : *heap_->shared_lo_space()) {
-        p->SetOldGenerationPageFlags(false);
-      }
-    }
-  }
-  DCHECK(typed_slots_map_.empty());
-  DCHECK(current_worklist_->IsLocalEmpty());
+Isolate* MarkingBarrier::isolate() const { return heap_->isolate(); }
+
+#if DEBUG
+void MarkingBarrier::AssertMarkingIsActivated() const { DCHECK(is_activated_); }
+
+void MarkingBarrier::AssertSharedMarkingIsActivated() const {
+  DCHECK(shared_heap_worklists_.has_value());
 }
+#endif  // DEBUG
 
-void MarkingBarrier::ActivateSpace(PagedSpace* space) {
-  DCHECK(is_main_thread_barrier_);
-  for (Page* p : *space) {
-    p->SetOldGenerationPageFlags(true);
-  }
+#if V8_VERIFY_WRITE_BARRIERS
+bool MarkingBarrier::IsMarked(const Tagged<HeapObject> value) const {
+  return marking_state_.IsMarked(value);
 }
-
-void MarkingBarrier::ActivateSpace(NewSpace* space) {
-  DCHECK(is_main_thread_barrier_);
-  for (Page* p : *space) {
-    p->SetYoungGenerationPageFlags(true);
-  }
-}
-
-void MarkingBarrier::Activate(bool is_compacting,
-                              MarkingBarrierType marking_barrier_type) {
-  DCHECK(!is_activated_);
-  DCHECK(major_worklist_.IsLocalEmpty());
-  DCHECK(minor_worklist_.IsLocalEmpty());
-  is_compacting_ = is_compacting;
-  marking_barrier_type_ = marking_barrier_type;
-  current_worklist_ = is_minor() ? &minor_worklist_ : &major_worklist_;
-  is_activated_ = true;
-  if (is_main_thread_barrier_) {
-    ActivateSpace(heap_->old_space());
-    {
-      CodePageHeaderModificationScope rwx_write_scope(
-          "Modification of Code page header flags requires write access");
-      ActivateSpace(heap_->code_space());
-    }
-    ActivateSpace(heap_->new_space());
-    if (heap_->shared_space()) {
-      ActivateSpace(heap_->shared_space());
-    }
-
-    for (LargePage* p : *heap_->new_lo_space()) {
-      p->SetYoungGenerationPageFlags(true);
-      DCHECK(p->IsLargePage());
-    }
-
-    for (LargePage* p : *heap_->lo_space()) {
-      p->SetOldGenerationPageFlags(true);
-    }
-
-    {
-      CodePageHeaderModificationScope rwx_write_scope(
-          "Modification of Code page header flags requires write access");
-      for (LargePage* p : *heap_->code_lo_space()) {
-        p->SetOldGenerationPageFlags(true);
-      }
-    }
-
-    if (heap_->shared_lo_space()) {
-      for (LargePage* p : *heap_->shared_lo_space()) {
-        p->SetOldGenerationPageFlags(true);
-      }
-    }
-  }
-}
-
-bool MarkingBarrier::IsCurrentMarkingBarrier() {
-  return WriteBarrier::CurrentMarkingBarrier(heap_) == this;
-}
+#endif  // V8_VERIFY_WRITE_BARRIERS
 
 }  // namespace internal
 }  // namespace v8

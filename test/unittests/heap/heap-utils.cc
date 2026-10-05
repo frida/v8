@@ -6,173 +6,222 @@
 
 #include <algorithm>
 
+#include "src/base/iterator.h"
 #include "src/common/globals.h"
 #include "src/flags/flags.h"
+#include "src/heap/gc-tracer-inl.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/incremental-marking.h"
+#include "src/heap/main-allocator-inl.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/marking-barrier.h"
+#include "src/heap/memory-reducer.h"
 #include "src/heap/new-spaces.h"
+#include "src/heap/normal-page-inl.h"
 #include "src/heap/safepoint.h"
+#include "src/heap/spaces-inl.h"
 #include "src/objects/free-space-inl.h"
 
 namespace v8 {
 namespace internal {
 
+void HeapInternalsBase::SetForceOOM(Heap* heap, bool value) {
+  heap->set_force_oom(value);
+}
+
+void HeapInternalsBase::SetDelaySweeperTasksForTesting(Heap* heap, bool value) {
+  heap->delay_sweeper_tasks_for_testing_ = value;
+}
+
+int HeapInternalsBase::MemoryReducerStateId(Heap* heap) {
+  return reinterpret_cast<MemoryReducer*>(heap->memory_reducer())->state_.id();
+}
+
+size_t HeapInternalsBase::OldGenerationSpaceAvailable(Heap* heap) {
+  return heap->OldGenerationSpaceAvailable();
+}
+
 void HeapInternalsBase::SimulateIncrementalMarking(Heap* heap,
                                                    bool force_completion) {
-  constexpr double kStepSizeInMs = 100;
+  static constexpr auto kStepSize = v8::base::TimeDelta::FromMilliseconds(100);
   CHECK(v8_flags.incremental_marking);
-  i::IncrementalMarking* marking = heap->incremental_marking();
+  IncrementalMarking* marking = heap->incremental_marking();
 
   if (heap->sweeping_in_progress()) {
-    SafepointScope scope(heap);
-    heap->EnsureSweepingCompleted(
-        Heap::SweepingForcedFinalizationMode::kV8Only);
+    SafepointScope scope(heap->isolate(),
+                         kGlobalSafepointForSharedSpaceIsolate);
+    heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only,
+                                  CompleteSweepingReason::kTesting);
+  }
+
+  if (marking->IsMinorMarking()) {
+    // If minor incremental marking is running, we need to finalize it first
+    // because of the AdvanceForTesting call in this function which is currently
+    // only possible for MajorMC.
+    heap->CollectGarbage(NEW_SPACE,
+                         GarbageCollectionReason::kFinalizeMinorMSForMajorGC);
   }
 
   if (marking->IsStopped()) {
-    heap->StartIncrementalMarking(i::Heap::kNoGCFlags,
-                                  i::GarbageCollectionReason::kTesting);
+    heap->StartIncrementalMarking(GCFlag::kNoFlags,
+                                  GarbageCollectionReason::kTesting);
   }
   CHECK(marking->IsMajorMarking());
   if (!force_completion) return;
 
+  SafepointScope scope(heap->isolate(), kGlobalSafepointForSharedSpaceIsolate);
+  MarkingBarrier::PublishAll(heap);
+  marking->MarkRootsForTesting();
+
   while (!marking->IsMajorMarkingComplete()) {
-    marking->AdvanceForTesting(kStepSizeInMs);
+    marking->AdvanceForTesting(kStepSize);
   }
 }
 
 namespace {
 
 int FixedArrayLenFromSize(int size) {
-  return std::min({(size - FixedArray::kHeaderSize) / kTaggedSize,
+  return std::min({(size - OFFSET_OF_DATA_START(FixedArray)) / kTaggedSize,
                    FixedArray::kMaxRegularLength});
 }
 
-void FillPageInPagedSpace(Page* page,
+void FillPageInPagedSpace(NormalPage* page,
                           std::vector<Handle<FixedArray>>* out_handles) {
+  Heap* heap = page->heap();
+  ManualGCScope manual_gc_scope(heap->isolate());
   DCHECK(page->SweepingDone());
   PagedSpaceBase* paged_space = static_cast<PagedSpaceBase*>(page->owner());
-  // Make sure the LAB is empty to guarantee that all free space is accounted
-  // for in the freelist.
-  DCHECK_EQ(paged_space->limit(), paged_space->top());
+  heap->FreeLinearAllocationAreas();
 
-  for (Page* p : *paged_space) {
+  PauseAllocationObserversScope no_observers_scope(heap);
+
+  CollectionEpoch epoch = heap->tracer()->CurrentEpoch();
+
+  for (NormalPage* p : *paged_space) {
     if (p != page) paged_space->UnlinkFreeListCategories(p);
   }
 
-  // If min_block_size is larger than FixedArray::kHeaderSize, all blocks in the
-  // free list can be used to allocate a fixed array. This guarantees that we
-  // can fill the whole page.
-  DCHECK_LT(FixedArray::kHeaderSize,
+  // If min_block_size is larger than OFFSET_OF_DATA_START(FixedArray), all
+  // blocks in the free list can be used to allocate a fixed array. This
+  // guarantees that we can fill the whole page.
+  DCHECK_LT(OFFSET_OF_DATA_START(FixedArray),
             paged_space->free_list()->min_block_size());
 
   std::vector<int> available_sizes;
   // Collect all free list block sizes
   page->ForAllFreeListCategories(
       [&available_sizes](FreeListCategory* category) {
-        category->IterateNodesForTesting([&available_sizes](FreeSpace node) {
-          int node_size = node.Size();
-          DCHECK_LT(0, FixedArrayLenFromSize(node_size));
-          available_sizes.push_back(node_size);
-        });
+        category->IterateNodesForTesting(
+            [&available_sizes](Tagged<FreeSpace> node) {
+              int node_size = node->Size();
+              if (node_size >= kMaxRegularHeapObjectSize) {
+                available_sizes.push_back(node_size);
+              }
+            });
       });
 
-  Isolate* isolate = page->heap()->isolate();
+  Isolate* isolate = heap->isolate();
 
   // Allocate as many max size arrays as possible, while making sure not to
   // leave behind a block too small to fit a FixedArray.
   const int max_array_length = FixedArrayLenFromSize(kMaxRegularHeapObjectSize);
   for (size_t i = 0; i < available_sizes.size(); ++i) {
     int available_size = available_sizes[i];
-    while (available_size >
-           kMaxRegularHeapObjectSize + FixedArray::kHeaderSize) {
+    while (available_size > kMaxRegularHeapObjectSize) {
       Handle<FixedArray> fixed_array = isolate->factory()->NewFixedArray(
           max_array_length, AllocationType::kYoung);
       if (out_handles) out_handles->push_back(fixed_array);
       available_size -= kMaxRegularHeapObjectSize;
     }
-    if (available_size > kMaxRegularHeapObjectSize) {
-      // Allocate less than kMaxRegularHeapObjectSize to ensure remaining space
-      // can be used to allcoate another FixedArray.
-      int array_size = kMaxRegularHeapObjectSize - FixedArray::kHeaderSize;
+  }
+
+  heap->FreeLinearAllocationAreas();
+
+  // Allocate FixedArrays in remaining free list blocks, from largest
+  // category to smallest.
+  std::vector<std::vector<int>> remaining_sizes;
+  page->ForAllFreeListCategories(
+      [&remaining_sizes](FreeListCategory* category) {
+        remaining_sizes.push_back({});
+        std::vector<int>& sizes_in_category =
+            remaining_sizes[remaining_sizes.size() - 1];
+        category->IterateNodesForTesting(
+            [&sizes_in_category](Tagged<FreeSpace> node) {
+              int node_size = node->Size();
+              DCHECK_LT(0, FixedArrayLenFromSize(node_size));
+              sizes_in_category.push_back(node_size);
+            });
+      });
+  for (const std::vector<int>& sizes_in_category :
+       base::Reversed(remaining_sizes)) {
+    for (int size : sizes_in_category) {
+      DCHECK_LE(size, kMaxRegularHeapObjectSize);
+      int array_length = FixedArrayLenFromSize(size);
+      DCHECK_LT(0, array_length);
       Handle<FixedArray> fixed_array = isolate->factory()->NewFixedArray(
-          FixedArrayLenFromSize(array_size), AllocationType::kYoung);
+          array_length, AllocationType::kYoung);
       if (out_handles) out_handles->push_back(fixed_array);
-      available_size -= array_size;
     }
-    DCHECK_LE(available_size, kMaxRegularHeapObjectSize);
-    DCHECK_LT(0, FixedArrayLenFromSize(available_size));
-    available_sizes[i] = available_size;
   }
 
-  // Allocate FixedArrays in remaining free list blocks, from largest to
-  // smallest.
-  std::sort(available_sizes.begin(), available_sizes.end(),
-            [](size_t a, size_t b) { return a > b; });
-  for (size_t i = 0; i < available_sizes.size(); ++i) {
-    int available_size = available_sizes[i];
-    DCHECK_LE(available_size, kMaxRegularHeapObjectSize);
-    int array_length = FixedArrayLenFromSize(available_size);
-    DCHECK_LT(0, array_length);
-    Handle<FixedArray> fixed_array =
-        isolate->factory()->NewFixedArray(array_length, AllocationType::kYoung);
-    if (out_handles) out_handles->push_back(fixed_array);
-  }
+  DCHECK_EQ(0, page->AvailableInFreeList());
+  DCHECK_EQ(0, page->AvailableInFreeListFromAllocatedBytes());
 
-  for (Page* p : *paged_space) {
+  for (NormalPage* p : *paged_space) {
     if (p != page) paged_space->RelinkFreeListCategories(p);
   }
+
+  // Allocations in this method should not require a GC.
+  CHECK_EQ(epoch, heap->tracer()->CurrentEpoch());
+  heap->FreeLinearAllocationAreas();
 }
 
 }  // namespace
 
 void HeapInternalsBase::SimulateFullSpace(
-    v8::internal::NewSpace* space,
-    std::vector<Handle<FixedArray>>* out_handles) {
+    NewSpace* new_space, std::vector<Handle<FixedArray>>* out_handles) {
+  Heap* heap = new_space->heap();
+  SafepointScope safepoint_scope(heap->isolate(),
+                                 kGlobalSafepointForSharedSpaceIsolate);
+  heap->FreeLinearAllocationAreas();
   // If you see this check failing, disable the flag at the start of your test:
   // v8_flags.stress_concurrent_allocation = false;
   // Background thread allocating concurrently interferes with this function.
   CHECK(!v8_flags.stress_concurrent_allocation);
-  space->heap()->EnsureSweepingCompleted(
-      Heap::SweepingForcedFinalizationMode::kV8Only);
-  space->FreeLinearAllocationArea();
-  if (v8_flags.minor_mc) {
-    for (Page* page : *space) {
+  new_space->heap()->EnsureSweepingCompleted(
+      Heap::SweepingForcedFinalizationMode::kUnifiedHeap,
+      CompleteSweepingReason::kTesting);
+  if (v8_flags.minor_ms) {
+    auto* space = heap->paged_new_space()->paged_space();
+    space->AllocatePageUpToCapacityForTesting();
+    for (NormalPage* page : *space) {
       FillPageInPagedSpace(page, out_handles);
     }
-    DCHECK_EQ(0, space->free_list()->Available());
+    DCHECK_IMPLIES(space->free_list(), space->free_list()->Available() == 0);
   } else {
+    SemiSpaceNewSpace* space = SemiSpaceNewSpace::From(heap->new_space());
     do {
       FillCurrentPage(space, out_handles);
     } while (space->AddFreshPage());
   }
 }
 
-void HeapInternalsBase::SimulateFullSpace(v8::internal::PagedSpace* space) {
+void HeapInternalsBase::SimulateFullSpace(PagedSpace* space) {
+  Heap* heap = space->heap();
+  SafepointScope safepoint_scope(heap->isolate(),
+                                 kGlobalSafepointForSharedSpaceIsolate);
+  heap->FreeLinearAllocationAreas();
   // If you see this check failing, disable the flag at the start of your test:
   // v8_flags.stress_concurrent_allocation = false;
   // Background thread allocating concurrently interferes with this function.
   CHECK(!v8_flags.stress_concurrent_allocation);
-  Heap* heap = space->heap();
-  CodePageCollectionMemoryModificationScopeForTesting code_scope(heap);
-  if (heap->sweeping_in_progress()) {
-    heap->EnsureSweepingCompleted(
-        Heap::SweepingForcedFinalizationMode::kV8Only);
-  }
-  space->FreeLinearAllocationArea();
+  heap->EnsureSweepingCompleted(
+      Heap::SweepingForcedFinalizationMode::kUnifiedHeap,
+      CompleteSweepingReason::kTesting);
   space->ResetFreeList();
 }
 
 namespace {
-int GetSpaceRemainingOnCurrentSemiSpacePage(v8::internal::NewSpace* space) {
-  Address top = space->top();
-  if ((top & kPageAlignmentMask) == 0) {
-    // `top` points to the start of a page signifies that there is not room in
-    // the current page.
-    return 0;
-  }
-  return static_cast<int>(Page::FromAddress(space->top())->area_end() - top);
-}
 
 std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
                                               AllocationType allocation) {
@@ -181,8 +230,8 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
   int allocate_memory;
   int length;
   int free_memory = padding_size;
-  if (allocation == i::AllocationType::kOld) {
-    heap->old_space()->FreeLinearAllocationArea();
+  heap->FreeMainThreadLinearAllocationAreas();
+  if (allocation == AllocationType::kOld) {
     int overall_free_memory = static_cast<int>(heap->old_space()->Available());
     CHECK(padding_size <= overall_free_memory || overall_free_memory == 0);
   } else {
@@ -198,12 +247,14 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
       length = FixedArrayLenFromSize(allocate_memory);
       if (length <= 0) {
         // Not enough room to create another FixedArray, so create a filler.
-        if (allocation == i::AllocationType::kOld) {
-          heap->CreateFillerObjectAt(
-              *heap->old_space()->allocation_top_address(), free_memory);
+        if (allocation == AllocationType::kOld) {
+          LinearAllocationArea* old_space =
+              &heap->isolate()->isolate_data()->old_allocation_info();
+          heap->CreateFillerObjectAt(old_space->top(), free_memory);
         } else {
-          heap->CreateFillerObjectAt(
-              *heap->new_space()->allocation_top_address(), free_memory);
+          LinearAllocationArea* new_space =
+              &heap->isolate()->isolate_data()->new_allocation_info();
+          heap->CreateFillerObjectAt(new_space->top(), free_memory);
         }
         break;
       }
@@ -219,47 +270,211 @@ std::vector<Handle<FixedArray>> CreatePadding(Heap* heap, int padding_size,
   return handles;
 }
 
-void FillCurrentSemiSpacePage(v8::internal::NewSpace* space,
-                              std::vector<Handle<FixedArray>>* out_handles) {
+void FillCurrentSemiSpacePageButNBytes(
+    SemiSpaceNewSpace* space, int extra_bytes,
+    std::vector<Handle<FixedArray>>* out_handles = nullptr) {
   // We cannot rely on `space->limit()` to point to the end of the current page
   // in the case where inline allocations are disabled, it actually points to
   // the current allocation pointer.
-  DCHECK_IMPLIES(!space->IsInlineAllocationEnabled(),
-                 space->limit() == space->top());
-  int space_remaining = GetSpaceRemainingOnCurrentSemiSpacePage(space);
-  if (space_remaining == 0) return;
+  DCHECK_IMPLIES(
+      !space->heap()->IsInlineAllocationEnabled(),
+      space->heap()->NewSpaceTop() == space->heap()->NewSpaceLimit());
+
+  int space_remaining = space->GetSpaceRemainingOnCurrentPageForTesting();
+  CHECK_GE(space_remaining, extra_bytes);
+  int new_linear_size = space_remaining - extra_bytes;
+  if (new_linear_size == 0) return;
   std::vector<Handle<FixedArray>> handles =
-      CreatePadding(space->heap(), space_remaining, i::AllocationType::kYoung);
+      CreatePadding(space->heap(), new_linear_size, AllocationType::kYoung);
   if (out_handles != nullptr) {
     out_handles->insert(out_handles->end(), handles.begin(), handles.end());
   }
 }
 
-void FillCurrenPagedSpacePage(v8::internal::NewSpace* space,
+void FillCurrentSemiSpacePage(SemiSpaceNewSpace* space,
                               std::vector<Handle<FixedArray>>* out_handles) {
-  if (space->top() == kNullAddress) return;
-  Page* page = Page::FromAllocationAreaAddress(space->top());
+  FillCurrentSemiSpacePageButNBytes(space, 0, out_handles);
+}
+
+void FillCurrentPagedSpacePage(NewSpace* space,
+                               std::vector<Handle<FixedArray>>* out_handles) {
+  const Address top = space->heap()->NewSpaceTop();
+  if (top == kNullAddress) return;
+  NormalPage* page = NormalPage::FromAllocationAreaAddress(top);
   space->heap()->EnsureSweepingCompleted(
-      Heap::SweepingForcedFinalizationMode::kV8Only);
-  space->FreeLinearAllocationArea();
+      Heap::SweepingForcedFinalizationMode::kV8Only,
+      CompleteSweepingReason::kTesting);
   FillPageInPagedSpace(page, out_handles);
 }
 
 }  // namespace
 
-void HeapInternalsBase::FillCurrentPage(
-    v8::internal::NewSpace* space,
-    std::vector<Handle<FixedArray>>* out_handles) {
-  PauseAllocationObserversScope pause_observers(space->heap());
-  if (v8_flags.minor_mc)
-    FillCurrenPagedSpacePage(space, out_handles);
-  else
-    FillCurrentSemiSpacePage(space, out_handles);
+std::vector<Handle<FixedArray>> HeapInternalsBase::CreatePadding(
+    Heap* heap, int padding_size, AllocationType allocation) {
+  return internal::CreatePadding(heap, padding_size, allocation);
 }
 
-bool IsNewObjectInCorrectGeneration(HeapObject object) {
-  return v8_flags.single_generation ? !i::Heap::InYoungGeneration(object)
-                                    : i::Heap::InYoungGeneration(object);
+void HeapInternalsBase::FillCurrentPage(
+    NewSpace* space, std::vector<Handle<FixedArray>>* out_handles) {
+  space->heap()->FreeMainThreadLinearAllocationAreas();
+  PauseAllocationObserversScope pause_observers(space->heap());
+  if (v8_flags.minor_ms) {
+    FillCurrentPagedSpacePage(space, out_handles);
+  } else {
+    FillCurrentSemiSpacePage(SemiSpaceNewSpace::From(space), out_handles);
+  }
+  space->heap()->FreeMainThreadLinearAllocationAreas();
+}
+
+void HeapInternalsBase::FillCurrentPageButNBytes(
+    SemiSpaceNewSpace* space, int extra_bytes,
+    std::vector<Handle<FixedArray>>* out_handles) {
+  space->heap()->FreeMainThreadLinearAllocationAreas();
+  PauseAllocationObserversScope pause_observers(space->heap());
+  FillCurrentSemiSpacePageButNBytes(space, extra_bytes, out_handles);
+  space->heap()->FreeMainThreadLinearAllocationAreas();
+}
+
+bool IsNewObjectInCorrectGeneration(Tagged<HeapObject> object) {
+  return v8_flags.single_generation ? !HeapLayout::InYoungGeneration(object)
+                                    : HeapLayout::InYoungGeneration(object);
+}
+
+ManualGCScope::ManualGCScope(Isolate* isolate)
+    : isolate_(isolate),
+      flag_concurrent_marking_(v8_flags.concurrent_marking),
+      flag_concurrent_sweeping_(v8_flags.concurrent_sweeping),
+      flag_concurrent_minor_ms_marking_(v8_flags.concurrent_minor_ms_marking),
+      flag_stress_concurrent_allocation_(v8_flags.stress_concurrent_allocation),
+      flag_stress_incremental_marking_(v8_flags.stress_incremental_marking),
+      flag_parallel_marking_(v8_flags.parallel_marking),
+      flag_detect_ineffective_gcs_near_heap_limit_(
+          v8_flags.detect_ineffective_gcs_near_heap_limit),
+      flag_cppheap_concurrent_marking_(v8_flags.cppheap_concurrent_marking) {
+  // Some tests run threaded (back-to-back) and thus the GC may already be
+  // running by the time a ManualGCScope is created. Finalizing existing marking
+  // prevents any undefined/unexpected behavior.
+  if (isolate) {
+    auto* heap = isolate->heap();
+    if (heap->incremental_marking()->IsMarking()) {
+      InvokeAtomicMajorGC(isolate);
+    }
+  }
+
+  v8_flags.concurrent_marking = false;
+  v8_flags.concurrent_sweeping = false;
+  v8_flags.concurrent_minor_ms_marking = false;
+  v8_flags.stress_incremental_marking = false;
+  v8_flags.stress_concurrent_allocation = false;
+  // Parallel marking has a dependency on concurrent marking.
+  v8_flags.parallel_marking = false;
+  v8_flags.detect_ineffective_gcs_near_heap_limit = false;
+  // CppHeap concurrent marking has a dependency on concurrent marking.
+  v8_flags.cppheap_concurrent_marking = false;
+
+  if (isolate_) {
+    CppHeap::From(isolate_->heap()->cpp_heap())
+        ->UpdateGCCapabilitiesFromFlagsForTesting();
+  }
+}
+
+ManualGCScope::~ManualGCScope() {
+  v8_flags.concurrent_marking = flag_concurrent_marking_;
+  v8_flags.concurrent_sweeping = flag_concurrent_sweeping_;
+  v8_flags.concurrent_minor_ms_marking = flag_concurrent_minor_ms_marking_;
+  v8_flags.stress_concurrent_allocation = flag_stress_concurrent_allocation_;
+  v8_flags.stress_incremental_marking = flag_stress_incremental_marking_;
+  v8_flags.parallel_marking = flag_parallel_marking_;
+  v8_flags.detect_ineffective_gcs_near_heap_limit =
+      flag_detect_ineffective_gcs_near_heap_limit_;
+  v8_flags.cppheap_concurrent_marking = flag_cppheap_concurrent_marking_;
+
+  if (isolate_) {
+    CppHeap::From(isolate_->heap()->cpp_heap())
+        ->UpdateGCCapabilitiesFromFlagsForTesting();
+  }
+}
+
+void AbandonCurrentlyFreeMemory(PagedSpace* space) {
+  Heap* heap = space->heap();
+  SafepointScope safepoint_scope(heap->isolate(),
+                                 kGlobalSafepointForSharedSpaceIsolate);
+  heap->FreeLinearAllocationAreas();
+
+  for (NormalPage* page : *space) {
+    page->MarkNeverAllocateForTesting();
+  }
+}
+
+Tagged<HeapObject> AllocateAligned(Heap* heap, MainAllocator* allocator,
+                                   int size, AllocationAlignment alignment) {
+  AllocationResult allocation = allocator->AllocateRawForceAlignmentForTesting(
+      size, alignment, AllocationOrigin::kRuntime);
+  Tagged<HeapObject> obj;
+  allocation.To(&obj);
+  heap->CreateFillerObjectAt(obj.address(), size);
+  return obj;
+}
+
+Address AlignOldSpace(Heap* heap, AllocationAlignment alignment, int offset) {
+  LinearAllocationArea* old_space =
+      &heap->isolate()->isolate_data()->old_allocation_info();
+  int fill = MainAllocator::GetFillToAlign(old_space->top(), alignment);
+  int allocation = fill + offset;
+  if (allocation) {
+    AllocateAligned(heap, heap->allocator()->old_space_allocator(), allocation,
+                    kTaggedAligned);
+  }
+  Address top = old_space->top();
+  // Now force the remaining allocation onto the free list.
+  heap->FreeMainThreadLinearAllocationAreas();
+  return top;
+}
+
+void ForceEvacuationCandidate(NormalPage* page) {
+  Isolate* isolate = page->owner()->heap()->isolate();
+  SafepointScope safepoint(isolate, kGlobalSafepointForSharedSpaceIsolate);
+  CHECK(v8_flags.manual_evacuation_candidates_selection);
+  page->set_forced_evacuation_candidate_for_testing(true);
+  page->owner()->heap()->FreeLinearAllocationAreas();
+}
+
+// This is the same as Factory::NewByteArray, except it doesn't retry on
+// allocation failure.
+AllocationResult HeapInternalsBase::AllocateByteArrayForTest(
+    Heap* heap, uint32_t length, AllocationType allocation_type) {
+  DCHECK_LE(length, ByteArray::kMaxLength);
+  int size = ByteArray::SizeFor(length);
+  Tagged<HeapObject> result;
+  {
+    AllocationResult allocation = heap->AllocateRaw(size, allocation_type);
+    if (!allocation.To(&result)) return allocation;
+  }
+
+  result->set_map_after_allocation(heap->isolate(),
+                                   ReadOnlyRoots(heap).byte_array_map(),
+                                   SKIP_WRITE_BARRIER);
+  Cast<ByteArray>(result)->set_length(length);
+  return AllocationResult::FromObject(result);
+}
+
+AllocationResult HeapInternalsBase::AllocateFixedArrayForTest(
+    Heap* heap, uint32_t length, AllocationType allocation) {
+  DCHECK_LE(length, FixedArray::kMaxLength);
+  int size = FixedArray::SizeFor(length);
+  Tagged<HeapObject> obj;
+  {
+    AllocationResult result = heap->AllocateRaw(size, allocation);
+    if (!result.To(&obj)) return result;
+  }
+  obj->set_map_after_allocation(heap->isolate(),
+                                ReadOnlyRoots(heap).fixed_array_map(),
+                                SKIP_WRITE_BARRIER);
+  Tagged<FixedArray> array = Cast<FixedArray>(obj);
+  array->set_length(length);
+  MemsetTagged(array->RawFieldOfFirstElement(),
+               ReadOnlyRoots(heap).undefined_value(), length);
+  return AllocationResult::FromObject(array);
 }
 
 }  // namespace internal

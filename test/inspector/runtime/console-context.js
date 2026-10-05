@@ -107,5 +107,55 @@ InspectorTest.runAsyncTestSuite([
     InspectorTest.logMessage(args);
     await Protocol.Runtime.evaluate({expression: 'console.clear()'});
     await Protocol.Runtime.disable();
+  },
+
+  async function testConsoleTimeInDifferentConsoleContexts() {
+    await Protocol.Runtime.enable();
+    await Protocol.Runtime.evaluate({
+      expression: `globalThis.context = console.context('named-context')`,
+    });
+    utils.setCurrentTimeMSForTest(0.0);
+    await Protocol.Runtime.evaluate({
+      expression: `context.time('foo'); console.time('foo');`,
+    });
+    utils.setCurrentTimeMSForTest(1.0);
+    await Promise.all([
+      Protocol.Runtime.evaluate({
+        expression: `console.timeEnd('foo')`,
+      }),
+      Protocol.Runtime.onceConsoleAPICalled().then(
+          ({params: {args}}) => InspectorTest.logMessage(args)),
+    ]);
+    utils.setCurrentTimeMSForTest(2.0);
+    await Promise.all([
+      Protocol.Runtime.evaluate({
+        expression: `context.timeEnd('foo')`,
+      }),
+      Protocol.Runtime.onceConsoleAPICalled().then(
+          ({params: {args}}) => InspectorTest.logMessage(args)),
+    ]);
+    await Protocol.Runtime.disable();
+  },
+
+  async function testConsoleAssertInConsoleContext() {
+    await Protocol.Runtime.enable();
+    Protocol.Runtime.evaluate({
+      expression: `
+        var assertContext = console.context('assert-context');
+        assertContext.assert(true);
+        assertContext.assert(true, '%s', {
+          toString() {
+            throw new Error('Should not format when condition is true');
+          }
+        });
+        assertContext.assert(false, 'failed %s', 'assertion');
+      `,
+    });
+    var {params: {context, args}} =
+        await Protocol.Runtime.onceConsoleAPICalled();
+    InspectorTest.log(context);
+    InspectorTest.logMessage(args);
+    await Protocol.Runtime.evaluate({expression: 'console.clear()'});
+    await Protocol.Runtime.disable();
   }
 ]);

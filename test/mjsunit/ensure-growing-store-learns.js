@@ -4,11 +4,10 @@
 
 // Overwrite the value for --noverify-heap and
 // --noenable-slow-asserts, which the test runner already set to true before.
-//  Due to flag contradiction checking, this requires
-// --allow-overwriting-for-next-flag to avoid an error.
-// Flags: --allow-overwriting-for-next-flag --noverify-heap
-// Flags: --allow-overwriting-for-next-flag --noenable-slow-asserts
-// Flags: --allow-natives-syntax --turbofan --no-always-turbofan
+// Due to flag contradiction checking, this requires
+// --flag-processing-mode=ignore-contradictions to avoid an error.
+// Flags: --allow-natives-syntax --turbofan
+// Flags: --flag-processing-mode=ignore-contradictions --noverify-heap --noenable-slow-asserts
 
 // --noverify-heap and --noenable-slow-asserts are set because the test is too
 // slow with it on.
@@ -36,7 +35,11 @@
   // is a dictionary mode prototypes on the prototype chain. Therefore, if
   // v8_dict_property_const_tracking is enabled, the optimized code only
   // contains a call to the IC handler and doesn't get deopted.
-  assertEquals(%IsDictPropertyConstTrackingEnabled(), isOptimized(foo));
+  if (%IsDictPropertyConstTrackingEnabled()) {
+    assertOptimized(foo);
+  } else {
+    assertUnoptimized(foo);
+  }
   assertTrue(%HasDictionaryElements(a));
 
   %PrepareFunctionForOptimization(foo);

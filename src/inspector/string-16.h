@@ -11,6 +11,8 @@
 #include <climits>
 #include <cstring>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "src/base/compiler-specific.h"
@@ -31,6 +33,7 @@ class String16 {
   V8_EXPORT String16(const UChar* characters);
   V8_EXPORT String16(const char* characters);
   String16(const char* characters, size_t size);
+  String16(std::string_view string);
   explicit String16(const std::basic_string<UChar>& impl);
   explicit String16(std::basic_string<UChar>&& impl);
 
@@ -47,6 +50,7 @@ class String16 {
   int64_t toInteger64(bool* ok = nullptr) const;
   uint64_t toUInt64(bool* ok = nullptr) const;
   int toInteger(bool* ok = nullptr) const;
+  std::pair<size_t, size_t> getTrimmedOffsetAndLength() const;
   String16 stripWhiteSpace() const;
   const uint16_t* characters16() const {
     return reinterpret_cast<const uint16_t*>(m_impl.c_str());

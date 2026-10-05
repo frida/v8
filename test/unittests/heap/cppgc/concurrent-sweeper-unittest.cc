@@ -9,15 +9,15 @@
 #include "include/cppgc/allocation.h"
 #include "include/cppgc/platform.h"
 #include "include/v8-platform.h"
-#include "src/heap/cppgc/globals.h"
-#include "src/heap/cppgc/heap-object-header.h"
-#include "src/heap/cppgc/heap-page.h"
-#include "src/heap/cppgc/heap-space.h"
-#include "src/heap/cppgc/heap-visitor.h"
-#include "src/heap/cppgc/page-memory.h"
-#include "src/heap/cppgc/raw-heap.h"
-#include "src/heap/cppgc/stats-collector.h"
-#include "src/heap/cppgc/sweeper.h"
+#include "src/heap/cppgc-internal/globals.h"
+#include "src/heap/cppgc-internal/heap-object-header.h"
+#include "src/heap/cppgc-internal/heap-page.h"
+#include "src/heap/cppgc-internal/heap-space.h"
+#include "src/heap/cppgc-internal/heap-visitor.h"
+#include "src/heap/cppgc-internal/page-memory.h"
+#include "src/heap/cppgc-internal/raw-heap.h"
+#include "src/heap/cppgc-internal/stats-collector.h"
+#include "src/heap/cppgc-internal/sweeper.h"
 #include "test/unittests/heap/cppgc/test-platform.h"
 #include "test/unittests/heap/cppgc/tests.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -56,6 +56,7 @@ class NonFinalizable : public GarbageCollected<NonFinalizable<Size>> {
 
  private:
   char array_[Size];
+  int padding_to_make_size_the_same_as_finalizible_;
 };
 
 using NormalNonFinalizable = NonFinalizable<32>;
@@ -137,6 +138,15 @@ class ConcurrentSweeperTest : public testing::TestWithHeap {
 
     return true;
   }
+
+  void MarkObject(void* payload) {
+    HeapObjectHeader& header = HeapObjectHeader::FromObject(payload);
+    header.TryMarkAtomic();
+    BasePage* page = BasePage::FromPayload(&header);
+    page->IncrementMarkedBytes(page->is_large()
+                                   ? LargePage::From(page)->PayloadSize()
+                                   : header.AllocatedSize());
+  }
 };
 
 TEST_F(ConcurrentSweeperTest, BackgroundSweepOfNormalPage) {
@@ -145,7 +155,7 @@ TEST_F(ConcurrentSweeperTest, BackgroundSweepOfNormalPage) {
 
   auto* unmarked_object = MakeGarbageCollected<GCedType>(GetAllocationHandle());
   auto* marked_object = MakeGarbageCollected<GCedType>(GetAllocationHandle());
-  HeapObjectHeader::FromObject(marked_object).TryMarkAtomic();
+  MarkObject(marked_object);
 
   auto* page = BasePage::FromPayload(unmarked_object);
   auto& space = page->space();
@@ -186,7 +196,7 @@ TEST_F(ConcurrentSweeperTest, BackgroundSweepOfLargePage) {
 
   auto* unmarked_object = MakeGarbageCollected<GCedType>(GetAllocationHandle());
   auto* marked_object = MakeGarbageCollected<GCedType>(GetAllocationHandle());
-  HeapObjectHeader::FromObject(marked_object).TryMarkAtomic();
+  MarkObject(marked_object);
 
   auto* unmarked_page = BasePage::FromPayload(unmarked_object);
   auto* marked_page = BasePage::FromPayload(marked_object);
@@ -314,7 +324,8 @@ TEST_F(ConcurrentSweeperTest, IncrementalSweeping) {
   testing::TestPlatform::DisableBackgroundTasksScope disable_concurrent_sweeper(
       &GetPlatform());
 
-  auto task_runner = GetPlatform().GetForegroundTaskRunner();
+  auto task_runner =
+      GetPlatform().GetForegroundTaskRunner(TaskPriority::kUserBlocking);
 
   // Create two unmarked objects.
   MakeGarbageCollected<NormalFinalizable>(GetAllocationHandle());
@@ -330,14 +341,19 @@ TEST_F(ConcurrentSweeperTest, IncrementalSweeping) {
       HeapObjectHeader::FromObject(marked_normal_object);
   auto& marked_large_header = HeapObjectHeader::FromObject(marked_large_object);
 
-  marked_normal_header.TryMarkAtomic();
-  marked_large_header.TryMarkAtomic();
+  MarkObject(marked_normal_object);
+  MarkObject(marked_large_object);
 
   StartSweeping();
 
   EXPECT_EQ(0u, g_destructor_callcount);
   EXPECT_TRUE(marked_normal_header.IsMarked());
-  EXPECT_TRUE(marked_large_header.IsMarked());
+  // Live large objects are eagerly swept.
+  if (Heap::From(GetHeap())->generational_gc_supported()) {
+    EXPECT_TRUE(marked_large_header.IsMarked());
+  } else {
+    EXPECT_FALSE(marked_large_header.IsMarked());
+  }
 
   // Wait for incremental sweeper to finish.
   GetPlatform().RunAllForegroundTasks();
@@ -353,6 +369,47 @@ TEST_F(ConcurrentSweeperTest, IncrementalSweeping) {
   }
 
   FinishSweeping();
+}
+
+TEST_F(ConcurrentSweeperTest, SweepOnAllocationReturnEmptyPage) {
+  PreciseGC();
+
+  // First, allocate the full page of finalizable objects.
+  const size_t objects_to_allocated =
+      NormalPage::PayloadSize() /
+      (sizeof(HeapObjectHeader) + sizeof(NormalFinalizable));
+  auto* first_obj =
+      MakeGarbageCollected<NormalFinalizable>(GetAllocationHandle());
+  auto* finalizable_page =
+      NormalPage::FromInnerAddress(&HeapBase::From(GetHeapHandle()), first_obj);
+  for (size_t i = 1; i < objects_to_allocated; ++i) {
+    MakeGarbageCollected<NormalFinalizable>(GetAllocationHandle());
+  }
+
+  // Then, allocate a new unfinalizable object on a fresh page. We do that so
+  // that the sweeper on allocation doesn't allocate a new page.
+  auto* non_finalizable =
+      MakeGarbageCollected<NormalNonFinalizable>(GetAllocationHandle());
+  auto* non_finalizable_page = NormalPage::FromInnerAddress(
+      &HeapBase::From(GetHeapHandle()), non_finalizable);
+  ASSERT_NE(finalizable_page, non_finalizable_page);
+
+  // Start the GC without sweeping.
+  static constexpr GCConfig config = {
+      CollectionType::kMajor, StackState::kNoHeapPointers,
+      GCConfig::MarkingType::kAtomic,
+      GCConfig::SweepingType::kIncrementalAndConcurrent};
+  Heap::From(GetHeap())->CollectGarbage(config);
+
+  WaitForConcurrentSweeping();
+
+  // Allocate and sweep.
+  auto* allocated_after_sweeping =
+      MakeGarbageCollected<NormalFinalizable>(GetAllocationHandle());
+  // Check that the empty page of finalizable objects was returned.
+  EXPECT_EQ(finalizable_page,
+            NormalPage::FromInnerAddress(&HeapBase::From(GetHeapHandle()),
+                                         allocated_after_sweeping));
 }
 
 }  // namespace internal

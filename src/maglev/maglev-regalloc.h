@@ -11,6 +11,7 @@
 #include "src/maglev/maglev-graph.h"
 #include "src/maglev/maglev-ir.h"
 #include "src/maglev/maglev-regalloc-data.h"
+#include "src/zone/zone-containers.h"
 
 namespace v8 {
 namespace internal {
@@ -20,13 +21,45 @@ class MaglevCompilationInfo;
 class MaglevPrintingVisitor;
 class MergePointRegisterState;
 
+struct RegallocBlockInfo {
+  struct RegallocLoopInfo {
+    // Hints about which nodes should be in registers or spilled when entering
+    // a loop.
+    ZonePtrList<ValueNode> reload_hints_;
+    ZonePtrList<ValueNode> spill_hints_;
+    explicit RegallocLoopInfo(Zone* zone)
+        : reload_hints_(0, zone), spill_hints_(0, zone) {}
+  };
+  absl::flat_hash_map<BasicBlock::Id, RegallocLoopInfo> loop_info_;
+};
+
+// Represents the state of the register frame during register allocation,
+// including current register values, and the state of each register.
+//
+// Register state encodes two orthogonal concepts:
+//
+//   1. Used/free registers: Which registers currently hold a valid value,
+//   2. Blocked/unblocked registers: Which registers can be modified during the
+//      current allocation.
+//
+// The combination of these encodes values in different states:
+//
+//  Free + unblocked: Completely unused registers which can be used for
+//                    anything.
+//  Used + unblocked: Live values that can be spilled if there is register
+//                    pressure.
+//  Used + blocked:   Values that are in a register and are used as an input in
+//                    the current allocation.
+//  Free + blocked:   Unused registers that are reserved as temporaries, or
+//                    inputs that will get clobbered during the execution of the
+//                    node being allocated.
 template <typename RegisterT>
 class RegisterFrameState {
  public:
   static constexpr bool kIsGeneralRegister =
-      std::is_same<Register, RegisterT>();
+      std::is_same_v<Register, RegisterT>;
   static constexpr bool kIsDoubleRegister =
-      std::is_same<DoubleRegister, RegisterT>();
+      std::is_same_v<DoubleRegister, RegisterT>;
 
   static_assert(kIsGeneralRegister || kIsDoubleRegister,
                 "RegisterFrameState should be used only for Register and "
@@ -61,7 +94,7 @@ class RegisterFrameState {
   void AddToFree(RegTList list) { free_ |= list; }
 
   void FreeRegistersUsedBy(ValueNode* node) {
-    RegTList list = node->ClearRegisters<RegisterT>();
+    RegTList list = node->regalloc_info()->ClearRegisters<RegisterT>();
     DCHECK_EQ(free_ & list, kEmptyRegList);
     free_ |= list;
   }
@@ -71,13 +104,13 @@ class RegisterFrameState {
     DCHECK(!blocked_.has(reg));
     values_[reg.code()] = node;
     block(reg);
-    node->AddRegister(reg);
+    node->regalloc_info()->AddRegister(reg);
   }
   void SetValueWithoutBlocking(RegisterT reg, ValueNode* node) {
     DCHECK(!free_.has(reg));
     DCHECK(!blocked_.has(reg));
     values_[reg.code()] = node;
-    node->AddRegister(reg);
+    node->regalloc_info()->AddRegister(reg);
   }
   ValueNode* GetValue(RegisterT reg) const {
     DCHECK(!free_.has(reg));
@@ -85,14 +118,32 @@ class RegisterFrameState {
     DCHECK_NOT_NULL(node);
     return node;
   }
+#ifdef DEBUG
+  // Like GetValue, but allow reading freed registers as long as they were also
+  // blocked. This allows us to DCHECK expected register state against node
+  // state, even if that node is dead or clobbered by the end of the current
+  // allocation.
+  ValueNode* GetValueMaybeFreeButBlocked(RegisterT reg) const {
+    DCHECK(!free_.has(reg) || blocked_.has(reg));
+    ValueNode* node = values_[reg.code()];
+    DCHECK_NOT_NULL(node);
+    return node;
+  }
+#endif
+
   RegTList blocked() const { return blocked_; }
   void block(RegisterT reg) { blocked_.set(reg); }
   void unblock(RegisterT reg) { blocked_.clear(reg); }
   bool is_blocked(RegisterT reg) { return blocked_.has(reg); }
   void clear_blocked() { blocked_ = kEmptyRegList; }
 
-  compiler::AllocatedOperand ChooseInputRegister(ValueNode* node);
-  compiler::AllocatedOperand AllocateRegister(ValueNode* node);
+  compiler::InstructionOperand TryChooseInputRegister(
+      ValueNode* node, const compiler::InstructionOperand& hint =
+                           compiler::InstructionOperand());
+  compiler::InstructionOperand TryChooseUnblockedInputRegister(ValueNode* node);
+  compiler::AllocatedOperand AllocateRegister(
+      ValueNode* node, const compiler::InstructionOperand& hint =
+                           compiler::InstructionOperand());
 
  private:
   ValueNode* values_[RegisterT::kNumRegisters];
@@ -103,7 +154,8 @@ class RegisterFrameState {
 class StraightForwardRegisterAllocator {
  public:
   StraightForwardRegisterAllocator(MaglevCompilationInfo* compilation_info,
-                                   Graph* graph);
+                                   Graph* graph,
+                                   RegallocBlockInfo* regalloc_info);
   ~StraightForwardRegisterAllocator();
 
  private:
@@ -111,10 +163,14 @@ class StraightForwardRegisterAllocator {
   RegisterFrameState<DoubleRegister> double_registers_;
 
   struct SpillSlotInfo {
-    SpillSlotInfo(uint32_t slot_index, NodeIdT freed_at_position)
-        : slot_index(slot_index), freed_at_position(freed_at_position) {}
+    SpillSlotInfo(uint32_t slot_index, NodeIdT freed_at_position,
+                  bool double_slot)
+        : slot_index(slot_index),
+          freed_at_position(freed_at_position),
+          double_slot(double_slot) {}
     uint32_t slot_index;
     NodeIdT freed_at_position;
+    bool double_slot;
   };
   struct SpillSlots {
     int top = 0;
@@ -130,17 +186,22 @@ class StraightForwardRegisterAllocator {
 
   void PrintLiveRegs() const;
 
-  void UpdateUse(Input* input) { return UpdateUse(input->node(), input); }
+  void UpdateUse(Input input) {
+    return UpdateUse(input.node(), input.location());
+  }
   void UpdateUse(ValueNode* node, InputLocation* input_location);
-  void UpdateUse(const EagerDeoptInfo& deopt_info);
-  void UpdateUse(const LazyDeoptInfo& deopt_info);
+
+  void MarkAsClobbered(ValueNode* node,
+                       const compiler::AllocatedOperand& location);
 
   void AllocateControlNode(ControlNode* node, BasicBlock* block);
-  void AllocateNode(Node* node);
+  void AllocateNode(NodeBase* node);
   void AllocateNodeResult(ValueNode* node);
-  void AssignFixedInput(Input& input);
-  void AssignArbitraryRegisterInput(Input& input);
-  void AssignAnyInput(Input& input);
+  void AllocateEagerDeopt(const EagerDeoptInfo& deopt_info);
+  void AllocateLazyDeopt(const LazyDeoptInfo& deopt_info);
+  void AssignFixedInput(Input input);
+  void AssignArbitraryRegisterInput(NodeBase* result_node, Input input);
+  void AssignAnyInput(Input input);
   void AssignInputs(NodeBase* node);
   template <typename RegisterT>
   void AssignFixedTemporaries(RegisterFrameState<RegisterT>& registers,
@@ -150,6 +211,8 @@ class StraightForwardRegisterAllocator {
   void AssignArbitraryTemporaries(RegisterFrameState<RegisterT>& registers,
                                   NodeBase* node);
   void AssignArbitraryTemporaries(NodeBase* node);
+  template <typename RegisterT>
+  void SetLoopPhiRegisterHint(Phi* phi, RegisterT reg);
   void TryAllocateToInput(Phi* phi);
 
   void VerifyInputs(NodeBase* node);
@@ -163,21 +226,27 @@ class StraightForwardRegisterAllocator {
   void Spill(ValueNode* node);
   void SpillRegisters();
 
+  template <typename RegisterT, bool spill = false>
+  void ClearRegisters(RegisterFrameState<RegisterT>& registers);
   template <typename RegisterT>
-  void SpillAndClearRegisters(RegisterFrameState<RegisterT>& registers);
+  void SpillAndClearRegisters(RegisterFrameState<RegisterT>& registers) {
+    ClearRegisters<RegisterT, true>(registers);
+  }
+  void ClearRegisters();
   void SpillAndClearRegisters();
 
   void SaveRegisterSnapshot(NodeBase* node);
 
   void FreeRegistersUsedBy(ValueNode* node);
   template <typename RegisterT>
-  RegisterT FreeUnblockedRegister();
+  RegisterT FreeUnblockedRegister(
+      RegListBase<RegisterT> reserved = RegListBase<RegisterT>());
   template <typename RegisterT>
   RegisterT PickRegisterToFree(RegListBase<RegisterT> reserved);
 
   template <typename RegisterT>
   RegisterFrameState<RegisterT>& GetRegisterFrameState() {
-    if constexpr (std::is_same<RegisterT, Register>::value) {
+    if constexpr (std::is_same_v<RegisterT, Register>) {
       return general_registers_;
     } else {
       return double_registers_;
@@ -185,25 +254,29 @@ class StraightForwardRegisterAllocator {
   }
 
   template <typename RegisterT>
-  void DropRegisterValueAtEnd(RegisterT reg);
+  void DropRegisterValueAtEnd(RegisterT reg, bool force_spill = false);
+  bool IsCurrentNodeLastUseOf(ValueNode* node);
   template <typename RegisterT>
-  void EnsureFreeRegisterAtEnd();
+  void EnsureFreeRegisterAtEnd(const compiler::InstructionOperand& hint =
+                                   compiler::InstructionOperand());
   compiler::AllocatedOperand AllocateRegisterAtEnd(ValueNode* node);
 
   template <typename RegisterT>
   void DropRegisterValue(RegisterFrameState<RegisterT>& registers,
-                         RegisterT reg);
+                         RegisterT reg, bool force_spill = false);
   void DropRegisterValue(Register reg);
   void DropRegisterValue(DoubleRegister reg);
 
-  compiler::AllocatedOperand AllocateRegister(ValueNode* node);
+  compiler::AllocatedOperand AllocateRegister(
+      ValueNode* node, const compiler::InstructionOperand& hint =
+                           compiler::InstructionOperand());
 
   template <typename RegisterT>
   compiler::AllocatedOperand ForceAllocate(
       RegisterFrameState<RegisterT>& registers, RegisterT reg, ValueNode* node);
   compiler::AllocatedOperand ForceAllocate(Register reg, ValueNode* node);
   compiler::AllocatedOperand ForceAllocate(DoubleRegister reg, ValueNode* node);
-  compiler::AllocatedOperand ForceAllocate(const Input& input, ValueNode* node);
+  compiler::AllocatedOperand ForceAllocate(ConstInput input, ValueNode* node);
 
   template <typename Function>
   void ForEachMergePointRegisterState(
@@ -213,8 +286,17 @@ class StraightForwardRegisterAllocator {
   void InitializeRegisterValues(MergePointRegisterState& target_state);
 #ifdef DEBUG
   bool IsInRegister(MergePointRegisterState& target_state, ValueNode* incoming);
+  bool IsForwardReachable(BasicBlock* start_block, NodeIdT first_id,
+                          NodeIdT last_id);
+  bool AllUsedRegistersLiveAt(ConditionalControlNode* control_node,
+                              BasicBlock* target);
+  bool AllUsedRegistersLiveAt(BasicBlock* target);
 #endif
 
+  template <typename RegisterT>
+  void HoistLoopReloads(BasicBlock* target,
+                        RegisterFrameState<RegisterT>& registers);
+  void HoistLoopSpills(BasicBlock* target);
   void InitializeBranchTargetRegisterValues(ControlNode* source,
                                             BasicBlock* target);
   void InitializeEmptyBlockRegisterValues(ControlNode* source,
@@ -225,17 +307,30 @@ class StraightForwardRegisterAllocator {
   void MergeRegisterValues(ControlNode* control, BasicBlock* target,
                            int predecessor_id);
 
+  void ApplyPatches(BasicBlock* block);
+
+  ProcessingState GetCurrentState();
+
+  bool has_graph_labeller() const { return graph_->has_graph_labeller(); }
+
   MaglevGraphLabeller* graph_labeller() const {
-    return compilation_info_->graph_labeller();
+    return graph_->graph_labeller();
   }
 
   MaglevCompilationInfo* compilation_info_;
   std::unique_ptr<MaglevPrintingVisitor> printing_visitor_;
   Graph* graph_;
-  BlockConstIterator block_it_;
+  struct BlockPatch {
+    ptrdiff_t diff;
+    Node* new_node;
+  };
+  ZoneVector<BlockPatch> patches_;
+
+  int current_block_id_;
   NodeIterator node_it_;
   // The current node, whether a Node in the body or the ControlNode.
   NodeBase* current_node_;
+  RegallocBlockInfo* regalloc_info_;
 };
 
 }  // namespace maglev

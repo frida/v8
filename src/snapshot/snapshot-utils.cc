@@ -7,17 +7,13 @@
 #include "src/base/sanitizer/msan.h"
 
 #ifdef V8_USE_ZLIB
-#ifdef USE_SYSTEM_ZLIB
-#include <zlib.h>
-#else
 #include "third_party/zlib/zlib.h"
-#endif
 #endif
 
 namespace v8 {
 namespace internal {
 
-uint32_t Checksum(base::Vector<const byte> payload) {
+uint32_t Checksum(base::Vector<const uint8_t> payload) {
 #ifdef MEMORY_SANITIZER
   // Computing the checksum includes padding bytes for objects like strings.
   // Mark every object as initialized in the code serializer.

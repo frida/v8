@@ -18,6 +18,7 @@ Running test: testScopesPaused
         }
         scopeChain : [
             [0] : {
+                emptyReason : no-variables
                 endLocation : {
                     columnNumber : 5
                     lineNumber : 6
@@ -53,7 +54,7 @@ Running test: testScopesPaused
             objectId : <objectId>
             type : object
         }
-        url :
+        url : 
     }
     [1] : {
         callFrameId : <callFrameId>
@@ -106,7 +107,7 @@ Running test: testScopesPaused
             objectId : <objectId>
             type : object
         }
-        url :
+        url : 
     }
     [2] : {
         callFrameId : <callFrameId>
@@ -116,7 +117,7 @@ Running test: testScopesPaused
             lineNumber : 0
             scriptId : <scriptId>
         }
-        functionName :
+        functionName : 
         location : {
             columnNumber : 0
             lineNumber : 0
@@ -139,6 +140,6 @@ Running test: testScopesPaused
             objectId : <objectId>
             type : object
         }
-        url :
+        url : 
     }
 ]

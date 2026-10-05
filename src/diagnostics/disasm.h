@@ -9,8 +9,6 @@
 
 namespace disasm {
 
-using byte = unsigned char;
-
 // Interface and default implementation for converting addresses and
 // register-numbers to text.  The default implementation is machine
 // specific.
@@ -20,18 +18,18 @@ class V8_EXPORT_PRIVATE NameConverter {
   virtual const char* NameOfCPURegister(int reg) const;
   virtual const char* NameOfByteCPURegister(int reg) const;
   virtual const char* NameOfXMMRegister(int reg) const;
-  virtual const char* NameOfAddress(byte* addr) const;
-  virtual const char* NameOfConstant(byte* addr) const;
-  virtual const char* NameInCode(byte* addr) const;
+  virtual const char* NameOfAddress(uint8_t* addr) const;
+  virtual const char* NameOfConstant(uint8_t* addr) const;
+  virtual const char* NameInCode(uint8_t* addr) const;
 
   // Given a root-register-relative offset, returns either a name or nullptr if
   // none is found.
   // TODO(jgruber,v8:7989): This is a temporary solution until we can preserve
   // code comments through snapshotting.
-  virtual const char* RootRelativeName(int offset) const { UNREACHABLE(); }
+  virtual const char* RootRelativeName(int offset) const { return nullptr; }
 
  protected:
-  v8::base::EmbeddedVector<char, 128> tmp_buffer_;
+  mutable v8::base::EmbeddedVector<char, 128> tmp_buffer_;
 };
 
 // A generic Disassembler interface
@@ -53,25 +51,31 @@ class Disassembler {
     return unimplemented_opcode_action_;
   }
 
+  // Note: Only implemented on X64. Other platforms always return `false`.
+  bool hit_unimplemented_opcode() const { return hit_unimplemented_opcode_; }
+
+  void clear_hit_unimplemented_opcode() { hit_unimplemented_opcode_ = false; }
+
   // Writes one disassembled instruction into 'buffer' (0-terminated).
   // Returns the length of the disassembled machine instruction in bytes.
   V8_EXPORT_PRIVATE int InstructionDecode(v8::base::Vector<char> buffer,
-                                          byte* instruction);
+                                          uint8_t* instruction);
 
   // Returns -1 if instruction does not mark the beginning of a constant pool,
   // or the number of entries in the constant pool beginning here.
-  int ConstantPoolSizeAt(byte* instruction);
+  int ConstantPoolSizeAt(uint8_t* instruction);
 
   // Write disassembly into specified file 'f' using specified NameConverter
   // (see constructor).
   V8_EXPORT_PRIVATE static void Disassemble(
-      FILE* f, byte* begin, byte* end,
+      FILE* f, uint8_t* begin, uint8_t* end,
       UnimplementedOpcodeAction unimplemented_action =
           kAbortOnUnimplementedOpcode);
 
  private:
   const NameConverter& converter_;
   const UnimplementedOpcodeAction unimplemented_opcode_action_;
+  bool hit_unimplemented_opcode_ = false;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Disassembler);
 };

@@ -5,6 +5,8 @@
 #ifndef V8_BASE_IEEE754_H_
 #define V8_BASE_IEEE754_H_
 
+#include <cmath>
+
 #include "src/base/base-export.h"
 
 namespace v8 {
@@ -33,8 +35,8 @@ V8_BASE_EXPORT double atan(double x);
 // the two arguments to determine the quadrant of the result.
 V8_BASE_EXPORT double atan2(double y, double x);
 
-// Returns the cosine of |x|, where |x| is given in radians.
 V8_BASE_EXPORT double cos(double x);
+V8_BASE_EXPORT double sin(double x);
 
 // Returns the base-e exponential of |x|.
 V8_BASE_EXPORT double exp(double x);
@@ -60,6 +62,11 @@ V8_BASE_EXPORT double cbrt(double x);
 // Returns exp(x)-1, the exponential of |x| minus 1.
 V8_BASE_EXPORT double expm1(double x);
 
+namespace legacy {
+
+// This function should not be used directly. Instead, use
+// v8::internal::math::pow.
+
 // Returns |x| to the power of |y|.
 // The result of base ** exponent when base is 1 or -1 and exponent is
 // +Infinity or -Infinity differs from IEEE 754-2008. The first edition
@@ -68,8 +75,7 @@ V8_BASE_EXPORT double expm1(double x);
 // behaviour is preserved for compatibility reasons.
 V8_BASE_EXPORT double pow(double x, double y);
 
-// Returns the sine of |x|, where |x| is given in radians.
-V8_BASE_EXPORT double sin(double x);
+}  // namespace legacy
 
 // Returns the tangent of |x|, where |x| is given in radians.
 V8_BASE_EXPORT double tan(double x);

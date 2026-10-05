@@ -5,10 +5,11 @@
 #include "src/base/overflowing-math.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/codegen/tick-counter.h"
+#include "src/compiler/backend/instruction-selector.h"
 #include "src/compiler/js-graph.h"
 #include "src/compiler/machine-operator-reducer.h"
 #include "src/compiler/operator-properties.h"
-#include "src/compiler/typer.h"
+#include "src/compiler/turbofan-typer.h"
 #include "src/objects/objects-inl.h"
 #include "test/cctest/cctest.h"
 #include "test/common/value-helper.h"
@@ -69,17 +70,17 @@ float ValueOfOperator<float>(const Operator* op) {
 template <>
 double ValueOfOperator<double>(const Operator* op) {
   CHECK_EQ(IrOpcode::kFloat64Constant, op->opcode());
-  return OpParameter<double>(op);
+  return OpParameter<Float64>(op).get_scalar();
 }
 
 
 class ReducerTester : public HandleAndZoneScope {
  public:
-  explicit ReducerTester(int num_parameters = 0,
-                         MachineOperatorBuilder::Flags flags =
-                             MachineOperatorBuilder::kAllOptionalOps)
-      : HandleAndZoneScope(kCompressGraphZone),
-        isolate(main_isolate()),
+  explicit ReducerTester(
+      int num_parameters = 0,
+      MachineOperatorBuilder::Flags flags =
+          InstructionSelector::SupportedMachineOperatorFlags())
+      : isolate(main_isolate()),
         binop(nullptr),
         unop(nullptr),
         machine(main_zone(), MachineType::PointerRepresentation(), flags),
@@ -100,7 +101,7 @@ class ReducerTester : public HandleAndZoneScope {
   const Operator* unop;
   MachineOperatorBuilder machine;
   CommonOperatorBuilder common;
-  Graph graph;
+  TFGraph graph;
   JSOperatorBuilder javascript;
   JSGraph jsgraph;
   Node* maxuint32;
@@ -129,7 +130,9 @@ class ReducerTester : public HandleAndZoneScope {
   void CheckFoldBinop(T expect, Node* a, Node* b) {
     CHECK(binop);
     Node* n = CreateBinopNode(a, b);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
     CHECK_NE(n, reduction.replacement());
@@ -149,7 +152,9 @@ class ReducerTester : public HandleAndZoneScope {
   void CheckBinop(Node* expect, Node* a, Node* b) {
     CHECK(binop);
     Node* n = CreateBinopNode(a, b);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
     CHECK_EQ(expect, reduction.replacement());
@@ -161,7 +166,9 @@ class ReducerTester : public HandleAndZoneScope {
                       Node* right) {
     CHECK(binop);
     Node* n = CreateBinopNode(left, right);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(n);
     CHECK(reduction.Changed());
     CHECK_EQ(binop, reduction.replacement()->op());
@@ -176,7 +183,9 @@ class ReducerTester : public HandleAndZoneScope {
                       Node* right_expect, Node* left, Node* right) {
     CHECK(binop);
     Node* n = CreateBinopNode(left, right);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction r = reducer.Reduce(n);
     CHECK(r.Changed());
     CHECK_EQ(op_expect->opcode(), r.replacement()->op()->opcode());
@@ -191,7 +200,9 @@ class ReducerTester : public HandleAndZoneScope {
                       T right_expect, Node* left, Node* right) {
     CHECK(binop);
     Node* n = CreateBinopNode(left, right);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction r = reducer.Reduce(n);
     CHECK(r.Changed());
     CHECK_EQ(op_expect->opcode(), r.replacement()->op()->opcode());
@@ -210,7 +221,9 @@ class ReducerTester : public HandleAndZoneScope {
     Node* k = Constant<T>(constant);
     {
       Node* n = CreateBinopNode(k, p);
-      MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+      MachineOperatorReducer reducer(
+          &graph_reducer, &jsgraph,
+          MachineOperatorReducer::kPropagateSignallingNan);
       Reduction reduction = reducer.Reduce(n);
       CHECK(!reduction.Changed() || reduction.replacement() == n);
       CHECK_EQ(p, n->InputAt(0));
@@ -218,7 +231,9 @@ class ReducerTester : public HandleAndZoneScope {
     }
     {
       Node* n = CreateBinopNode(p, k);
-      MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+      MachineOperatorReducer reducer(
+          &graph_reducer, &jsgraph,
+          MachineOperatorReducer::kPropagateSignallingNan);
       Reduction reduction = reducer.Reduce(n);
       CHECK(!reduction.Changed());
       CHECK_EQ(p, n->InputAt(0));
@@ -234,7 +249,9 @@ class ReducerTester : public HandleAndZoneScope {
     Node* p = Parameter();
     Node* k = Constant<T>(constant);
     Node* n = CreateBinopNode(k, p);
-    MachineOperatorReducer reducer(&graph_reducer, &jsgraph);
+    MachineOperatorReducer reducer(
+        &graph_reducer, &jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(n);
     CHECK(!reduction.Changed());
     CHECK_EQ(k, n->InputAt(0));
@@ -449,7 +466,7 @@ static void CheckJsShift(ReducerTester* R) {
 
 
 TEST(ReduceJsShifts) {
-  ReducerTester R(0, MachineOperatorBuilder::kWord32ShiftIsSafe);
+  ReducerTester R(0, {MachineOperatorBuilder::kWord32ShiftIsSafe});
 
   R.binop = R.machine.Word32Shl();
   CheckJsShift(&R);
@@ -791,7 +808,9 @@ TEST(ReduceLoadStore) {
                                index, R.graph.start(), R.graph.start());
 
   {
-    MachineOperatorReducer reducer(&R.graph_reducer, &R.jsgraph);
+    MachineOperatorReducer reducer(
+        &R.graph_reducer, &R.jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(load);
     CHECK(!reduction.Changed());  // loads should not be reduced.
   }
@@ -801,7 +820,9 @@ TEST(ReduceLoadStore) {
         R.graph.NewNode(R.machine.Store(StoreRepresentation(
                             MachineRepresentation::kWord32, kNoWriteBarrier)),
                         base, index, load, load, R.graph.start());
-    MachineOperatorReducer reducer(&R.graph_reducer, &R.jsgraph);
+    MachineOperatorReducer reducer(
+        &R.graph_reducer, &R.jsgraph,
+        MachineOperatorReducer::kPropagateSignallingNan);
     Reduction reduction = reducer.Reduce(store);
     CHECK(!reduction.Changed());  // stores should not be reduced.
   }

@@ -7,6 +7,7 @@
 
 #include <iterator>
 
+#include "include/v8config.h"
 #include "src/base/compiler-specific.h"
 #include "src/base/macros.h"
 
@@ -105,6 +106,35 @@ class ThreadedListBase final : public BaseClass {
     list.Clear();
   }
 
+  // This is only valid if {v} is in the current list.
+  void TruncateAt(ThreadedListBase* rem, T* v) {
+    CHECK_NOT_NULL(rem);
+    CHECK_NOT_NULL(v);
+    CHECK(rem->is_empty());
+    Iterator it = begin();
+    T* last = nullptr;
+    for (; it != end(); ++it) {
+      if (*it == v) {
+        break;
+      }
+      last = *it;
+    }
+    CHECK_EQ(v, *it);
+
+    // Remaining list.
+    rem->head_ = v;
+    rem->tail_ = tail_;
+
+    if (last == nullptr) {
+      // The head must point to v, so we return the empty list.
+      CHECK_EQ(head_, v);
+      Clear();
+    } else {
+      tail_ = TLTraits::next(last);
+      *tail_ = nullptr;
+    }
+  }
+
   void Clear() {
     head_ = nullptr;
     tail_ = &head_;
@@ -151,7 +181,7 @@ class ThreadedListBase final : public BaseClass {
     return false;
   }
 
-  class Iterator final {
+  class V8_GSL_POINTER Iterator final {
    public:
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
@@ -166,9 +196,6 @@ class ThreadedListBase final : public BaseClass {
     }
     bool operator==(const Iterator& other) const {
       return entry_ == other.entry_;
-    }
-    bool operator!=(const Iterator& other) const {
-      return entry_ != other.entry_;
     }
     T*& operator*() { return *entry_; }
     T* operator->() { return *entry_; }
@@ -198,7 +225,7 @@ class ThreadedListBase final : public BaseClass {
     friend class ThreadedListBase;
   };
 
-  class ConstIterator final {
+  class V8_GSL_POINTER ConstIterator final {
    public:
     using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
@@ -217,9 +244,6 @@ class ThreadedListBase final : public BaseClass {
     }
     bool operator==(const ConstIterator& other) const {
       return entry_ == other.entry_;
-    }
-    bool operator!=(const ConstIterator& other) const {
-      return entry_ != other.entry_;
     }
     const T* operator*() const { return *entry_; }
 
@@ -258,6 +282,28 @@ class ThreadedListBase final : public BaseClass {
       *tail_ = *from_location;
       tail_ = from_list->tail_;
       from_list->Rewind(from_location);
+    }
+  }
+
+  // Removes the element at `it`, and returns a new iterator pointing to the
+  // element following the removed element (if `it` was pointing to the last
+  // element, then `end()` is returned). The head and the tail are updated. `it`
+  // should not be `end()`. Iterators that are currently on the same element as
+  // `it` are invalidated. Other iterators are not affected. If the last element
+  // is removed, existing `end()` iterators will be invalidated.
+  Iterator RemoveAt(Iterator it) {
+    if (*it.entry_ == head_) {
+      DropHead();
+      return begin();
+    } else if (tail_ == TLTraits::next(*it.entry_)) {
+      tail_ = it.entry_;
+      *it.entry_ = nullptr;
+      return end();
+    } else {
+      T* old_entry = *it.entry_;
+      *it.entry_ = *TLTraits::next(*it.entry_);
+      *TLTraits::next(old_entry) = nullptr;
+      return Iterator(it.entry_);
     }
   }
 

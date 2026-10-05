@@ -13,26 +13,18 @@
 #include "src/compiler/backend/gap-resolver.h"
 #include "src/compiler/node-matchers.h"
 #include "src/compiler/osr.h"
-#include "src/heap/memory-chunk.h"
-
-#if V8_ENABLE_WEBASSEMBLY
-#include "src/wasm/wasm-code-manager.h"
-#endif  // V8_ENABLE_WEBASSEMBLY
+#include "src/heap/mutable-page.h"
+#include "src/objects/js-function-inl.h"
+#include "src/objects/shared-function-info-inl.h"
+#include "src/sandbox/js-dispatch-table-inl.h"
 
 namespace v8 {
 namespace internal {
 namespace compiler {
 
-#define __ tasm()->
+#define __ masm()->
 
-// TODO(plind): consider renaming these macros.
-#define TRACE_MSG(msg)                                                      \
-  PrintF("code_gen: \'%s\' in function %s at line %d\n", msg, __FUNCTION__, \
-         __LINE__)
-
-#define TRACE_UNIMPL()                                                       \
-  PrintF("UNIMPLEMENTED code_generator_mips: %s at line %d\n", __FUNCTION__, \
-         __LINE__)
+#define TRACE(...) PrintF(__VA_ARGS__)
 
 // Adds Mips-specific methods to convert InstructionOperands.
 class MipsOperandConverter final : public InstructionOperandConverter {
@@ -110,6 +102,9 @@ class MipsOperandConverter final : public InstructionOperandConverter {
     switch (AddressingModeField::decode(instr_->opcode())) {
       case kMode_None:
         break;
+      case kMode_Root:
+        *first_index += 1;
+        return MemOperand(kRootRegister, InputInt32(index));
       case kMode_MRI:
         *first_index += 2;
         return MemOperand(InputRegister(index + 0), InputInt32(index + 1));
@@ -162,10 +157,9 @@ class OutOfLineRecordWrite final : public OutOfLineCode {
   }
 
   void Generate() final {
-    __ CheckPageFlag(
-        value_, scratch0_,
-        MemoryChunk::kPointersToHereAreInterestingOrInSharedHeapMask, eq,
-        exit());
+    __ CheckPageFlag(value_, scratch0_,
+                     MemoryChunk::kPointersToHereAreInterestingMask, eq,
+                     exit());
     __ Daddu(scratch1_, object_, index_);
     SaveFPRegsMode const save_fp_mode = frame()->DidAllocateDoubleRegisters()
                                             ? SaveFPRegsMode::kSave
@@ -226,6 +220,35 @@ CREATE_OOL_CLASS(OutOfLineFloat64Max, Float64MaxOutOfLine, FPURegister);
 CREATE_OOL_CLASS(OutOfLineFloat64Min, Float64MinOutOfLine, FPURegister);
 
 #undef CREATE_OOL_CLASS
+
+#if V8_ENABLE_WEBASSEMBLY
+class OutOfLineTrap final : public OutOfLineCode {
+ public:
+  OutOfLineTrap(CodeGenerator* gen, Instruction* instr)
+      : OutOfLineCode(gen), instr_(instr), gen_(gen) {}
+  void Generate() final {
+    MipsOperandConverter i(gen_, instr_);
+    TrapId trap_id =
+        static_cast<TrapId>(i.InputInt32(instr_->InputCount() - 1));
+    GenerateCallToTrap(trap_id);
+  }
+
+ private:
+  void GenerateCallToTrap(TrapId trap_id) {
+    gen_->AssembleSourcePosition(instr_);
+    // A direct call to a wasm runtime stub defined in this module.
+    // Just encode the stub index. This will be patched when the code
+    // is added to the native module and copied into wasm code space.
+    __ Call(static_cast<Address>(trap_id), RelocInfo::WASM_STUB_CALL);
+    gen_->RecordSafepointWithoutTaggedSlots();
+    if (v8_flags.debug_code) {
+      __ stop();
+    }
+  }
+  Instruction* instr_;
+  CodeGenerator* gen_;
+};
+#endif  // V8_ENABLE_WEBASSEMBLY
 
 Condition FlagsConditionToConditionCmp(FlagsCondition condition) {
   switch (condition) {
@@ -292,17 +315,37 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
       *predicate = false;
       return EQ;
     case kUnsignedLessThan:
+    case kFloatLessThan:
       *predicate = true;
       return OLT;
     case kUnsignedGreaterThanOrEqual:
       *predicate = false;
       return OLT;
     case kUnsignedLessThanOrEqual:
+    case kFloatLessThanOrEqual:
       *predicate = true;
       return OLE;
     case kUnsignedGreaterThan:
       *predicate = false;
       return OLE;
+    case kFloatGreaterThan:
+      *predicate = false;
+      return ULE;
+    case kFloatGreaterThanOrEqual:
+      *predicate = false;
+      return ULT;
+    case kFloatLessThanOrUnordered:
+      *predicate = true;
+      return ULT;
+    case kFloatGreaterThanOrUnordered:
+      *predicate = false;
+      return OLE;
+    case kFloatGreaterThanOrEqualOrUnordered:
+      *predicate = false;
+      return OLT;
+    case kFloatLessThanOrEqualOrUnordered:
+      *predicate = true;
+      return ULE;
     case kUnorderedEqual:
     case kUnorderedNotEqual:
       *predicate = true;
@@ -374,9 +417,9 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
 #define ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(load_linked, store_conditional)       \
   do {                                                                         \
     Label exchange;                                                            \
-    __ sync();                                                                 \
-    __ bind(&exchange);                                                        \
     __ daddu(i.TempRegister(0), i.InputRegister(0), i.InputRegister(1));       \
+    __ bind(&exchange);                                                        \
+    __ sync();                                                                 \
     __ load_linked(i.OutputRegister(0), MemOperand(i.TempRegister(0), 0));     \
     __ mov(i.TempRegister(1), i.InputRegister(2));                             \
     __ store_conditional(i.TempRegister(1), MemOperand(i.TempRegister(0), 0)); \
@@ -411,7 +454,7 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
   } while (0)
 
 #define ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(load_linked,                  \
-                                                 store_conditional)            \
+                                                 store_conditional, old_value) \
   do {                                                                         \
     Label compareExchange;                                                     \
     Label exit;                                                                \
@@ -419,11 +462,10 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
     __ sync();                                                                 \
     __ bind(&compareExchange);                                                 \
     __ load_linked(i.OutputRegister(0), MemOperand(i.TempRegister(0), 0));     \
-    __ BranchShort(&exit, ne, i.InputRegister(2),                              \
-                   Operand(i.OutputRegister(0)));                              \
-    __ mov(i.TempRegister(2), i.InputRegister(3));                             \
-    __ store_conditional(i.TempRegister(2), MemOperand(i.TempRegister(0), 0)); \
-    __ BranchShort(&compareExchange, eq, i.TempRegister(2),                    \
+    __ BranchShort(&exit, ne, old_value, Operand(i.OutputRegister(0)));        \
+    __ mov(i.TempRegister(1), i.InputRegister(3));                             \
+    __ store_conditional(i.TempRegister(1), MemOperand(i.TempRegister(0), 0)); \
+    __ BranchShort(&compareExchange, eq, i.TempRegister(1),                    \
                    Operand(zero_reg));                                         \
     __ bind(&exit);                                                            \
     __ sync();                                                                 \
@@ -464,7 +506,7 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
 
 #define ASSEMBLE_IEEE754_BINOP(name)                                        \
   do {                                                                      \
-    FrameScope scope(tasm(), StackFrame::MANUAL);                           \
+    FrameScope scope(masm(), StackFrame::MANUAL);                           \
     __ PrepareCallCFunction(0, 2, kScratchReg);                             \
     __ MovToFloatParameters(i.InputDoubleRegister(0),                       \
                             i.InputDoubleRegister(1));                      \
@@ -475,7 +517,7 @@ FPUCondition FlagsConditionToConditionCmpFPU(bool* predicate,
 
 #define ASSEMBLE_IEEE754_UNOP(name)                                         \
   do {                                                                      \
-    FrameScope scope(tasm(), StackFrame::MANUAL);                           \
+    FrameScope scope(masm(), StackFrame::MANUAL);                           \
     __ PrepareCallCFunction(0, 1, kScratchReg);                             \
     __ MovToFloatParameter(i.InputDoubleRegister(0));                       \
     __ CallCFunction(ExternalReference::ieee754_##name##_function(), 0, 1); \
@@ -504,7 +546,7 @@ void CodeGenerator::AssemblePrepareTailCall() {
 
 namespace {
 
-void AdjustStackPointerForTailCall(TurboAssembler* tasm,
+void AdjustStackPointerForTailCall(MacroAssembler* masm,
                                    FrameAccessState* state,
                                    int new_slot_above_sp,
                                    bool allow_shrinkage = true) {
@@ -512,10 +554,10 @@ void AdjustStackPointerForTailCall(TurboAssembler* tasm,
                           StandardFrameConstants::kFixedSlotCountAboveFp;
   int stack_slot_delta = new_slot_above_sp - current_sp_offset;
   if (stack_slot_delta > 0) {
-    tasm->Dsubu(sp, sp, stack_slot_delta * kSystemPointerSize);
+    masm->Dsubu(sp, sp, stack_slot_delta * kSystemPointerSize);
     state->IncreaseSPDelta(stack_slot_delta);
   } else if (allow_shrinkage && stack_slot_delta < 0) {
-    tasm->Daddu(sp, sp, -stack_slot_delta * kSystemPointerSize);
+    masm->Daddu(sp, sp, -stack_slot_delta * kSystemPointerSize);
     state->IncreaseSPDelta(stack_slot_delta);
   }
 }
@@ -524,13 +566,13 @@ void AdjustStackPointerForTailCall(TurboAssembler* tasm,
 
 void CodeGenerator::AssembleTailCallBeforeGap(Instruction* instr,
                                               int first_unused_slot_offset) {
-  AdjustStackPointerForTailCall(tasm(), frame_access_state(),
+  AdjustStackPointerForTailCall(masm(), frame_access_state(),
                                 first_unused_slot_offset, false);
 }
 
 void CodeGenerator::AssembleTailCallAfterGap(Instruction* instr,
                                              int first_unused_slot_offset) {
-  AdjustStackPointerForTailCall(tasm(), frame_access_state(),
+  AdjustStackPointerForTailCall(masm(), frame_access_state(),
                                 first_unused_slot_offset);
 }
 
@@ -541,26 +583,37 @@ void CodeGenerator::AssembleCodeStartRegisterCheck() {
             kJavaScriptCallCodeStartRegister, Operand(kScratchReg));
 }
 
-// Check if the code object is marked for deoptimization. If it is, then it
-// jumps to the CompileLazyDeoptimizedCode builtin. In order to do this we need
-// to:
-//    1. read from memory the word that contains that bit, which can be found in
-//       the flags in the referenced {CodeDataContainer} object;
-//    2. test kMarkedForDeoptimizationBit in those flags; and
-//    3. if it is not zero then it jumps to the builtin.
-void CodeGenerator::BailoutIfDeoptimized() {
-  int offset = Code::kCodeDataContainerOffset - Code::kHeaderSize;
-  __ Ld(kScratchReg, MemOperand(kJavaScriptCallCodeStartRegister, offset));
-  __ Lw(kScratchReg,
-        FieldMemOperand(kScratchReg,
-                        CodeDataContainer::kKindSpecificFlagsOffset));
-  __ And(kScratchReg, kScratchReg,
-         Operand(1 << Code::kMarkedForDeoptimizationBit));
-  __ Jump(BUILTIN_CODE(isolate(), CompileLazyDeoptimizedCode),
-          RelocInfo::CODE_TARGET, ne, kScratchReg, Operand(zero_reg));
+// Check that {kJavaScriptCallDispatchHandleRegister} is correct.
+void CodeGenerator::AssembleDispatchHandleRegisterCheck() {
+  DCHECK(linkage()->GetIncomingDescriptor()->IsJSFunctionCall());
+  if (!V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE_BOOL) return;
+  // We currently don't check this for JS builtins as those are sometimes
+  // called directly (e.g. from other builtins) and not through the dispatch
+  // table. This is fine as builtin functions don't use the dispatch handle,
+  // but we could enable this check in the future if we make sure to pass the
+  // kInvalidDispatchHandle whenever we do a direct call to a JS builtin.
+  if (Builtins::IsBuiltinId(info()->builtin())) {
+    return;
+  }
+
+  UseScratchRegisterScope temps(masm());
+  Register actual_parameter_count = temps.Acquire();
+  // For now, we only ensure that the register references a valid dispatch
+  // entry with the correct parameter count. In the future, we may also be able
+  // to check that the entry points back to this code.
+  {
+    UseScratchRegisterScope temps(masm());
+    Register scratch = temps.Acquire();
+    __ LoadParameterCountFromJSDispatchTable(
+        actual_parameter_count, kJavaScriptCallDispatchHandleRegister, scratch);
+  }
+  __ Assert(eq, AbortReason::kWrongFunctionDispatchHandle,
+            actual_parameter_count, Operand(parameter_count_));
 }
 
+void CodeGenerator::AssertNotDeoptimized() { __ AssertNotDeoptimized(); }
 // Assembles an instruction after register allocation, producing machine code.
+
 CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     Instruction* instr) {
   MipsOperandConverter i(this, instr);
@@ -572,11 +625,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Call(i.InputCode(0), RelocInfo::CODE_TARGET);
       } else {
         Register reg = i.InputRegister(0);
+        CodeEntrypointTag tag =
+            i.InputCodeEntrypointTag(instr->CodeEnrypointTagInputIndex());
         DCHECK_IMPLIES(
             instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister),
             reg == kJavaScriptCallCodeStartRegister);
-        __ daddiu(reg, reg, Code::kHeaderSize - kHeapObjectTag);
-        __ Call(reg);
+        __ CallCodeObject(reg, tag);
       }
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
@@ -585,33 +639,43 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchCallBuiltinPointer: {
       DCHECK(!instr->InputAt(0)->IsImmediate());
       Register builtin_index = i.InputRegister(0);
-      __ CallBuiltinByIndex(builtin_index);
+      Register target =
+          instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister)
+              ? kJavaScriptCallCodeStartRegister
+              : builtin_index;
+      __ CallBuiltinByIndex(builtin_index, target);
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
       break;
     }
 #if V8_ENABLE_WEBASSEMBLY
-    case kArchCallWasmFunction: {
+    case kArchCallWasmFunction:
+    case kArchCallWasmFunctionIndirect: {
       if (instr->InputAt(0)->IsImmediate()) {
+        DCHECK_EQ(arch_opcode, kArchCallWasmFunction);
         Constant constant = i.ToConstant(instr->InputAt(0));
         Address wasm_code = static_cast<Address>(constant.ToInt64());
         __ Call(wasm_code, constant.rmode());
+      } else if (arch_opcode == kArchCallWasmFunctionIndirect) {
+        __ CallWasmCodePointer(i.InputRegister(0));
       } else {
-        __ daddiu(kScratchReg, i.InputRegister(0), 0);
-        __ Call(kScratchReg);
+        __ Call(i.InputRegister(0));
       }
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
       break;
     }
-    case kArchTailCallWasm: {
+    case kArchTailCallWasm:
+    case kArchTailCallWasmIndirect: {
       if (instr->InputAt(0)->IsImmediate()) {
+        DCHECK_EQ(arch_opcode, kArchTailCallWasm);
         Constant constant = i.ToConstant(instr->InputAt(0));
         Address wasm_code = static_cast<Address>(constant.ToInt64());
         __ Jump(wasm_code, constant.rmode());
+      } else if (arch_opcode == kArchTailCallWasmIndirect) {
+        __ CallWasmCodePointer(i.InputRegister(0), CallJumpMode::kTailCall);
       } else {
-        __ daddiu(kScratchReg, i.InputRegister(0), 0);
-        __ Jump(kScratchReg);
+        __ Jump(i.InputRegister(0));
       }
       frame_access_state()->ClearSPDelta();
       frame_access_state()->SetFrameAccessToDefault();
@@ -623,11 +687,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ Jump(i.InputCode(0), RelocInfo::CODE_TARGET);
       } else {
         Register reg = i.InputRegister(0);
+        CodeEntrypointTag tag =
+            i.InputCodeEntrypointTag(instr->CodeEnrypointTagInputIndex());
         DCHECK_IMPLIES(
             instr->HasCallDescriptorFlag(CallDescriptor::kFixedTargetRegister),
             reg == kJavaScriptCallCodeStartRegister);
-        __ daddiu(reg, reg, Code::kHeaderSize - kHeapObjectTag);
-        __ Jump(reg);
+        __ JumpCodeObject(reg, tag);
       }
       frame_access_state()->ClearSPDelta();
       frame_access_state()->SetFrameAccessToDefault();
@@ -648,21 +713,23 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       Register func = i.InputRegister(0);
       if (v8_flags.debug_code) {
         // Check the function's context matches the context argument.
-        __ Ld(kScratchReg, FieldMemOperand(func, JSFunction::kContextOffset));
+        __ Ld(kScratchReg,
+              FieldMemOperand(func, offsetof(JSFunction, context_)));
         __ Assert(eq, AbortReason::kWrongFunctionContext, cp,
                   Operand(kScratchReg));
       }
-      static_assert(kJavaScriptCallCodeStartRegister == a2, "ABI mismatch");
-      __ Ld(a2, FieldMemOperand(func, JSFunction::kCodeOffset));
-      __ Daddu(a2, a2, Operand(Code::kHeaderSize - kHeapObjectTag));
-      __ Call(a2);
+      uint32_t expected_parameter_count =
+          i.InputUint32(instr->JSCallExpectedParameterCountInputIndex());
+      __ CallJSFunction(func, expected_parameter_count);
       RecordCallPosition(instr);
       frame_access_state()->ClearSPDelta();
       break;
     }
     case kArchPrepareCallCFunction: {
-      int const num_parameters = MiscField::decode(instr->opcode());
-      __ PrepareCallCFunction(num_parameters, kScratchReg);
+      UseScratchRegisterScope temps(masm());
+      Register scratch = temps.Acquire();
+      int const num_parameters = i.InputInt32(0);
+      __ PrepareCallCFunction(num_parameters, scratch);
       // Frame alignment requires using FP-relative frame addressing.
       frame_access_state()->SetFrameAccessToFP();
       break;
@@ -698,45 +765,41 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       AssemblePrepareTailCall();
       break;
     case kArchCallCFunction: {
-      int const num_gp_parameters = ParamField::decode(instr->opcode());
-      int const num_fp_parameters = FPParamField::decode(instr->opcode());
+      uint32_t param_counts = i.InputUint32(instr->InputCount() - 1);
+      int const num_gp_parameters = ParamField::decode(param_counts);
+      int const num_fp_parameters = FPParamField::decode(param_counts);
+      SetIsolateDataSlots set_isolate_data_slots = SetIsolateDataSlots::kYes;
+      Label return_location;
 #if V8_ENABLE_WEBASSEMBLY
-      Label start_call;
       bool isWasmCapiFunction =
           linkage()->GetIncomingDescriptor()->IsWasmCapiFunction();
-      // from start_call to return address.
-      int offset = __ root_array_available() ? 64 : 112;
-#endif  // V8_ENABLE_WEBASSEMBLY
-#if V8_HOST_ARCH_MIPS64
-      if (v8_flags.debug_code) {
-        offset += 16;
-      }
-#endif
-#if V8_ENABLE_WEBASSEMBLY
       if (isWasmCapiFunction) {
         // Put the return address in a stack slot.
-        __ mov(kScratchReg, ra);
-        __ bind(&start_call);
-        __ nal();
-        __ nop();
-        __ Daddu(ra, ra, offset - 8);  // 8 = nop + nal
-        __ sd(ra, MemOperand(fp, WasmExitFrameConstants::kCallingPCOffset));
-        __ mov(ra, kScratchReg);
+        __ LoadAddressPCRelative(kScratchReg, &return_location);
+        __ sd(kScratchReg,
+              MemOperand(fp, WasmExitFrameConstants::kCallingPCOffset));
+        set_isolate_data_slots = SetIsolateDataSlots::kNo;
       }
 #endif  // V8_ENABLE_WEBASSEMBLY
+      int pc_offset;
       if (instr->InputAt(0)->IsImmediate()) {
         ExternalReference ref = i.InputExternalReference(0);
-        __ CallCFunction(ref, num_gp_parameters, num_fp_parameters);
+        pc_offset = __ CallCFunction(ref, num_gp_parameters, num_fp_parameters,
+                                     set_isolate_data_slots, &return_location);
       } else {
         Register func = i.InputRegister(0);
-        __ CallCFunction(func, num_gp_parameters, num_fp_parameters);
+        pc_offset = __ CallCFunction(func, num_gp_parameters, num_fp_parameters,
+                                     set_isolate_data_slots, &return_location);
       }
-#if V8_ENABLE_WEBASSEMBLY
-      if (isWasmCapiFunction) {
-        CHECK_EQ(offset, __ SizeOfCodeGeneratedSince(&start_call));
-        RecordSafepoint(instr->reference_map());
+      RecordSafepoint(instr->reference_map(), pc_offset);
+
+      if (instr->HasCallDescriptorFlag(CallDescriptor::kHasExceptionHandler)) {
+        handlers_.push_back({nullptr, pc_offset});
       }
-#endif  // V8_ENABLE_WEBASSEMBLY
+      if (instr->HasCallDescriptorFlag(CallDescriptor::kNeedsFrameState)) {
+        RecordDeoptInfo(instr, pc_offset);
+      }
+
       frame_access_state()->SetFrameAccessToDefault();
       // Ideally, we should decrement SP delta to match the change of stack
       // pointer in CallCFunction. However, for certain architectures (e.g.
@@ -770,9 +833,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       {
         // We don't actually want to generate a pile of code for this, so just
         // claim there is a stack frame, without generating one.
-        FrameScope scope(tasm(), StackFrame::NO_FRAME_TYPE);
-        __ Call(isolate()->builtins()->code_handle(Builtin::kAbortCSADcheck),
-                RelocInfo::CODE_TARGET);
+        FrameScope scope(masm(), StackFrame::NO_FRAME_TYPE);
+        __ CallBuiltin(Builtin::kAbortCSADcheck);
       }
       __ stop();
       break;
@@ -780,11 +842,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ DebugBreak();
       break;
     case kArchComment:
-      __ RecordComment(reinterpret_cast<const char*>(i.InputInt64(0)));
+      __ RecordComment(reinterpret_cast<const char*>(i.InputInt64(0)),
+                       SourceLocation());
       break;
     case kArchNop:
-    case kArchThrowTerminator:
       // don't emit code for nops.
+      break;
+    case kArchPause:
+      __ sync();
       break;
     case kArchDeoptimize: {
       DeoptimizationExit* exit =
@@ -795,16 +860,24 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kArchRet:
       AssembleReturn(instr->InputAt(0));
       break;
-    case kArchStackPointerGreaterThan: {
-      Register lhs_register = sp;
-      uint32_t offset;
-      if (ShouldApplyOffsetToStackCheck(instr, &offset)) {
-        lhs_register = i.TempRegister(1);
-        __ Dsubu(lhs_register, sp, offset);
-      }
-      __ Sltu(i.TempRegister(0), i.InputRegister(0), lhs_register);
+#if V8_ENABLE_WEBASSEMBLY
+    case kArchTrap:
+      __ Branch(zone()->New<OutOfLineTrap>(this, instr)->entry());
+      break;
+    case kArchStackPointer:
+      // The register allocator expects an allocatable register for the output,
+      // we cannot use sp directly.
+      __ mov(i.OutputRegister(), sp);
+      break;
+    case kArchSetStackPointer: {
+      DCHECK(instr->InputAt(0)->IsRegister());
+      __ mov(sp, i.InputRegister(0));
       break;
     }
+#endif  // V8_ENABLE_WEBASSEMBLY
+    case kArchStackPointerGreaterThan:
+      // Pseudo-instruction used for cmp/branch. No codes emitted here.
+      break;
     case kArchStackCheckOffset:
       __ Move(i.OutputRegister(), Smi::FromInt(GetStackCheckOffset()));
       break;
@@ -818,14 +891,17 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
         __ mov(i.OutputRegister(), fp);
       }
       break;
+    case kArchRootPointer:
+      __ mov(i.OutputRegister(), kRootRegister);
+      break;
     case kArchTruncateDoubleToI:
       __ TruncateDoubleToI(isolate(), zone(), i.OutputRegister(),
                            i.InputDoubleRegister(0), DetermineStubCallMode());
       break;
     case kArchStoreWithWriteBarrier:  // Fall through.
     case kArchAtomicStoreWithWriteBarrier: {
-      RecordWriteMode mode =
-          static_cast<RecordWriteMode>(MiscField::decode(instr->opcode()));
+      DCHECK_EQ(AddressingModeField::decode(instr->opcode()), kMode_None);
+      RecordWriteMode mode = RecordWriteModeField::decode(instr->opcode());
       Register object = i.InputRegister(0);
       Register index = i.InputRegister(1);
       Register value = i.InputRegister(2);
@@ -852,6 +928,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ bind(ool->exit());
       break;
     }
+    case kArchAtomicStoreSkippedWriteBarrier:
+    case kArchStoreSkippedWriteBarrier:
+    case kArchStoreIndirectWithWriteBarrier:
+    case kArchStoreIndirectSkippedWriteBarrier:
+      UNREACHABLE();
     case kArchStackSlot: {
       FrameOffset offset =
           frame_access_state()->GetFrameOffset(i.InputInt32(0));
@@ -939,6 +1020,33 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ DaddOverflow(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1),
                       kScratchReg);
       break;
+    case kMips64Add64_3: {
+      Register low = i.OutputRegister(0);
+      UseScratchRegisterScope temps(masm());
+      Register scratch = temps.Acquire();
+      __ Daddu(scratch, i.InputRegister(0), i.InputOperand(1));
+      if (instr->OutputCount() > 1) {
+        Register high = i.OutputRegister(1);
+        __ Sltu(high, scratch, i.InputRegister(0));
+        __ Daddu(low, scratch, i.InputOperand(2));
+        __ Sltu(scratch, low, scratch);
+        __ Daddu(high, high, scratch);
+      } else {
+        __ Daddu(low, scratch, i.InputOperand(2));
+      }
+      break;
+    }
+    case kMips64Add128: {
+      UseScratchRegisterScope temps(masm());
+      Register scratch = temps.Acquire();
+      CHECK(!AreAliased(i.OutputRegister(0), i.OutputRegister(1),
+                        i.InputRegister(0)));
+      __ Daddu(i.OutputRegister(0), i.InputRegister(0), i.InputOperand(1));
+      __ Daddu(i.OutputRegister(1), i.InputRegister(2), i.InputRegister(3));
+      __ Sltu(scratch, i.OutputRegister(0), i.InputRegister(0));
+      __ Daddu(i.OutputRegister(1), i.OutputRegister(1), scratch);
+      break;
+    }
     case kMips64Sub:
       __ Subu(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
@@ -949,6 +1057,15 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ DsubOverflow(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1),
                       kScratchReg);
       break;
+    case kMips64Sub128: {
+      UseScratchRegisterScope temps(masm());
+      Register scratch = temps.Acquire();
+      __ Sltu(scratch, i.InputRegister(0), i.InputOperand(1));
+      __ Dsubu(i.OutputRegister(0), i.InputRegister(0), i.InputOperand(1));
+      __ Dsubu(i.OutputRegister(1), i.InputRegister(2), i.InputRegister(3));
+      __ Dsubu(i.OutputRegister(1), i.OutputRegister(1), scratch);
+      break;
+    }
     case kMips64Mul:
       __ Mul(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
@@ -997,6 +1114,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Dmul:
       __ Dmul(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
+    case kMips64DmulWide:
+      __ dmult(i.InputRegister(0), i.InputRegister(1));
+      __ mflo(i.OutputRegister(0));
+      if (instr->OutputCount() > 1) __ mfhi(i.OutputRegister(1));
+      break;
+    case kMips64DmuluWide:
+      __ dmultu(i.InputRegister(0), i.InputRegister(1));
+      __ mflo(i.OutputRegister(0));
+      if (instr->OutputCount() > 1) __ mfhi(i.OutputRegister(1));
+      break;
     case kMips64Ddiv:
       __ Ddiv(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       if (kArchVariant == kMips64r6) {
@@ -1033,13 +1160,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ And(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
     case kMips64And32:
-        __ And(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
+      __ And(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
     case kMips64Or:
       __ Or(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
     case kMips64Or32:
-        __ Or(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
+      __ Or(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
     case kMips64Nor:
       if (instr->InputAt(1)->IsRegister()) {
@@ -1061,8 +1188,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Xor(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
       break;
     case kMips64Xor32:
-        __ Xor(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
-        __ sll(i.OutputRegister(), i.OutputRegister(), 0x0);
+      __ Xor(i.OutputRegister(), i.InputRegister(0), i.InputOperand(1));
+      __ sll(i.OutputRegister(), i.OutputRegister(), 0x0);
       break;
     case kMips64Clz:
       __ Clz(i.OutputRegister(), i.InputRegister(0));
@@ -1123,10 +1250,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     case kMips64Ins:
       if (instr->InputAt(1)->IsImmediate() && i.InputInt8(1) == 0) {
-        __ Ins(i.OutputRegister(), zero_reg, i.InputInt8(1), i.InputInt8(2));
+        __ Ins(i.OutputRegister(), zero_reg, i.InputInt8(2), i.InputInt8(3));
       } else {
-        __ Ins(i.OutputRegister(), i.InputRegister(0), i.InputInt8(1),
-               i.InputInt8(2));
+        __ Ins(i.OutputRegister(), i.InputRegister(1), i.InputInt8(2),
+               i.InputInt8(3));
       }
       break;
     case kMips64Dext: {
@@ -1136,10 +1263,10 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kMips64Dins:
       if (instr->InputAt(1)->IsImmediate() && i.InputInt8(1) == 0) {
-        __ Dins(i.OutputRegister(), zero_reg, i.InputInt8(1), i.InputInt8(2));
+        __ Dins(i.OutputRegister(), zero_reg, i.InputInt8(2), i.InputInt8(3));
       } else {
-        __ Dins(i.OutputRegister(), i.InputRegister(0), i.InputInt8(1),
-                i.InputInt8(2));
+        __ Dins(i.OutputRegister(), i.InputRegister(1), i.InputInt8(2),
+                i.InputInt8(3));
       }
       break;
     case kMips64Dshl:
@@ -1211,12 +1338,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       bool predicate;
       FPUCondition cc =
           FlagsConditionToConditionCmpFPU(&predicate, instr->flags_condition());
-
-      if ((left == kDoubleRegZero || right == kDoubleRegZero) &&
-          !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
-
       __ CompareF32(cc, left, right);
     } break;
     case kMips64AddS:
@@ -1267,10 +1388,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       bool predicate;
       FPUCondition cc =
           FlagsConditionToConditionCmpFPU(&predicate, instr->flags_condition());
-      if ((left == kDoubleRegZero || right == kDoubleRegZero) &&
-          !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
       __ CompareF64(cc, left, right);
     } break;
     case kMips64AddD:
@@ -1294,7 +1411,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64ModD: {
       // TODO(bmeurer): We should really get rid of this special instruction,
       // and generate a CallAddress instruction instead.
-      FrameScope scope(tasm(), StackFrame::MANUAL);
+      FrameScope scope(masm(), StackFrame::MANUAL);
       __ PrepareCallCFunction(0, 2, kScratchReg);
       __ MovToFloatParameters(i.InputDoubleRegister(0),
                               i.InputDoubleRegister(1));
@@ -1470,11 +1587,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       if (instr->OutputCount() > 1) {
         // Check for inputs below INT32_MIN and NaN.
         __ li(i.OutputRegister(1), 1);
-        __ Move(i.TempDoubleRegister(0), static_cast<double>(INT32_MIN));
-        __ CompareF64(LE, i.TempDoubleRegister(0), i.InputDoubleRegister(0));
+        __ Move(scratch, static_cast<double>(INT32_MIN));
+        __ CompareF64(LE, scratch, i.InputDoubleRegister(0));
         __ LoadZeroIfNotFPUCondition(i.OutputRegister(1));
-        __ Move(i.TempDoubleRegister(0), static_cast<double>(INT32_MAX) + 1);
-        __ CompareF64(LE, i.TempDoubleRegister(0), i.InputDoubleRegister(0));
+        __ Move(scratch, static_cast<double>(INT32_MAX) + 1);
+        __ CompareF64(LE, scratch, i.InputDoubleRegister(0));
         __ LoadZeroIfFPUCondition(i.OutputRegister(1));
       }
       break;
@@ -1563,11 +1680,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Trunc_uw_d(i.OutputRegister(), i.InputDoubleRegister(0), scratch);
       if (instr->OutputCount() > 1) {
         __ li(i.OutputRegister(1), 1);
-        __ Move(i.TempDoubleRegister(0), static_cast<double>(-1.0));
-        __ CompareF64(LT, i.TempDoubleRegister(0), i.InputDoubleRegister(0));
+        __ Move(scratch, static_cast<double>(-1.0));
+        __ CompareF64(LT, scratch, i.InputDoubleRegister(0));
         __ LoadZeroIfNotFPUCondition(i.OutputRegister(1));
-        __ Move(i.TempDoubleRegister(0), static_cast<double>(UINT32_MAX) + 1);
-        __ CompareF64(LE, i.TempDoubleRegister(0), i.InputDoubleRegister(0));
+        __ Move(scratch, static_cast<double>(UINT32_MAX) + 1);
+        __ CompareF64(LE, scratch, i.InputDoubleRegister(0));
         __ LoadZeroIfFPUCondition(i.OutputRegister(1));
       }
       break;
@@ -1593,9 +1710,16 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     }
     case kMips64TruncUlD: {
       FPURegister scratch = kScratchDoubleReg;
+      bool set_overflow_to_min_u64 = MiscField::decode(instr->opcode());
       Register result = instr->OutputCount() > 1 ? i.OutputRegister(1) : no_reg;
       __ Trunc_ul_d(i.OutputRegister(0), i.InputDoubleRegister(0), scratch,
                     result);
+      if (set_overflow_to_min_u64) {
+        // Avoid UINT64_MAX as an overflow indicator and use 0 instead,
+        // because 0 allows easier out-of-bounds detection.
+        __ Daddu(kScratchReg, i.OutputRegister(), 1);
+        __ Movz(i.OutputRegister(), zero_reg, kScratchReg);
+      }
       break;
     }
     case kMips64BitcastDL:
@@ -1616,7 +1740,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Float64InsertHighWord32:
       __ FmoveHigh(i.OutputDoubleRegister(), i.InputRegister(1));
       break;
-    // ... more basic instructions ...
+      // ... more basic instructions ...
 
     case kMips64Seb:
       __ seb(i.OutputRegister(), i.InputRegister(0));
@@ -1630,9 +1754,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Lb:
       __ Lb(i.OutputRegister(), i.MemoryOperand());
       break;
-    case kMips64Sb:
-      __ Sb(i.InputOrZeroRegister(2), i.MemoryOperand());
+    case kMips64Sb: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Sb(i.InputOrZeroRegister(index), mem);
       break;
+    }
     case kMips64Lhu:
       __ Lhu(i.OutputRegister(), i.MemoryOperand());
       break;
@@ -1645,12 +1772,18 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Ulh:
       __ Ulh(i.OutputRegister(), i.MemoryOperand());
       break;
-    case kMips64Sh:
-      __ Sh(i.InputOrZeroRegister(2), i.MemoryOperand());
+    case kMips64Sh: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Sh(i.InputOrZeroRegister(index), mem);
       break;
-    case kMips64Ush:
-      __ Ush(i.InputOrZeroRegister(2), i.MemoryOperand(), kScratchReg);
+    }
+    case kMips64Ush: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Ush(i.InputOrZeroRegister(index), mem, kScratchReg);
       break;
+    }
     case kMips64Lw:
       __ Lw(i.OutputRegister(), i.MemoryOperand());
       break;
@@ -1669,18 +1802,30 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Uld:
       __ Uld(i.OutputRegister(), i.MemoryOperand());
       break;
-    case kMips64Sw:
-      __ Sw(i.InputOrZeroRegister(2), i.MemoryOperand());
+    case kMips64Sw: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Sw(i.InputOrZeroRegister(index), mem);
       break;
-    case kMips64Usw:
-      __ Usw(i.InputOrZeroRegister(2), i.MemoryOperand());
+    }
+    case kMips64Usw: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Usw(i.InputOrZeroRegister(index), mem);
       break;
-    case kMips64Sd:
-      __ Sd(i.InputOrZeroRegister(2), i.MemoryOperand());
+    }
+    case kMips64Sd: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Sd(i.InputOrZeroRegister(index), mem);
       break;
-    case kMips64Usd:
-      __ Usd(i.InputOrZeroRegister(2), i.MemoryOperand());
+    }
+    case kMips64Usd: {
+      size_t index = 0;
+      MemOperand mem = i.MemoryOperand(&index);
+      __ Usd(i.InputOrZeroRegister(index), mem);
       break;
+    }
     case kMips64Lwc1: {
       __ Lwc1(i.OutputSingleRegister(), i.MemoryOperand());
       break;
@@ -1693,9 +1838,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       size_t index = 0;
       MemOperand operand = i.MemoryOperand(&index);
       FPURegister ft = i.InputOrZeroSingleRegister(index);
-      if (ft == kDoubleRegZero && !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
       __ Swc1(ft, operand);
       break;
     }
@@ -1703,9 +1845,6 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       size_t index = 0;
       MemOperand operand = i.MemoryOperand(&index);
       FPURegister ft = i.InputOrZeroSingleRegister(index);
-      if (ft == kDoubleRegZero && !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
       __ Uswc1(ft, operand, kScratchReg);
       break;
     }
@@ -1716,19 +1855,17 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       __ Uldc1(i.OutputDoubleRegister(), i.MemoryOperand(), kScratchReg);
       break;
     case kMips64Sdc1: {
-      FPURegister ft = i.InputOrZeroDoubleRegister(2);
-      if (ft == kDoubleRegZero && !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
-      __ Sdc1(ft, i.MemoryOperand());
+      size_t index = 0;
+      MemOperand operand = i.MemoryOperand(&index);
+      FPURegister ft = i.InputOrZeroDoubleRegister(index);
+      __ Sdc1(ft, operand);
       break;
     }
     case kMips64Usdc1: {
-      FPURegister ft = i.InputOrZeroDoubleRegister(2);
-      if (ft == kDoubleRegZero && !__ IsDoubleZeroRegSet()) {
-        __ Move(kDoubleRegZero, 0.0);
-      }
-      __ Usdc1(ft, i.MemoryOperand(), kScratchReg);
+      size_t index = 0;
+      MemOperand operand = i.MemoryOperand(&index);
+      FPURegister ft = i.InputOrZeroDoubleRegister(index);
+      __ Usdc1(ft, operand, kScratchReg);
       break;
     }
     case kMips64Sync: {
@@ -1775,7 +1912,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64StoreToStackSlot: {
       if (instr->InputAt(0)->IsFPRegister()) {
         if (instr->InputAt(0)->IsSimd128Register()) {
-          CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+          CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
           __ st_b(i.InputSimd128Register(0), MemOperand(sp, i.InputInt32(1)));
         } else {
           __ Sdc1(i.InputDoubleRegister(0), MemOperand(sp, i.InputInt32(1)));
@@ -1794,13 +1931,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128LoadSplat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       auto sz = static_cast<MSASize>(MiscField::decode(instr->opcode()));
       __ LoadSplat(sz, i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
     case kMips64S128Load8x8S: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register scratch = kSimd128ScratchReg;
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1810,7 +1947,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load8x8U: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1819,7 +1956,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load16x4S: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register scratch = kSimd128ScratchReg;
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1829,7 +1966,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load16x4U: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1838,7 +1975,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load32x2S: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register scratch = kSimd128ScratchReg;
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1848,7 +1985,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load32x2U: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1857,7 +1994,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load32Zero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(dst, dst, dst);
       __ Lwu(kScratchReg, i.MemoryOperand());
@@ -1865,7 +2002,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Load64Zero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(dst, dst, dst);
       __ Ld(kScratchReg, i.MemoryOperand());
@@ -1873,7 +2010,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128LoadLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       DCHECK_EQ(dst, i.InputSimd128Register(0));
       auto sz = static_cast<MSASize>(MiscField::decode(instr->opcode()));
@@ -1881,7 +2018,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128StoreLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       auto sz = static_cast<MSASize>(MiscField::decode(instr->opcode()));
       __ StoreLane(sz, src, i.InputUint8(1), i.MemoryOperand(2));
@@ -1964,6 +2101,27 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kMips64Word64AtomicExchangeUint64:
       ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(Lld, Scd);
       break;
+    case kAtomicExchangeWithWriteBarrier: {
+      if constexpr (COMPRESS_POINTERS_BOOL) {
+        UNREACHABLE();
+      } else {
+        ASSEMBLE_ATOMIC_EXCHANGE_INTEGER(Lld, Scd);
+      }
+      if (v8_flags.disable_write_barriers) break;
+      // Emit the write barrier.
+      Register object = i.InputRegister(0);
+      Register offset = i.InputRegister(1);
+      Register value = i.InputRegister(2);
+      auto ool = zone()->New<OutOfLineRecordWrite>(
+          this, object, offset, value, i.TempRegister(0), i.TempRegister(1),
+          RecordWriteMode::kValueIsAny, DetermineStubCallMode());
+      __ JumpIfSmi(value, ool->exit());
+      __ CheckPageFlag(object, i.TempRegister(0),
+                       MemoryChunk::kPointersFromHereAreInterestingMask, ne,
+                       ool->entry());
+      __ bind(ool->exit());
+      break;
+    }
     case kAtomicCompareExchangeInt8:
       DCHECK_EQ(AtomicWidthField::decode(opcode), AtomicWidth::kWord32);
       ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER_EXT(Ll, Sc, true, 8, 32);
@@ -1995,8 +2153,8 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
     case kAtomicCompareExchangeWord32:
       switch (AtomicWidthField::decode(opcode)) {
         case AtomicWidth::kWord32:
-          __ sll(i.InputRegister(2), i.InputRegister(2), 0);
-          ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(Ll, Sc);
+          __ sll(i.TempRegister(2), i.InputRegister(2), 0);
+          ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(Ll, Sc, i.TempRegister(2));
           break;
         case AtomicWidth::kWord64:
           ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER_EXT(Lld, Scd, false, 32, 64);
@@ -2004,8 +2162,42 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       }
       break;
     case kMips64Word64AtomicCompareExchangeUint64:
-      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(Lld, Scd);
+      ASSEMBLE_ATOMIC_COMPARE_EXCHANGE_INTEGER(Lld, Scd, i.InputRegister(2));
       break;
+    case kAtomicCompareExchangeWithWriteBarrier: {
+      Label exit;
+      {
+        Label compareExchange;
+        __ daddu(i.TempRegister(0), i.InputRegister(0), i.InputRegister(1));
+        __ sync();
+        __ bind(&compareExchange);
+        __ Lld(i.OutputRegister(0), MemOperand(i.TempRegister(0), 0));
+        __ BranchShort(&exit, ne, i.InputRegister(2),
+                       Operand(i.OutputRegister(0)));
+        __ mov(i.TempRegister(1), i.InputRegister(3));
+        __ Scd(i.TempRegister(1), MemOperand(i.TempRegister(0), 0));
+        __ BranchShort(&compareExchange, eq, i.TempRegister(1),
+                       Operand(zero_reg));
+      }
+      if (!v8_flags.disable_write_barriers) {
+        // Emit the write barrier.
+        Register object = i.InputRegister(0);
+        Register offset = i.InputRegister(1);
+        Register new_value = i.InputRegister(3);
+        auto ool = zone()->New<OutOfLineRecordWrite>(
+            this, object, offset, new_value, i.TempRegister(0),
+            i.TempRegister(1), RecordWriteMode::kValueIsAny,
+            DetermineStubCallMode());
+        __ JumpIfSmi(new_value, ool->exit());
+        __ CheckPageFlag(object, i.TempRegister(0),
+                         MemoryChunk::kPointersFromHereAreInterestingMask, ne,
+                         ool->entry());
+        __ bind(ool->exit());
+      }
+      __ bind(&exit);
+      __ sync();
+      break;
+    }
 #define ATOMIC_BINOP_CASE(op, inst32, inst64)                          \
   case kAtomic##op##Int8:                                              \
     DCHECK_EQ(AtomicWidthField::decode(opcode), AtomicWidth::kWord32); \
@@ -2059,7 +2251,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                 i.InputRegister(0), Operand(i.InputRegister(1)));
       break;
     case kMips64S128Const: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       uint64_t imm1 = make_uint64(i.InputUint32(1), i.InputUint32(0));
       uint64_t imm2 = make_uint64(i.InputUint32(3), i.InputUint32(2));
@@ -2070,30 +2262,30 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128Zero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ xor_v(dst, dst, dst);
       break;
     }
     case kMips64S128AllOnes: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ ceq_d(dst, dst, dst);
       break;
     }
     case kMips64I32x4Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fill_w(i.OutputSimd128Register(), i.InputRegister(0));
       break;
     }
     case kMips64I32x4ExtractLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_s_w(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64I32x4ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       if (src != dst) {
@@ -2103,59 +2295,59 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ addv_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subv_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F64x2Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ bclri_d(i.OutputSimd128Register(), i.InputSimd128Register(0), 63);
       break;
     }
     case kMips64F64x2Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ bnegi_d(i.OutputSimd128Register(), i.InputSimd128Register(0), 63);
       break;
     }
     case kMips64F64x2Sqrt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fsqrt_d(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64F64x2Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       ASSEMBLE_F64X2_ARITHMETIC_BINOP(fadd_d);
       break;
     }
     case kMips64F64x2Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       ASSEMBLE_F64X2_ARITHMETIC_BINOP(fsub_d);
       break;
     }
     case kMips64F64x2Mul: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       ASSEMBLE_F64X2_ARITHMETIC_BINOP(fmul_d);
       break;
     }
     case kMips64F64x2Div: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       ASSEMBLE_F64X2_ARITHMETIC_BINOP(fdiv_d);
       break;
     }
     case kMips64F64x2Min: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
 
       // If inputs are -0.0. and +0.0, then write -0.0 to scratch1.
       // scratch1 = (src0 == src1) ?  (src0 | src1) : (src1 | src1).
@@ -2173,12 +2365,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F64x2Max: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
 
       // If inputs are -0.0. and +0.0, then write +0.0 to scratch1.
       // scratch1 = (src0 == src1) ?  (src0 & src1) : (src1 & src1).
@@ -2196,43 +2388,43 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F64x2Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fceq_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F64x2Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fcune_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64F64x2Lt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fclt_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F64x2Le: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fcle_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F64x2Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ Move(kScratchReg, i.InputDoubleRegister(0));
       __ fill_d(i.OutputSimd128Register(), kScratchReg);
       break;
     }
     case kMips64F64x2ExtractLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_s_d(kScratchReg, i.InputSimd128Register(0), i.InputInt8(1));
       __ Move(i.OutputDoubleRegister(), kScratchReg);
       break;
     }
     case kMips64F64x2ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       __ Move(kScratchReg, i.InputDoubleRegister(2));
@@ -2243,18 +2435,18 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fill_d(i.OutputSimd128Register(), i.InputRegister(0));
       break;
     }
     case kMips64I64x2ExtractLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_s_d(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64F64x2Pmin: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register lhs = i.InputSimd128Register(0);
       Simd128Register rhs = i.InputSimd128Register(1);
@@ -2264,7 +2456,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F64x2Pmax: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register lhs = i.InputSimd128Register(0);
       Simd128Register rhs = i.InputSimd128Register(1);
@@ -2274,52 +2466,52 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F64x2Ceil: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundD(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToPlusInf);
       break;
     }
     case kMips64F64x2Floor: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundD(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToMinusInf);
       break;
     }
     case kMips64F64x2Trunc: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundD(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToZero);
       break;
     }
     case kMips64F64x2NearestInt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundD(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToNearest);
       break;
     }
     case kMips64F64x2ConvertLowI32x4S: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
-      __ ilvr_w(kSimd128RegZero, kSimd128RegZero, i.InputSimd128Register(0));
-      __ slli_d(kSimd128RegZero, kSimd128RegZero, 32);
-      __ srai_d(kSimd128RegZero, kSimd128RegZero, 32);
-      __ ffint_s_d(i.OutputSimd128Register(), kSimd128RegZero);
+      __ ilvr_w(kSimd128ScratchReg, kSimd128RegZero, i.InputSimd128Register(0));
+      __ slli_d(kSimd128ScratchReg, kSimd128ScratchReg, 32);
+      __ srai_d(kSimd128ScratchReg, kSimd128ScratchReg, 32);
+      __ ffint_s_d(i.OutputSimd128Register(), kSimd128ScratchReg);
       break;
     }
     case kMips64F64x2ConvertLowI32x4U: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
-      __ ilvr_w(kSimd128RegZero, kSimd128RegZero, i.InputSimd128Register(0));
-      __ ffint_u_d(i.OutputSimd128Register(), kSimd128RegZero);
+      __ ilvr_w(kSimd128ScratchReg, kSimd128RegZero, i.InputSimd128Register(0));
+      __ ffint_u_d(i.OutputSimd128Register(), kSimd128ScratchReg);
       break;
     }
     case kMips64F64x2PromoteLowF32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fexupr_d(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64I64x2ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       if (src != dst) {
@@ -2329,32 +2521,32 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ addv_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I64x2Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subv_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I64x2Mul: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ mulv_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I64x2Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ subv_d(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I64x2Shl: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_d(kSimd128ScratchReg, i.InputRegister(1));
         __ sll_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2366,7 +2558,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2ShrS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_d(kSimd128ScratchReg, i.InputRegister(1));
         __ sra_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2378,7 +2570,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2ShrU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_d(kSimd128ScratchReg, i.InputRegister(1));
         __ srl_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2390,11 +2582,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2BitMask: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Simd128Register src = i.InputSimd128Register(0);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
       __ srli_d(scratch0, src, 63);
       __ shf_w(scratch1, scratch0, 0x02);
       __ slli_d(scratch1, scratch1, 1);
@@ -2403,13 +2595,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ceq_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64I64x2Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ceq_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       __ nor_v(i.OutputSimd128Register(), i.OutputSimd128Register(),
@@ -2417,26 +2609,26 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2GtS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_s_d(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I64x2GeS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_s_d(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I64x2Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ add_a_d(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  kSimd128RegZero);
       break;
     }
     case kMips64I64x2SConvertI32x4Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvr_w(kSimd128ScratchReg, src, src);
@@ -2445,7 +2637,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2SConvertI32x4High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvl_w(kSimd128ScratchReg, src, src);
@@ -2454,14 +2646,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2UConvertI32x4Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvr_w(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I64x2UConvertI32x4High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvl_w(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
@@ -2486,19 +2678,19 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ FmoveLow(kScratchReg, i.InputSingleRegister(0));
       __ fill_w(i.OutputSimd128Register(), kScratchReg);
       break;
     }
     case kMips64F32x4ExtractLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_u_w(kScratchReg, i.InputSimd128Register(0), i.InputInt8(1));
       __ FmoveLow(i.OutputSingleRegister(), kScratchReg);
       break;
     }
     case kMips64F32x4ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       __ FmoveLow(kScratchReg, i.InputSingleRegister(2));
@@ -2509,48 +2701,48 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4SConvertI32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ffint_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64F32x4UConvertI32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ffint_u_w(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4Mul: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ mulv_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4MaxS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4MinS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ceq_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ ceq_w(dst, i.InputSimd128Register(0), i.InputSimd128Register(1));
       __ nor_v(dst, dst, dst);
       break;
     }
     case kMips64I32x4Shl: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_w(kSimd128ScratchReg, i.InputRegister(1));
         __ sll_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2562,7 +2754,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4ShrS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_w(kSimd128ScratchReg, i.InputRegister(1));
         __ sra_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2574,7 +2766,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4ShrU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_w(kSimd128ScratchReg, i.InputRegister(1));
         __ srl_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2586,26 +2778,26 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4MaxU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_u_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4MinU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_u_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64S128Select: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       DCHECK(i.OutputSimd128Register() == i.InputSimd128Register(0));
       __ bsel_v(i.OutputSimd128Register(), i.InputSimd128Register(2),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64S128AndNot: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register scratch = kSimd128ScratchReg,
                       dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
@@ -2615,46 +2807,46 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ bclri_w(i.OutputSimd128Register(), i.InputSimd128Register(0), 31);
       break;
     }
     case kMips64F32x4Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ bnegi_w(i.OutputSimd128Register(), i.InputSimd128Register(0), 31);
       break;
     }
     case kMips64F32x4Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fadd_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fsub_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Mul: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fmul_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Div: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fdiv_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Max: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
 
       // If inputs are -0.0. and +0.0, then write +0.0 to scratch1.
       // scratch1 = (src0 == src1) ?  (src0 & src1) : (src1 & src1).
@@ -2672,12 +2864,12 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Min: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
 
       // If inputs are -0.0. and +0.0, then write -0.0 to scratch1.
       // scratch1 = (src0 == src1) ?  (src0 | src1) : (src1 | src1).
@@ -2695,31 +2887,31 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fceq_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fcune_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Lt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fclt_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Le: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fcle_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64F32x4Pmin: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register lhs = i.InputSimd128Register(0);
       Simd128Register rhs = i.InputSimd128Register(1);
@@ -2729,7 +2921,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Pmax: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register lhs = i.InputSimd128Register(0);
       Simd128Register rhs = i.InputSimd128Register(1);
@@ -2739,95 +2931,95 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64F32x4Ceil: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundW(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToPlusInf);
       break;
     }
     case kMips64F32x4Floor: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundW(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToMinusInf);
       break;
     }
     case kMips64F32x4Trunc: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundW(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToZero);
       break;
     }
     case kMips64F32x4NearestInt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ MSARoundW(i.OutputSimd128Register(), i.InputSimd128Register(0),
                    kRoundToNearest);
       break;
     }
     case kMips64F32x4DemoteF64x2Zero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ fexdo_w(i.OutputSimd128Register(), kSimd128RegZero,
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4SConvertF32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ftrunc_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4UConvertF32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ftrunc_u_w(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64F32x4Sqrt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fsqrt_w(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ subv_w(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4GtS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_s_w(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4GeS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_s_w(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4GtU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_u_w(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4GeU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_u_w(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ asub_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   kSimd128RegZero);
       break;
     }
     case kMips64I32x4BitMask: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Simd128Register src = i.InputSimd128Register(0);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
       __ srli_w(scratch0, src, 31);
       __ srli_d(scratch1, scratch0, 31);
       __ or_v(scratch0, scratch0, scratch1);
@@ -2838,13 +3030,13 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4DotI16x8S: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ dotp_s_w(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I32x4TruncSatF64x2SZero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ftrunc_s_d(kSimd128ScratchReg, i.InputSimd128Register(0));
       __ sat_s_d(kSimd128ScratchReg, kSimd128ScratchReg, 31);
@@ -2853,7 +3045,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4TruncSatF64x2UZero: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ftrunc_u_d(kSimd128ScratchReg, i.InputSimd128Register(0));
       __ sat_u_d(kSimd128ScratchReg, kSimd128ScratchReg, 31);
@@ -2862,24 +3054,24 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fill_h(i.OutputSimd128Register(), i.InputRegister(0));
       break;
     }
     case kMips64I16x8ExtractLaneU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_u_h(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64I16x8ExtractLaneS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_s_h(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64I16x8ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       if (src != dst) {
@@ -2889,14 +3081,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ subv_h(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8Shl: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_h(kSimd128ScratchReg, i.InputRegister(1));
         __ sll_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2908,7 +3100,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8ShrS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_h(kSimd128ScratchReg, i.InputRegister(1));
         __ sra_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2920,7 +3112,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8ShrU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_h(kSimd128ScratchReg, i.InputRegister(1));
         __ srl_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -2932,127 +3124,127 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ addv_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8AddSatS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ adds_s_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subv_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8SubSatS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subs_s_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8Mul: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ mulv_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8MaxS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_s_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8MinS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_s_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ceq_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ ceq_h(dst, i.InputSimd128Register(0), i.InputSimd128Register(1));
       __ nor_v(dst, dst, dst);
       break;
     }
     case kMips64I16x8GtS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_s_h(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8GeS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_s_h(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8AddSatU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ adds_u_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8SubSatU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subs_u_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8MaxU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_u_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8MinU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_u_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I16x8GtU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_u_h(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8GeU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_u_h(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8RoundingAverageU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ aver_u_h(i.OutputSimd128Register(), i.InputSimd128Register(1),
                   i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ asub_s_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   kSimd128RegZero);
       break;
     }
     case kMips64I16x8BitMask: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Simd128Register src = i.InputSimd128Register(0);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
       __ srli_h(scratch0, src, 15);
       __ srli_w(scratch1, scratch0, 15);
       __ or_v(scratch0, scratch0, scratch1);
@@ -3065,30 +3257,30 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8Q15MulRSatS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ mulr_q_h(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16Splat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ fill_b(i.OutputSimd128Register(), i.InputRegister(0));
       break;
     }
     case kMips64I8x16ExtractLaneU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_u_b(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64I8x16ExtractLaneS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ copy_s_b(i.OutputRegister(), i.InputSimd128Register(0),
                   i.InputInt8(1));
       break;
     }
     case kMips64I8x16ReplaceLane: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register src = i.InputSimd128Register(0);
       Simd128Register dst = i.OutputSimd128Register();
       if (src != dst) {
@@ -3098,14 +3290,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I8x16Neg: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ subv_b(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16Shl: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_b(kSimd128ScratchReg, i.InputRegister(1));
         __ sll_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -3117,7 +3309,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I8x16ShrS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_b(kSimd128ScratchReg, i.InputRegister(1));
         __ sra_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -3129,68 +3321,68 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I8x16Add: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ addv_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16AddSatS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ adds_s_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16Sub: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subv_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                 i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16SubSatS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subs_s_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16MaxS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_s_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16MinS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_s_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16Eq: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ceq_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16Ne: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       __ ceq_b(dst, i.InputSimd128Register(0), i.InputSimd128Register(1));
       __ nor_v(dst, dst, dst);
       break;
     }
     case kMips64I8x16GtS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_s_b(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16GeS: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_s_b(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16ShrU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (instr->InputAt(1)->IsRegister()) {
         __ fill_b(kSimd128ScratchReg, i.InputRegister(1));
         __ srl_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
@@ -3202,65 +3394,65 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I8x16AddSatU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ adds_u_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16SubSatU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ subs_u_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16MaxU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ max_u_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16MinU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ min_u_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                  i.InputSimd128Register(1));
       break;
     }
     case kMips64I8x16GtU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ clt_u_b(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16GeU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ cle_u_b(i.OutputSimd128Register(), i.InputSimd128Register(1),
                  i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16RoundingAverageU: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ aver_u_b(i.OutputSimd128Register(), i.InputSimd128Register(1),
                   i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16Abs: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ asub_s_b(i.OutputSimd128Register(), i.InputSimd128Register(0),
                   kSimd128RegZero);
       break;
     }
     case kMips64I8x16Popcnt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ pcnt_b(i.OutputSimd128Register(), i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16BitMask: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Simd128Register src = i.InputSimd128Register(0);
-      Simd128Register scratch0 = kSimd128RegZero;
-      Simd128Register scratch1 = kSimd128ScratchReg;
+      Simd128Register scratch0 = kSimd128ScratchReg;
+      Simd128Register scratch1 = kSimd128ScratchReg1;
       __ srli_b(scratch0, src, 7);
       __ srli_h(scratch1, scratch0, 7);
       __ or_v(scratch0, scratch0, scratch1);
@@ -3274,31 +3466,31 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S128And: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ and_v(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64S128Or: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ or_v(i.OutputSimd128Register(), i.InputSimd128Register(0),
               i.InputSimd128Register(1));
       break;
     }
     case kMips64S128Xor: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(1));
       break;
     }
     case kMips64S128Not: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ nor_v(i.OutputSimd128Register(), i.InputSimd128Register(0),
                i.InputSimd128Register(0));
       break;
     }
     case kMips64V128AnyTrue: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_false;
       __ BranchMSA(&all_false, MSA_BRANCH_V, all_zero,
@@ -3309,7 +3501,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I64x2AllTrue: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
       __ BranchMSA(&all_true, MSA_BRANCH_D, all_not_zero,
@@ -3320,7 +3512,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4AllTrue: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
       __ BranchMSA(&all_true, MSA_BRANCH_W, all_not_zero,
@@ -3331,7 +3523,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8AllTrue: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
       __ BranchMSA(&all_true, MSA_BRANCH_H, all_not_zero,
@@ -3342,7 +3534,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I8x16AllTrue: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Register dst = i.OutputRegister();
       Label all_true;
       __ BranchMSA(&all_true, MSA_BRANCH_B, all_not_zero,
@@ -3353,17 +3545,17 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64MsaLd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ ld_b(i.OutputSimd128Register(), i.MemoryOperand());
       break;
     }
     case kMips64MsaSt: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ st_b(i.InputSimd128Register(2), i.MemoryOperand());
       break;
     }
     case kMips64S32x4InterleaveRight: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3373,7 +3565,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4InterleaveLeft: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3383,7 +3575,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4PackEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3393,7 +3585,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4PackOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3403,7 +3595,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4InterleaveEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3413,7 +3605,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4InterleaveOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3423,7 +3615,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S32x4Shuffle: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3477,7 +3669,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8InterleaveRight: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3487,7 +3679,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8InterleaveLeft: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3497,7 +3689,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8PackEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3507,7 +3699,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8PackOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3517,7 +3709,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8InterleaveEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3527,7 +3719,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x8InterleaveOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3537,21 +3729,21 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S16x4Reverse: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       // src = [7, 6, 5, 4, 3, 2, 1, 0], dst = [4, 5, 6, 7, 0, 1, 2, 3]
       // shf.df imm field: 0 1 2 3 = 00011011 = 0x1B
       __ shf_h(i.OutputSimd128Register(), i.InputSimd128Register(0), 0x1B);
       break;
     }
     case kMips64S16x2Reverse: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       // src = [7, 6, 5, 4, 3, 2, 1, 0], dst = [6, 7, 4, 5, 3, 2, 0, 1]
       // shf.df imm field: 2 3 0 1 = 10110001 = 0xB1
       __ shf_h(i.OutputSimd128Register(), i.InputSimd128Register(0), 0xB1);
       break;
     }
     case kMips64S8x16InterleaveRight: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3561,7 +3753,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16InterleaveLeft: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3571,7 +3763,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16PackEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3581,7 +3773,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16PackOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3591,7 +3783,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16InterleaveEven: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3601,7 +3793,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16InterleaveOdd: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3611,14 +3803,14 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x16Concat: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       DCHECK(dst == i.InputSimd128Register(0));
       __ sldi_b(dst, i.InputSimd128Register(1), i.InputInt4(2));
       break;
     }
     case kMips64I8x16Shuffle: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register(),
                       src0 = i.InputSimd128Register(0),
                       src1 = i.InputSimd128Register(1);
@@ -3654,7 +3846,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x8Reverse: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       // src = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
       // dst = [8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7]
       // [A B C D] => [B A D C]: shf.w imm: 2 3 0 1 = 10110001 = 0xB1
@@ -3664,21 +3856,21 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64S8x4Reverse: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       // src = [15, 14, ... 3, 2, 1, 0], dst = [12, 13, 14, 15, ... 0, 1, 2, 3]
       // shf.df imm field: 0 1 2 3 = 00011011 = 0x1B
       __ shf_b(i.OutputSimd128Register(), i.InputSimd128Register(0), 0x1B);
       break;
     }
     case kMips64S8x2Reverse: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       // src = [15, 14, ... 3, 2, 1, 0], dst = [14, 15, 12, 13, ... 2, 3, 0, 1]
       // shf.df imm field: 2 3 0 1 = 10110001 = 0xB1
       __ shf_b(i.OutputSimd128Register(), i.InputSimd128Register(0), 0xB1);
       break;
     }
     case kMips64I32x4SConvertI16x8Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvr_h(kSimd128ScratchReg, src, src);
@@ -3687,7 +3879,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4SConvertI16x8High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvl_h(kSimd128ScratchReg, src, src);
@@ -3696,21 +3888,21 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I32x4UConvertI16x8Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvr_h(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I32x4UConvertI16x8High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvl_h(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8SConvertI8x16Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvr_b(kSimd128ScratchReg, src, src);
@@ -3719,7 +3911,7 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8SConvertI8x16High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src = i.InputSimd128Register(0);
       __ ilvl_b(kSimd128ScratchReg, src, src);
@@ -3728,17 +3920,17 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8SConvertI32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
       __ sat_s_w(kSimd128ScratchReg, src0, 15);
-      __ sat_s_w(kSimd128RegZero, src1, 15);  // kSimd128RegZero as scratch
-      __ pckev_h(dst, kSimd128RegZero, kSimd128ScratchReg);
+      __ sat_s_w(kSimd128ScratchReg1, src1, 15);
+      __ pckev_h(dst, kSimd128ScratchReg1, kSimd128ScratchReg);
       break;
     }
     case kMips64I16x8UConvertI32x4: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
@@ -3751,31 +3943,31 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
       break;
     }
     case kMips64I16x8UConvertI8x16Low: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvr_b(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I16x8UConvertI8x16High: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       __ xor_v(kSimd128RegZero, kSimd128RegZero, kSimd128RegZero);
       __ ilvl_b(i.OutputSimd128Register(), kSimd128RegZero,
                 i.InputSimd128Register(0));
       break;
     }
     case kMips64I8x16SConvertI16x8: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
       __ sat_s_h(kSimd128ScratchReg, src0, 7);
-      __ sat_s_h(kSimd128RegZero, src1, 7);  // kSimd128RegZero as scratch
-      __ pckev_b(dst, kSimd128RegZero, kSimd128ScratchReg);
+      __ sat_s_h(kSimd128ScratchReg1, src1, 7);
+      __ pckev_b(dst, kSimd128ScratchReg1, kSimd128ScratchReg);
       break;
     }
     case kMips64I8x16UConvertI16x8: {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       Simd128Register dst = i.OutputSimd128Register();
       Simd128Register src0 = i.InputSimd128Register(0);
       Simd128Register src1 = i.InputSimd128Register(1);
@@ -3796,11 +3988,11 @@ CodeGenerator::CodeGenResult CodeGenerator::AssembleArchInstruction(
                  << "\"";                                                      \
   UNIMPLEMENTED();
 
-void AssembleBranchToLabels(CodeGenerator* gen, TurboAssembler* tasm,
+void AssembleBranchToLabels(CodeGenerator* gen, MacroAssembler* masm,
                             Instruction* instr, FlagsCondition condition,
                             Label* tlabel, Label* flabel, bool fallthru) {
 #undef __
-#define __ tasm->
+#define __ masm->
   MipsOperandConverter i(gen, instr);
 
   // MIPS does not have condition code flags, so compare and branch are
@@ -3851,10 +4043,13 @@ void AssembleBranchToLabels(CodeGenerator* gen, TurboAssembler* tasm,
   } else if (instr->arch_opcode() == kArchStackPointerGreaterThan) {
     Condition cc = FlagsConditionToConditionCmp(condition);
     DCHECK((cc == ls) || (cc == hi));
-    if (cc == ls) {
-      __ xori(i.TempRegister(0), i.TempRegister(0), 1);
+    Register lhs_register = sp;
+    uint32_t offset;
+    if (gen->ShouldApplyOffsetToStackCheck(instr, &offset)) {
+      lhs_register = i.TempRegister(1);
+      __ Dsubu(lhs_register, sp, offset);
     }
-    __ Branch(tlabel, ne, i.TempRegister(0), Operand(zero_reg));
+    __ Branch(tlabel, cc, lhs_register, Operand(i.InputRegister(0)));
   } else if (instr->arch_opcode() == kMips64CmpS ||
              instr->arch_opcode() == kMips64CmpD) {
     bool predicate;
@@ -3871,7 +4066,7 @@ void AssembleBranchToLabels(CodeGenerator* gen, TurboAssembler* tasm,
   }
   if (!fallthru) __ Branch(flabel);  // no fallthru to flabel.
 #undef __
-#define __ tasm()->
+#define __ masm()->
 }
 
 // Assembles branches after an instruction.
@@ -3879,7 +4074,7 @@ void CodeGenerator::AssembleArchBranch(Instruction* instr, BranchInfo* branch) {
   Label* tlabel = branch->true_label;
   Label* flabel = branch->false_label;
 
-  AssembleBranchToLabels(this, tasm(), instr, branch->condition, tlabel, flabel,
+  AssembleBranchToLabels(this, masm(), instr, branch->condition, tlabel, flabel,
                          branch->fallthru);
 }
 
@@ -3898,53 +4093,9 @@ void CodeGenerator::AssembleArchJumpRegardlessOfAssemblyOrder(
 #if V8_ENABLE_WEBASSEMBLY
 void CodeGenerator::AssembleArchTrap(Instruction* instr,
                                      FlagsCondition condition) {
-  class OutOfLineTrap final : public OutOfLineCode {
-   public:
-    OutOfLineTrap(CodeGenerator* gen, Instruction* instr)
-        : OutOfLineCode(gen), instr_(instr), gen_(gen) {}
-    void Generate() final {
-      MipsOperandConverter i(gen_, instr_);
-      TrapId trap_id =
-          static_cast<TrapId>(i.InputInt32(instr_->InputCount() - 1));
-      GenerateCallToTrap(trap_id);
-    }
-
-   private:
-    void GenerateCallToTrap(TrapId trap_id) {
-      if (trap_id == TrapId::kInvalid) {
-        // We cannot test calls to the runtime in cctest/test-run-wasm.
-        // Therefore we emit a call to C here instead of a call to the runtime.
-        // We use the context register as the scratch register, because we do
-        // not have a context here.
-        __ PrepareCallCFunction(0, 0, cp);
-        __ CallCFunction(
-            ExternalReference::wasm_call_trap_callback_for_testing(), 0);
-        __ LeaveFrame(StackFrame::WASM);
-        auto call_descriptor = gen_->linkage()->GetIncomingDescriptor();
-        int pop_count = static_cast<int>(call_descriptor->ParameterSlotCount());
-        pop_count += (pop_count & 1);  // align
-        __ Drop(pop_count);
-        __ Ret();
-      } else {
-        gen_->AssembleSourcePosition(instr_);
-        // A direct call to a wasm runtime stub defined in this module.
-        // Just encode the stub index. This will be patched when the code
-        // is added to the native module and copied into wasm code space.
-        __ Call(static_cast<Address>(trap_id), RelocInfo::WASM_STUB_CALL);
-        ReferenceMap* reference_map =
-            gen_->zone()->New<ReferenceMap>(gen_->zone());
-        gen_->RecordSafepoint(reference_map);
-        if (v8_flags.debug_code) {
-          __ stop();
-        }
-      }
-    }
-    Instruction* instr_;
-    CodeGenerator* gen_;
-  };
   auto ool = zone()->New<OutOfLineTrap>(this, instr);
   Label* tlabel = ool->entry();
-  AssembleBranchToLabels(this, tasm(), instr, condition, tlabel, nullptr, true);
+  AssembleBranchToLabels(this, masm(), instr, condition, tlabel, nullptr, true);
 }
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -3984,102 +4135,15 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
     // Overflow occurs if overflow register is negative
     __ slt(result, kScratchReg, zero_reg);
   } else if (instr->arch_opcode() == kMips64MulOvf ||
-             instr->arch_opcode() == kMips64MulOvf) {
+             instr->arch_opcode() == kMips64DMulOvf) {
     // Overflow occurs if overflow register is not zero
     __ Sgtu(result, kScratchReg, zero_reg);
   } else if (instr->arch_opcode() == kMips64Cmp) {
     Condition cc = FlagsConditionToConditionCmp(condition);
-    switch (cc) {
-      case eq:
-      case ne: {
-        Register left = i.InputRegister(0);
-        Operand right = i.InputOperand(1);
-        if (instr->InputAt(1)->IsImmediate()) {
-          if (is_int16(-right.immediate())) {
-            if (right.immediate() == 0) {
-              if (cc == eq) {
-                __ Sltu(result, left, 1);
-              } else {
-                __ Sltu(result, zero_reg, left);
-              }
-            } else {
-              __ Daddu(result, left, Operand(-right.immediate()));
-              if (cc == eq) {
-                __ Sltu(result, result, 1);
-              } else {
-                __ Sltu(result, zero_reg, result);
-              }
-            }
-          } else {
-            if (is_uint16(right.immediate())) {
-              __ Xor(result, left, right);
-            } else {
-              __ li(kScratchReg, right);
-              __ Xor(result, left, kScratchReg);
-            }
-            if (cc == eq) {
-              __ Sltu(result, result, 1);
-            } else {
-              __ Sltu(result, zero_reg, result);
-            }
-          }
-        } else {
-          __ Xor(result, left, right);
-          if (cc == eq) {
-            __ Sltu(result, result, 1);
-          } else {
-            __ Sltu(result, zero_reg, result);
-          }
-        }
-      } break;
-      case lt:
-      case ge: {
-        Register left = i.InputRegister(0);
-        Operand right = i.InputOperand(1);
-        __ Slt(result, left, right);
-        if (cc == ge) {
-          __ xori(result, result, 1);
-        }
-      } break;
-      case gt:
-      case le: {
-        Register left = i.InputRegister(1);
-        Operand right = i.InputOperand(0);
-        __ Slt(result, left, right);
-        if (cc == le) {
-          __ xori(result, result, 1);
-        }
-      } break;
-      case lo:
-      case hs: {
-        Register left = i.InputRegister(0);
-        Operand right = i.InputOperand(1);
-        __ Sltu(result, left, right);
-        if (cc == hs) {
-          __ xori(result, result, 1);
-        }
-      } break;
-      case hi:
-      case ls: {
-        Register left = i.InputRegister(1);
-        Operand right = i.InputOperand(0);
-        __ Sltu(result, left, right);
-        if (cc == ls) {
-          __ xori(result, result, 1);
-        }
-      } break;
-      default:
-        UNREACHABLE();
-    }
+    __ CompareWord(cc, result, i.InputRegister(0), i.InputOperand(1));
     return;
   } else if (instr->arch_opcode() == kMips64CmpD ||
              instr->arch_opcode() == kMips64CmpS) {
-    FPURegister left = i.InputOrZeroDoubleRegister(0);
-    FPURegister right = i.InputOrZeroDoubleRegister(1);
-    if ((left == kDoubleRegZero || right == kDoubleRegZero) &&
-        !__ IsDoubleZeroRegSet()) {
-      __ Move(kDoubleRegZero, 0.0);
-    }
     bool predicate;
     FlagsConditionToConditionCmpFPU(&predicate, condition);
     if (kArchVariant != kMips64r6) {
@@ -4106,16 +4170,36 @@ void CodeGenerator::AssembleArchBoolean(Instruction* instr,
   } else if (instr->arch_opcode() == kArchStackPointerGreaterThan) {
     Condition cc = FlagsConditionToConditionCmp(condition);
     DCHECK((cc == ls) || (cc == hi));
+    Register lhs_register = sp;
+    uint32_t offset;
+    if (ShouldApplyOffsetToStackCheck(instr, &offset)) {
+      lhs_register = i.TempRegister(1);
+      __ Dsubu(lhs_register, sp, offset);
+    }
+    __ sltu(i.OutputRegister(), i.InputRegister(0), lhs_register);
     if (cc == ls) {
-      __ xori(i.OutputRegister(), i.TempRegister(0), 1);
+      __ xori(i.OutputRegister(), i.OutputRegister(), 1);
     }
     return;
   } else {
     PrintF("AssembleArchBranch Unimplemented arch_opcode is : %d\n",
            instr->arch_opcode());
-    TRACE_UNIMPL();
+    TRACE("UNIMPLEMENTED code_generator_mips: %s at line %d\n", __FUNCTION__,
+          __LINE__);
     UNIMPLEMENTED();
   }
+}
+
+#if V8_ENABLE_WEBASSEMBLY
+void CodeGenerator::AssembleArchConditionalTrap(Instruction* instr,
+                                                FlagsCondition condition) {
+  UNREACHABLE();
+}
+#endif  // V8_ENABLE_WEBASSEMBLY
+
+void CodeGenerator::AssembleArchConditionalBranch(Instruction* instr,
+                                                  BranchInfo* branch) {
+  UNREACHABLE();
 }
 
 void CodeGenerator::AssembleArchBinarySearchSwitch(Instruction* instr) {
@@ -4125,7 +4209,13 @@ void CodeGenerator::AssembleArchBinarySearchSwitch(Instruction* instr) {
   for (size_t index = 2; index < instr->InputCount(); index += 2) {
     cases.push_back({i.InputInt32(index + 0), GetLabel(i.InputRpo(index + 1))});
   }
-  AssembleArchBinarySearchSwitchRange(input, i.InputRpo(1), cases.data(),
+
+  UseScratchRegisterScope temps(masm());
+  Register scratch = temps.Acquire();
+  // The input register may contains dirty data in upper 32 bits, explicitly
+  // sign-extend it here.
+  __ sll(scratch, input, 0);
+  AssembleArchBinarySearchSwitchRange(scratch, i.InputRpo(1), cases.data(),
                                       cases.data() + cases.size());
 }
 
@@ -4134,8 +4224,13 @@ void CodeGenerator::AssembleArchTableSwitch(Instruction* instr) {
   Register input = i.InputRegister(0);
   size_t const case_count = instr->InputCount() - 2;
 
-  __ Branch(GetLabel(i.InputRpo(1)), hs, input, Operand(case_count));
-  __ GenerateSwitchTable(input, case_count, [&i, this](size_t index) {
+  UseScratchRegisterScope temps(masm());
+  Register scratch = temps.Acquire();
+  // The input register may contains dirty data in upper 32 bits, explicitly
+  // sign-extend it here.
+  __ sll(scratch, input, 0);
+  __ Branch(GetLabel(i.InputRpo(1)), hs, scratch, Operand(case_count));
+  __ GenerateSwitchTable(scratch, case_count, [&i, this](size_t index) {
     return GetLabel(i.InputRpo(index + 2));
   });
 }
@@ -4151,7 +4246,8 @@ void CodeGenerator::FinishFrame(Frame* frame) {
   const DoubleRegList saves_fpu = call_descriptor->CalleeSavedFPRegisters();
   if (!saves_fpu.is_empty()) {
     int count = saves_fpu.Count();
-    DCHECK_EQ(kNumCalleeSavedFPU, count);
+    DCHECK_EQ(saves_fpu.bits(), kCalleeSavedFPU.bits());
+    DCHECK(kCalleeSavedWR.is_empty());
     frame->AllocateSavedCalleeRegisterSlots(count *
                                             (kDoubleSize / kSystemPointerSize));
   }
@@ -4186,10 +4282,14 @@ void CodeGenerator::AssembleConstructFrame() {
     } else {
       __ StubPrologue(info()->GetOutputStackFrameType());
 #if V8_ENABLE_WEBASSEMBLY
-      if (call_descriptor->IsWasmFunctionCall() ||
+      if (call_descriptor->IsAnyWasmFunctionCall() ||
           call_descriptor->IsWasmImportWrapper() ||
           call_descriptor->IsWasmCapiFunction()) {
-        __ Push(kWasmInstanceRegister);
+        // For import wrappers and C-API functions, this stack slot is only used
+        // for printing stack traces in V8. Also, it holds a WasmImportData
+        // instead of the trusted instance data, which is taken care of in the
+        // frames accessors.
+        __ Push(kWasmImplicitArgRegister);
       }
       if (call_descriptor->IsWasmCapiFunction()) {
         // Reserve space for saving the PC later.
@@ -4212,6 +4312,16 @@ void CodeGenerator::AssembleConstructFrame() {
     // remaining stack slots.
     __ RecordComment("-- OSR entrypoint --");
     osr_pc_offset_ = __ pc_offset();
+#ifdef V8_ENABLE_SANDBOX_BOOL
+    UseScratchRegisterScope temps(masm());
+    uint32_t expected_frame_size =
+        static_cast<uint32_t>(osr_helper()->UnoptimizedFrameSlots()) *
+            kSystemPointerSize +
+        StandardFrameConstants::kFixedFrameSizeFromFp;
+    Register scratch = temps.Acquire();
+    __ Daddu(scratch, sp, Operand(expected_frame_size));
+    __ SbxCheck(eq, AbortReason::kOsrUnexpectedStackSize, scratch, Operand(fp));
+#endif  // V8_ENABLE_SANDBOX_BOOL
     required_slots -= osr_helper()->UnoptimizedFrameSlots();
   }
 
@@ -4221,7 +4331,9 @@ void CodeGenerator::AssembleConstructFrame() {
   if (required_slots > 0) {
     DCHECK(frame_access_state()->has_frame());
 #if V8_ENABLE_WEBASSEMBLY
-    if (info()->IsWasm() && required_slots * kSystemPointerSize > 4 * KB) {
+    int32_t stack_space =
+        required_slots * kSystemPointerSize + GetStackCheckOffset();
+    if (info()->IsWasm() && stack_space > 4 * KB) {
       // For WebAssembly functions with big frames we have to do the stack
       // overflow check before we construct the frame. Otherwise we may not
       // have enough space on the stack to call the runtime for the stack
@@ -4231,22 +4343,18 @@ void CodeGenerator::AssembleConstructFrame() {
       // If the frame is bigger than the stack, we throw the stack overflow
       // exception unconditionally. Thereby we can avoid the integer overflow
       // check in the condition code.
-      if (required_slots * kSystemPointerSize < v8_flags.stack_size * KB) {
-        __ Ld(
-             kScratchReg,
-             FieldMemOperand(kWasmInstanceRegister,
-                             WasmInstanceObject::kRealStackLimitAddressOffset));
-        __ Ld(kScratchReg, MemOperand(kScratchReg));
-        __ Daddu(kScratchReg, kScratchReg,
-                 Operand(required_slots * kSystemPointerSize));
+      if (stack_space < v8_flags.stack_size * KB) {
+        __ LoadStackLimit(kScratchReg,
+                          MacroAssembler::StackLimitKind::kRealStackLimit);
+        __ Daddu(kScratchReg, kScratchReg, Operand(stack_space));
         __ Branch(&done, uge, sp, Operand(kScratchReg));
       }
 
-      __ Call(wasm::WasmCode::kWasmStackOverflow, RelocInfo::WASM_STUB_CALL);
+      __ Call(static_cast<intptr_t>(Builtin::kWasmStackOverflow),
+              RelocInfo::WASM_STUB_CALL);
       // The call does not return, hence we can ignore any references and just
       // define an empty safepoint.
-      ReferenceMap* reference_map = zone()->New<ReferenceMap>(zone());
-      RecordSafepoint(reference_map);
+      RecordSafepointWithoutTaggedSlots();
       if (v8_flags.debug_code) __ stop();
 
       __ bind(&done);
@@ -4268,6 +4376,7 @@ void CodeGenerator::AssembleConstructFrame() {
     // Save callee-saved FPU registers.
     __ MultiPushFPU(saves_fpu);
     DCHECK_EQ(kNumCalleeSavedFPU, saves_fpu.Count());
+    DCHECK(kCalleeSavedWR.is_empty());
   }
 
   if (!saves.is_empty()) {
@@ -4278,6 +4387,12 @@ void CodeGenerator::AssembleConstructFrame() {
   if (returns != 0) {
     // Create space for returns.
     __ Dsubu(sp, sp, Operand(returns * kSystemPointerSize));
+  }
+
+  for (int spill_slot : frame()->tagged_slots()) {
+    FrameOffset offset = frame_access_state()->GetFrameOffset(spill_slot);
+    DCHECK(offset.from_frame_pointer());
+    __ Sd(zero_reg, MemOperand(fp, offset.offset()));
   }
 }
 
@@ -4369,13 +4484,83 @@ void CodeGenerator::AssembleReturn(InstructionOperand* additional_pop_count) {
 void CodeGenerator::FinishCode() {}
 
 void CodeGenerator::PrepareForDeoptimizationExits(
-    ZoneDeque<DeoptimizationExit*>* exits) {}
+    ZoneDeque<DeoptimizationExit*>* exits) {
+  // Make sure to avoid getting the trampoline pool emitted in the middle
+  // of the deoptimization exits, because it destroys our ability to compute
+  // the deoptimization index based on the 'pc' and the offset of the start
+  // of the exits section.
+  int total_size = 0;
+  for (DeoptimizationExit* exit : deoptimization_exits_) {
+    if (exit->emitted()) continue;  // May have been emitted inline.
+    total_size += (exit->kind() == DeoptimizeKind::kLazy)
+                      ? Deoptimizer::kLazyDeoptExitSize
+                      : Deoptimizer::kEagerDeoptExitSize;
+  }
 
-void CodeGenerator::MoveToTempLocation(InstructionOperand* source) {
+  __ BlockTrampolinePoolFor(total_size);
+}
+
+AllocatedOperand CodeGenerator::Push(InstructionOperand* source) {
+  auto rep = LocationOperand::cast(source)->representation();
+  int new_slots = ElementSizeInPointers(rep);
+  MipsOperandConverter g(this, nullptr);
+  int slot_id = frame_access_state()->GetSPSlotCount() - 1 + new_slots;
+  AllocatedOperand stack_slot(LocationOperand::STACK_SLOT, rep, slot_id);
+  if (source->IsRegister()) {
+    __ Push(g.ToRegister(source));
+    frame_access_state()->IncreaseSPDelta(new_slots);
+  } else if (source->IsStackSlot()) {
+    UseScratchRegisterScope temps(masm());
+    Register scratch = temps.Acquire();
+    __ Ld(scratch, g.ToMemOperand(source));
+    __ Push(scratch);
+    frame_access_state()->IncreaseSPDelta(new_slots);
+  } else {
+    // No push instruction for this operand type. Bump the stack pointer and
+    // assemble the move.
+    __ Dsubu(sp, sp, Operand(new_slots * kSystemPointerSize));
+    frame_access_state()->IncreaseSPDelta(new_slots);
+    AssembleMove(source, &stack_slot);
+  }
+  temp_slots_ += new_slots;
+  return stack_slot;
+}
+
+void CodeGenerator::Pop(InstructionOperand* dest, MachineRepresentation rep) {
+  MipsOperandConverter g(this, nullptr);
+  int dropped_slots = ElementSizeInPointers(rep);
+  if (dest->IsRegister()) {
+    frame_access_state()->IncreaseSPDelta(-dropped_slots);
+    __ Pop(g.ToRegister(dest));
+  } else if (dest->IsStackSlot()) {
+    frame_access_state()->IncreaseSPDelta(-dropped_slots);
+    UseScratchRegisterScope temps(masm());
+    Register scratch = temps.Acquire();
+    __ Pop(scratch);
+    __ Sd(scratch, g.ToMemOperand(dest));
+  } else {
+    int slot_id = frame_access_state()->GetSPSlotCount() - 1;
+    AllocatedOperand stack_slot(LocationOperand::STACK_SLOT, rep, slot_id);
+    AssembleMove(&stack_slot, dest);
+    frame_access_state()->IncreaseSPDelta(-dropped_slots);
+    __ Daddu(sp, sp, Operand(dropped_slots * kSystemPointerSize));
+  }
+  temp_slots_ -= dropped_slots;
+}
+
+void CodeGenerator::PopTempStackSlots() {
+  if (temp_slots_ > 0) {
+    frame_access_state()->IncreaseSPDelta(-temp_slots_);
+    __ Daddu(sp, sp, Operand(temp_slots_ * kSystemPointerSize));
+    temp_slots_ = 0;
+  }
+}
+
+void CodeGenerator::MoveToTempLocation(InstructionOperand* source,
+                                       MachineRepresentation rep) {
   // Must be kept in sync with {MoveTempLocationTo}.
   DCHECK(!source->IsImmediate());
-  auto rep = LocationOperand::cast(source)->representation();
-  move_cycle_.temps.emplace(tasm());
+  move_cycle_.temps.emplace(masm());
   auto& temps = *move_cycle_.temps;
   // Temporarily exclude the reserved scratch registers while we pick one to
   // resolve the move cycle. Re-include them immediately afterwards as they
@@ -4399,27 +4584,7 @@ void CodeGenerator::MoveToTempLocation(InstructionOperand* source) {
   } else {
     // The scratch registers are blocked by pending moves. Use the stack
     // instead.
-    int new_slots = ElementSizeInPointers(rep);
-    MipsOperandConverter g(this, nullptr);
-    if (source->IsRegister()) {
-      __ Push(g.ToRegister(source));
-    } else if (source->IsStackSlot()) {
-      UseScratchRegisterScope temps2(tasm());
-      Register scratch = temps2.Acquire();
-      __ Ld(scratch, g.ToMemOperand(source));
-      __ Push(scratch);
-    } else {
-      // No push instruction for this operand type. Bump the stack pointer and
-      // assemble the move.
-      int last_frame_slot_id =
-          frame_access_state_->frame()->GetTotalFrameSlotCount() - 1;
-      int sp_delta = frame_access_state_->sp_delta();
-      int temp_slot = last_frame_slot_id + sp_delta + new_slots;
-      __ Dsubu(sp, sp, Operand(new_slots * kSystemPointerSize));
-      AllocatedOperand temp(LocationOperand::STACK_SLOT, rep, temp_slot);
-      AssembleMove(source, &temp);
-    }
-    frame_access_state()->IncreaseSPDelta(new_slots);
+    Push(source);
   }
 }
 
@@ -4431,25 +4596,7 @@ void CodeGenerator::MoveTempLocationTo(InstructionOperand* dest,
                              move_cycle_.scratch_reg->code());
     AssembleMove(&scratch, dest);
   } else {
-    int new_slots = ElementSizeInPointers(rep);
-    frame_access_state()->IncreaseSPDelta(-new_slots);
-    MipsOperandConverter g(this, nullptr);
-    if (dest->IsRegister()) {
-      __ Pop(g.ToRegister(dest));
-    } else if (dest->IsStackSlot()) {
-      UseScratchRegisterScope temps2(tasm());
-      Register scratch = temps2.Acquire();
-      __ Pop(scratch);
-      __ Sd(scratch, g.ToMemOperand(dest));
-    } else {
-      int last_frame_slot_id =
-          frame_access_state_->frame()->GetTotalFrameSlotCount() - 1;
-      int sp_delta = frame_access_state_->sp_delta();
-      int temp_slot = last_frame_slot_id + sp_delta + new_slots;
-      AllocatedOperand temp(LocationOperand::STACK_SLOT, rep, temp_slot);
-      AssembleMove(&temp, dest);
-      __ Daddu(sp, sp, Operand(new_slots * kSystemPointerSize));
-    }
+    Pop(dest, rep);
   }
   // Restore the default state to release the {UseScratchRegisterScope} and to
   // prepare for the next cycle.
@@ -4459,7 +4606,7 @@ void CodeGenerator::MoveTempLocationTo(InstructionOperand* dest,
 void CodeGenerator::SetPendingMove(MoveOperands* move) {
   InstructionOperand* src = &move->source();
   InstructionOperand* dst = &move->destination();
-  UseScratchRegisterScope temps(tasm());
+  UseScratchRegisterScope temps(masm());
   if (src->IsConstant() && dst->IsFPLocationOperand()) {
     Register temp = temps.Acquire();
     move_cycle_.scratch_regs.set(temp);
@@ -4486,6 +4633,24 @@ void CodeGenerator::SetPendingMove(MoveOperands* move) {
   }
 }
 
+namespace {
+
+bool Is32BitOperand(InstructionOperand* operand) {
+  DCHECK(operand->IsStackSlot() || operand->IsRegister());
+  MachineRepresentation mr = LocationOperand::cast(operand)->representation();
+  return mr == MachineRepresentation::kWord32 ||
+         mr == MachineRepresentation::kCompressed ||
+         mr == MachineRepresentation::kCompressedPointer;
+}
+
+// When we need only 32 bits, move only 32 bits, otherwise the destination
+// register' upper 32 bits may contain dirty data.
+bool Use32BitMove(InstructionOperand* source, InstructionOperand* destination) {
+  return Is32BitOperand(source) && Is32BitOperand(destination);
+}
+
+}  // namespace
+
 void CodeGenerator::AssembleMove(InstructionOperand* source,
                                  InstructionOperand* destination) {
   MipsOperandConverter g(this, nullptr);
@@ -4503,7 +4668,11 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
     DCHECK(destination->IsRegister() || destination->IsStackSlot());
     MemOperand src = g.ToMemOperand(source);
     if (destination->IsRegister()) {
-      __ Ld(g.ToRegister(destination), src);
+      if (Use32BitMove(source, destination)) {
+        __ Lw(g.ToRegister(destination), src);
+      } else {
+        __ Ld(g.ToRegister(destination), src);
+      }
     } else {
       Register temp = kScratchReg;
       __ Ld(temp, src);
@@ -4516,18 +4685,13 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
           destination->IsRegister() ? g.ToRegister(destination) : kScratchReg;
       switch (src.type()) {
         case Constant::kInt32:
-          __ li(dst, Operand(src.ToInt32()));
+          __ li(dst, Operand(src.ToInt32(), src.rmode()));
           break;
         case Constant::kFloat32:
           __ li(dst, Operand::EmbeddedNumber(src.ToFloat32()));
           break;
         case Constant::kInt64:
-#if V8_ENABLE_WEBASSEMBLY
-          if (RelocInfo::IsWasmReference(src.rmode()))
-            __ li(dst, Operand(src.ToInt64(), src.rmode()));
-          else
-#endif  // V8_ENABLE_WEBASSEMBLY
-            __ li(dst, Operand(src.ToInt64()));
+          __ li(dst, Operand(src.ToInt64(), src.rmode()));
           break;
         case Constant::kFloat64:
           __ li(dst, Operand::EmbeddedNumber(src.ToFloat64().value()));
@@ -4578,7 +4742,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
   } else if (source->IsFPRegister()) {
     MachineRepresentation rep = LocationOperand::cast(source)->representation();
     if (rep == MachineRepresentation::kSimd128) {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       MSARegister src = g.ToSimd128Register(source);
       if (destination->IsSimd128Register()) {
         MSARegister dst = g.ToSimd128Register(destination);
@@ -4602,7 +4766,7 @@ void CodeGenerator::AssembleMove(InstructionOperand* source,
     MemOperand src = g.ToMemOperand(source);
     MachineRepresentation rep = LocationOperand::cast(source)->representation();
     if (rep == MachineRepresentation::kSimd128) {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       if (destination->IsSimd128Register()) {
         __ ld_b(g.ToSimd128Register(destination), src);
       } else {
@@ -4660,7 +4824,7 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
   } else if (source->IsFPRegister()) {
     MachineRepresentation rep = LocationOperand::cast(source)->representation();
     if (rep == MachineRepresentation::kSimd128) {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       MSARegister temp = kSimd128ScratchReg;
       MSARegister src = g.ToSimd128Register(source);
       if (destination->IsSimd128Register()) {
@@ -4700,7 +4864,7 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
     MemOperand dst1(dst0.rm(), dst0.offset() + kInt64Size);
     MachineRepresentation rep = LocationOperand::cast(source)->representation();
     if (rep == MachineRepresentation::kSimd128) {
-      CpuFeatureScope msa_scope(tasm(), MIPS_SIMD);
+      CpuFeatureScope msa_scope(masm(), MIPS_SIMD);
       MSARegister temp_1 = kSimd128ScratchReg;
       __ ld_b(temp_1, dst0);  // Save destination in temp_1.
       __ Ld(temp_0, src0);    // Then use temp_0 to copy source to destination.
@@ -4721,7 +4885,7 @@ void CodeGenerator::AssembleSwap(InstructionOperand* source,
   }
 }
 
-void CodeGenerator::AssembleJumpTable(Label** targets, size_t target_count) {
+void CodeGenerator::AssembleJumpTable(base::Vector<Label*> targets) {
   // On 64-bit MIPS we emit the jump tables inline.
   UNREACHABLE();
 }
@@ -4738,8 +4902,7 @@ void CodeGenerator::AssembleJumpTable(Label** targets, size_t target_count) {
 #undef ASSEMBLE_IEEE754_UNOP
 #undef ASSEMBLE_F64X2_ARITHMETIC_BINOP
 
-#undef TRACE_MSG
-#undef TRACE_UNIMPL
+#undef TRACE
 #undef __
 
 }  // namespace compiler

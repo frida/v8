@@ -2,17 +2,18 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-gc
-// Flags: --no-liftoff --no-wasm-speculative-inlining --no-wasm-inlining
+// Flags: --no-wasm-inlining
 
 d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
 var builder = new WasmModuleBuilder();
 
-var sig_index = builder.addType({params: [kWasmStructRef], results: [kWasmI32]});
-
+builder.startRecGroup();
+var sig_index = builder.addType({params: [kWasmStructRef],
+                                 results: [kWasmI32]});
 var sub1 = builder.addStruct([makeField(kWasmI32, true)]);
 var sub2 = builder.addStruct([makeField(kWasmI32, false)]);
+builder.endRecGroup();
 
 builder.addFunction('producer', makeSig([], [kWasmStructRef]))
   .addBody([

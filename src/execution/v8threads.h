@@ -70,9 +70,6 @@ class ThreadManager {
 
   void Iterate(RootVisitor* v);
   void IterateArchivedThreads(ThreadVisitor* v);
-  bool IsLockedByAnyThread() const {
-    return mutex_owner_.load(std::memory_order_relaxed) != ThreadId::Invalid();
-  }
   bool IsLockedByCurrentThread() const {
     return mutex_owner_.load(std::memory_order_relaxed) == ThreadId::Current();
   }

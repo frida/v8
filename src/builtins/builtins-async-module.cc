@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #include "src/builtins/builtins-utils-inl.h"
+#include "src/common/globals.h"
 #include "src/objects/module-inl.h"
 #include "src/objects/objects-inl.h"
 
@@ -11,15 +12,16 @@ namespace internal {
 
 BUILTIN(CallAsyncModuleFulfilled) {
   HandleScope handle_scope(isolate);
-  Handle<SourceTextModule> module = Handle<SourceTextModule>(
-      SourceTextModule::cast(isolate->context().get(
+  Handle<SourceTextModule> module(
+      Cast<SourceTextModule>(isolate->context()->GetNoCell(
           SourceTextModule::ExecuteAsyncModuleContextSlots::kModule)),
       isolate);
   if (SourceTextModule::AsyncModuleExecutionFulfilled(isolate, module)
           .IsNothing()) {
     // The evaluation of async module can not throwing a JavaScript observable
     // exception.
-    DCHECK(isolate->is_execution_termination_pending());
+    DCHECK_IMPLIES(v8_flags.strict_termination_checks,
+                   isolate->is_execution_terminating());
     return ReadOnlyRoots(isolate).exception();
   }
   return ReadOnlyRoots(isolate).undefined_value();
@@ -27,14 +29,14 @@ BUILTIN(CallAsyncModuleFulfilled) {
 
 BUILTIN(CallAsyncModuleRejected) {
   HandleScope handle_scope(isolate);
-  Handle<SourceTextModule> module = Handle<SourceTextModule>(
-      SourceTextModule::cast(isolate->context().get(
+  DirectHandle<SourceTextModule> module(
+      Cast<SourceTextModule>(isolate->context()->GetNoCell(
           SourceTextModule::ExecuteAsyncModuleContextSlots::kModule)),
       isolate);
 
   // Arguments should be an exception object, with receiver.
   DCHECK_EQ(args.length(), 2);
-  Handle<Object> exception(args.at(1));
+  DirectHandle<Object> exception(args.at(1));
   SourceTextModule::AsyncModuleExecutionRejected(isolate, module, exception);
   return ReadOnlyRoots(isolate).undefined_value();
 }

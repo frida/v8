@@ -27,6 +27,8 @@
 
 #include <stdlib.h>
 
+#include "src/common/globals.h"
+
 #ifdef __linux__
 #include <errno.h>
 #include <fcntl.h>
@@ -39,8 +41,10 @@
 
 #include "include/v8-locker.h"
 #include "src/handles/global-handles.h"
+#include "src/heap/live-object-range-inl.h"
 #include "src/heap/mark-compact-inl.h"
 #include "src/heap/mark-compact.h"
+#include "src/heap/marking-inl.h"
 #include "src/init/v8.h"
 #include "src/objects/objects-inl.h"
 #include "test/cctest/cctest.h"
@@ -63,47 +67,49 @@ TEST(Promotion) {
     heap::SealCurrentObjects(heap);
 
     int array_length = heap::FixedArrayLenFromSize(kMaxRegularHeapObjectSize);
-    Handle<FixedArray> array = isolate->factory()->NewFixedArray(array_length);
+    DirectHandle<FixedArray> array =
+        isolate->factory()->NewFixedArray(array_length);
 
     // Array should be in the new space.
     CHECK(heap->InSpace(*array, NEW_SPACE));
-    CcTest::CollectAllGarbage();
-    CcTest::CollectAllGarbage();
+    heap::InvokeMajorGC(heap);
+    heap::InvokeMajorGC(heap);
     CHECK(heap->InSpace(*array, OLD_SPACE));
   }
 }
 
-// This is the same as Factory::NewMap, except it doesn't retry on
-// allocation failure.
+// This is the same as Factory::NewContextfulMapForCurrentContext, except it
+// doesn't retry on allocation failure.
 AllocationResult HeapTester::AllocateMapForTest(Isolate* isolate) {
   Heap* heap = isolate->heap();
-  HeapObject obj;
+  Tagged<HeapObject> obj;
   AllocationResult alloc = heap->AllocateRaw(Map::kSize, AllocationType::kMap);
   if (!alloc.To(&obj)) return alloc;
-  obj.set_map_after_allocation(ReadOnlyRoots(heap).meta_map(),
-                               SKIP_WRITE_BARRIER);
+  ReadOnlyRoots roots(isolate);
+  obj->set_map_after_allocation(isolate, *isolate->meta_map());
   return AllocationResult::FromObject(isolate->factory()->InitializeMap(
-      Map::cast(obj), JS_OBJECT_TYPE, JSObject::kHeaderSize,
-      TERMINAL_FAST_ELEMENTS_KIND, 0, heap));
+      Cast<Map>(obj), JS_OBJECT_TYPE, JSObject::kHeaderSize,
+      TERMINAL_FAST_ELEMENTS_KIND, 0, roots));
 }
 
 // This is the same as Factory::NewFixedArray, except it doesn't retry
 // on allocation failure.
 AllocationResult HeapTester::AllocateFixedArrayForTest(
-    Heap* heap, int length, AllocationType allocation) {
-  DCHECK(length >= 0 && length <= FixedArray::kMaxLength);
+    Heap* heap, uint32_t length, AllocationType allocation) {
+  DCHECK_LE(length, FixedArray::kMaxLength);
   int size = FixedArray::SizeFor(length);
-  HeapObject obj;
+  Tagged<HeapObject> obj;
   {
     AllocationResult result = heap->AllocateRaw(size, allocation);
     if (!result.To(&obj)) return result;
   }
-  obj.set_map_after_allocation(ReadOnlyRoots(heap).fixed_array_map(),
-                               SKIP_WRITE_BARRIER);
-  FixedArray array = FixedArray::cast(obj);
-  array.set_length(length);
-  MemsetTagged(array.data_start(), ReadOnlyRoots(heap).undefined_value(),
-               length);
+  obj->set_map_after_allocation(heap->isolate(),
+                                ReadOnlyRoots(heap).fixed_array_map(),
+                                SKIP_WRITE_BARRIER);
+  Tagged<FixedArray> array = Cast<FixedArray>(obj);
+  array->set_length(length);
+  MemsetTagged(array->RawFieldOfFirstElement(),
+               ReadOnlyRoots(heap).undefined_value(), length);
   return AllocationResult::FromObject(array);
 }
 
@@ -116,20 +122,21 @@ HEAP_TEST(MarkCompactCollector) {
   Factory* factory = isolate->factory();
 
   v8::HandleScope sc(CcTest::isolate());
-  Handle<JSGlobalObject> global(isolate->context().global_object(), isolate);
+  DirectHandle<JSGlobalObject> global(isolate->context()->global_object(),
+                                      isolate);
 
   // call mark-compact when heap is empty
-  CcTest::CollectGarbage(OLD_SPACE);
+  heap::InvokeMajorGC(heap);
 
   AllocationResult allocation;
   if (!v8_flags.single_generation) {
     // keep allocating garbage in new space until it fails
-    const int arraysize = 100;
+    const uint32_t arraysize = 100;
     do {
       allocation =
           AllocateFixedArrayForTest(heap, arraysize, AllocationType::kYoung);
     } while (!allocation.IsFailure());
-    CcTest::CollectGarbage(NEW_SPACE);
+    heap::InvokeMinorGC(heap);
     AllocateFixedArrayForTest(heap, arraysize, AllocationType::kYoung)
         .ToObjectChecked();
   }
@@ -138,46 +145,50 @@ HEAP_TEST(MarkCompactCollector) {
   do {
     allocation = AllocateMapForTest(isolate);
   } while (!allocation.IsFailure());
-  CcTest::CollectGarbage(MAP_SPACE);
+  heap::InvokeMajorGC(heap);
   AllocateMapForTest(isolate).ToObjectChecked();
 
   { HandleScope scope(isolate);
     // allocate a garbage
-    Handle<String> func_name = factory->InternalizeUtf8String("theFunction");
-    Handle<JSFunction> function = factory->NewFunctionForTesting(func_name);
+    DirectHandle<String> func_name =
+        factory->InternalizeUtf8String("theFunction");
+    DirectHandle<JSFunction> function =
+        factory->NewFunctionForTesting(func_name);
     Object::SetProperty(isolate, global, func_name, function).Check();
 
     factory->NewJSObject(function);
   }
 
-  CcTest::CollectGarbage(OLD_SPACE);
+  heap::InvokeMajorGC(heap);
 
   { HandleScope scope(isolate);
-    Handle<String> func_name = factory->InternalizeUtf8String("theFunction");
+    DirectHandle<String> func_name =
+        factory->InternalizeUtf8String("theFunction");
     CHECK(Just(true) == JSReceiver::HasOwnProperty(isolate, global, func_name));
-    Handle<Object> func_value =
+    DirectHandle<Object> func_value =
         Object::GetProperty(isolate, global, func_name).ToHandleChecked();
-    CHECK(func_value->IsJSFunction());
-    Handle<JSFunction> function = Handle<JSFunction>::cast(func_value);
-    Handle<JSObject> obj = factory->NewJSObject(function);
+    CHECK(IsJSFunction(*func_value));
+    DirectHandle<JSFunction> function = Cast<JSFunction>(func_value);
+    DirectHandle<JSObject> obj = factory->NewJSObject(function);
 
-    Handle<String> obj_name = factory->InternalizeUtf8String("theObject");
+    DirectHandle<String> obj_name = factory->InternalizeUtf8String("theObject");
     Object::SetProperty(isolate, global, obj_name, obj).Check();
-    Handle<String> prop_name = factory->InternalizeUtf8String("theSlot");
-    Handle<Smi> twenty_three(Smi::FromInt(23), isolate);
+    DirectHandle<String> prop_name = factory->InternalizeUtf8String("theSlot");
+    DirectHandle<Smi> twenty_three(Smi::FromInt(23), isolate);
     Object::SetProperty(isolate, obj, prop_name, twenty_three).Check();
   }
 
-  CcTest::CollectGarbage(OLD_SPACE);
+  heap::InvokeMajorGC(heap);
 
   { HandleScope scope(isolate);
-    Handle<String> obj_name = factory->InternalizeUtf8String("theObject");
+    DirectHandle<String> obj_name = factory->InternalizeUtf8String("theObject");
     CHECK(Just(true) == JSReceiver::HasOwnProperty(isolate, global, obj_name));
-    Handle<Object> object =
+    DirectHandle<Object> object =
         Object::GetProperty(isolate, global, obj_name).ToHandleChecked();
-    CHECK(object->IsJSObject());
-    Handle<String> prop_name = factory->InternalizeUtf8String("theSlot");
-    CHECK_EQ(*Object::GetProperty(isolate, object, prop_name).ToHandleChecked(),
+    CHECK(IsJSObject(*object));
+    DirectHandle<String> prop_name = factory->InternalizeUtf8String("theSlot");
+    CHECK_EQ(*Object::GetProperty(isolate, Cast<JSObject>(object), prop_name)
+                  .ToHandleChecked(),
              Smi::FromInt(23));
   }
 }
@@ -195,147 +206,38 @@ HEAP_TEST(DoNotEvacuatePinnedPages) {
 
   heap::SealCurrentObjects(heap);
 
-  auto handles = heap::CreatePadding(
+  DirectHandleVector<FixedArray> handles(isolate);
+  heap::CreatePadding(
       heap, static_cast<int>(MemoryChunkLayout::AllocatableMemoryInDataPage()),
-      AllocationType::kOld);
+      AllocationType::kOld, &handles);
 
-  Page* page = Page::FromHeapObject(*handles.front());
+  MemoryChunk* chunk = MemoryChunk::FromHeapObject(*handles.front());
+  auto* page = MutablePage::FromHeapObject(isolate, *handles.front());
 
   CHECK(heap->InSpace(*handles.front(), OLD_SPACE));
-  page->SetFlag(MemoryChunk::PINNED);
+  page->set_is_pinned_for_testing(true);
 
-  CcTest::CollectAllGarbage();
-  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only);
+  heap::InvokeMajorGC(heap);
+  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only,
+                                CompleteSweepingReason::kTesting);
 
   // The pinned flag should prevent the page from moving.
-  for (Handle<FixedArray> object : handles) {
-    CHECK_EQ(page, Page::FromHeapObject(*object));
+  for (DirectHandle<FixedArray> object : handles) {
+    CHECK_EQ(chunk, MemoryChunk::FromHeapObject(*object));
   }
 
-  page->ClearFlag(MemoryChunk::PINNED);
+  page->set_is_pinned_for_testing(false);
 
-  CcTest::CollectAllGarbage();
-  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only);
+  heap::InvokeMajorGC(heap);
+  heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only,
+                                CompleteSweepingReason::kTesting);
 
   // `compact_on_every_full_gc` ensures that this page is an evacuation
   // candidate, so with the pin flag cleared compaction should now move it.
-  for (Handle<FixedArray> object : handles) {
-    CHECK_NE(page, Page::FromHeapObject(*object));
+  for (DirectHandle<FixedArray> object : handles) {
+    CHECK_NE(chunk, MemoryChunk::FromHeapObject(*object));
   }
 }
-
-HEAP_TEST(ObjectStartBitmap) {
-#ifdef V8_ENABLE_INNER_POINTER_RESOLUTION_OSB
-  CcTest::InitializeVM();
-  Isolate* isolate = CcTest::i_isolate();
-  v8::HandleScope sc(CcTest::isolate());
-
-  Heap* heap = isolate->heap();
-  heap::SealCurrentObjects(heap);
-
-  auto* factory = isolate->factory();
-
-  Handle<HeapObject> h1 = factory->NewStringFromStaticChars("hello");
-  Handle<HeapObject> h2 = factory->NewStringFromStaticChars("world");
-
-  HeapObject obj1 = *h1;
-  HeapObject obj2 = *h2;
-  Page* page1 = Page::FromHeapObject(obj1);
-  Page* page2 = Page::FromHeapObject(obj2);
-
-  CHECK(page1->object_start_bitmap()->CheckBit(obj1.address()));
-  CHECK(page2->object_start_bitmap()->CheckBit(obj2.address()));
-
-  {
-    // We need a safepoint for calling FindBasePtr.
-    SafepointScope scope(heap);
-
-    for (int k = 0; k < obj1.Size(); ++k) {
-      Address obj1_inner_ptr = obj1.address() + k;
-      CHECK_EQ(obj1.address(),
-               page1->object_start_bitmap()->FindBasePtr(obj1_inner_ptr));
-    }
-    for (int k = 0; k < obj2.Size(); ++k) {
-      Address obj2_inner_ptr = obj2.address() + k;
-      CHECK_EQ(obj2.address(),
-               page2->object_start_bitmap()->FindBasePtr(obj2_inner_ptr));
-    }
-  }
-
-  // TODO(v8:12851): Patch the location of handle h2 with an inner pointer.
-  // For now, garbage collection doesn't work with inner pointers in handles,
-  // so we're sticking to a zero offset.
-  const size_t offset = 0;
-  h2.PatchValue(String::FromAddress(h2->address() + offset));
-
-  CcTest::CollectAllGarbage();
-
-  obj1 = *h1;
-  obj2 = HeapObject::FromAddress(h2->address() - offset);
-  page1 = Page::FromHeapObject(obj1);
-  page2 = Page::FromHeapObject(obj2);
-
-  CHECK(obj1.IsString());
-  CHECK(obj2.IsString());
-
-  // Bits set in the object_start_bitmap are not preserved when objects are
-  // evacuated.
-  CHECK(!page1->object_start_bitmap()->CheckBit(obj1.address()));
-  CHECK(!page2->object_start_bitmap()->CheckBit(obj2.address()));
-
-  {
-    // We need a safepoint for calling FindBasePtr.
-    SafepointScope scope(heap);
-
-    // After FindBasePtr, the bits should be properly set again.
-    for (int k = 0; k < obj1.Size(); ++k) {
-      Address obj1_inner_ptr = obj1.address() + k;
-      CHECK_EQ(obj1.address(),
-               page1->object_start_bitmap()->FindBasePtr(obj1_inner_ptr));
-    }
-    CHECK(page1->object_start_bitmap()->CheckBit(obj1.address()));
-    for (int k = obj2.Size() - 1; k >= 0; --k) {
-      Address obj2_inner_ptr = obj2.address() + k;
-      CHECK_EQ(obj2.address(),
-               page2->object_start_bitmap()->FindBasePtr(obj2_inner_ptr));
-    }
-    CHECK(page2->object_start_bitmap()->CheckBit(obj2.address()));
-  }
-#endif  // V8_ENABLE_INNER_POINTER_RESOLUTION_OSB
-}
-
-// TODO(1600): compaction of map space is temporary removed from GC.
-#if 0
-static Handle<Map> CreateMap(Isolate* isolate) {
-  return isolate->factory()->NewMap(JS_OBJECT_TYPE, JSObject::kHeaderSize);
-}
-
-TEST(MapCompact) {
-  v8_flags.max_map_space_pages = 16;
-  CcTest::InitializeVM();
-  Isolate* isolate = CcTest::i_isolate();
-  Factory* factory = isolate->factory();
-
-  {
-    v8::HandleScope sc;
-    // keep allocating maps while pointers are still encodable and thus
-    // mark compact is permitted.
-    Handle<JSObject> root = factory->NewJSObjectFromMap(CreateMap());
-    do {
-      Handle<Map> map = CreateMap();
-      map->set_prototype(*root);
-      root = factory->NewJSObjectFromMap(map);
-    } while (CcTest::heap()->map_space()->MapPointersEncodable());
-  }
-  // Now, as we don't have any handles to just allocated maps, we should
-  // be able to trigger map compaction.
-  // To give an additional chance to fail, try to force compaction which
-  // should be impossible right now.
-  CcTest::CollectAllGarbage(Heap::kForceCompactionMask);
-  // And now map pointers should be encodable again.
-  CHECK(CcTest::heap()->map_space()->MapPointersEncodable());
-}
-#endif
 
 #if defined(__has_feature)
 #if __has_feature(address_sanitizer)
@@ -450,28 +352,26 @@ TEST(Regress5829) {
   heap::SealCurrentObjects(heap);
   i::IncrementalMarking* marking = heap->incremental_marking();
   if (heap->sweeping_in_progress()) {
-    heap->EnsureSweepingCompleted(
-        Heap::SweepingForcedFinalizationMode::kV8Only);
+    heap->EnsureSweepingCompleted(Heap::SweepingForcedFinalizationMode::kV8Only,
+                                  CompleteSweepingReason::kTesting);
   }
   CHECK(marking->IsMarking() || marking->IsStopped());
   if (marking->IsStopped()) {
-    heap->StartIncrementalMarking(i::Heap::kNoGCFlags,
+    heap->StartIncrementalMarking(i::GCFlag::kNoFlags,
                                   i::GarbageCollectionReason::kTesting);
   }
   CHECK(marking->IsMarking());
   CHECK(marking->black_allocation());
-  Handle<FixedArray> array =
+  DirectHandle<FixedArray> array =
       isolate->factory()->NewFixedArray(10, AllocationType::kOld);
   Address old_end = array->address() + array->Size();
   // Right trim the array without clearing the mark bits.
   array->set_length(9);
   heap->CreateFillerObjectAt(old_end - kTaggedSize, kTaggedSize);
-  heap->old_space()->FreeLinearAllocationArea();
-  Page* page = Page::FromAddress(array->address());
-  MarkingState* marking_state = heap->marking_state();
-  for (auto object_and_size :
-       LiveObjectRange<kGreyObjects>(page, marking_state->bitmap(page))) {
-    CHECK(!object_and_size.first.IsFreeSpaceOrFiller());
+  heap->FreeMainThreadLinearAllocationAreas();
+  NormalPage* page = NormalPage::FromAddress(array->address());
+  for (auto object_and_size : LiveObjectRange(page)) {
+    CHECK(!IsFreeSpaceOrFiller(object_and_size.first));
   }
 }
 

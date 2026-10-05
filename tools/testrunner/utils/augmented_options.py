@@ -5,7 +5,11 @@
 import optparse
 import os
 import random
+
+from functools import cached_property
+
 from testrunner.testproc import fuzzer
+
 
 class AugmentedOptions(optparse.Values):
   """This class will augment exiting options object with
@@ -21,6 +25,7 @@ class AugmentedOptions(optparse.Values):
       self._fuzzer_rng = random.Random(self.fuzzer_random_seed)
     return self._fuzzer_rng
 
+  @cached_property
   def shard_info(self):
     """
     Returns pair:
@@ -61,10 +66,13 @@ class AugmentedOptions(optparse.Values):
       if prob:
         fuzzers.append(fuzzer.create_fuzzer_config(name, prob))
 
+    add('allocation', self.allocation_offset)
+    add('bytecode', self.stress_bytecode_budget)
     add('compaction', self.stress_compaction)
     add('interrupt', self.stress_interrupt_budget)
     add('marking', self.stress_marking)
     add('scavenge', self.stress_scavenge)
+    add('scavenge_chaos', self.scavenge_chaos)
     add('gc_interval', self.stress_gc)
     add('stack', self.stress_stack_size)
     add('threads', self.stress_thread_pool_size)

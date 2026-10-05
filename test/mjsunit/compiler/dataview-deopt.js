@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --turbofan --no-always-turbofan --no-stress-flush-code
+// Flags: --allow-natives-syntax --turbofan --no-stress-flush-code
 
 // Check that there are no deopt loops for DataView methods.
 
@@ -58,3 +58,17 @@ warmupWrite(writeUint8);
 assertOptimized(writeUint8);
 writeUint8(1.5, 0); // Doesn't deopt.
 assertOptimized(writeUint8);
+
+function writeUint32(offset, value) {
+  dataview.setUint32(offset, value);
+}
+
+warmupWrite(writeUint32);
+assertOptimized(writeUint32);
+writeUint32(0.5, 0);  // Deopts.
+assertUnoptimized(writeUint32);
+
+warmupWrite(writeUint32);
+assertOptimized(writeUint32);
+writeUint32(1.5, 0);  // Doesn't deopt.
+assertOptimized(writeUint32);

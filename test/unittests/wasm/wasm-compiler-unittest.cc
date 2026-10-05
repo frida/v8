@@ -7,6 +7,7 @@
 #include "src/codegen/machine-type.h"
 #include "src/codegen/signature.h"
 #include "src/compiler/linkage.h"
+#include "src/compiler/wasm-compiler-definitions.h"
 #include "src/wasm/value-type.h"
 #include "src/wasm/wasm-linkage.h"
 #include "test/unittests/test-utils.h"
@@ -41,7 +42,7 @@ TEST_F(WasmCallDescriptorTest, TestExternRefIsGrouped) {
     int min_untagged_stack_location = std::numeric_limits<int>::max();
     for (size_t i = 1; i < desc->ParameterCount(); ++i) {
       // InputLocation i + 1, because target is the first input.
-      compiler::LinkageLocation location = desc->GetInputLocation(i + 1);
+      LinkageLocation location = desc->GetInputLocation(i + 1);
       if (desc->GetParameterType(i).IsTagged()) {
         if (location.IsRegister()) {
           has_tagged_register_param = true;
@@ -90,20 +91,58 @@ TEST_F(WasmCallDescriptorTest, Regress_1174500) {
 
   // Get the location of our stack parameter slot. Skip the implicit Wasm
   // instance parameter.
-  compiler::LinkageLocation last_param = desc->GetInputLocation(kParams + 1);
+  LinkageLocation last_param = desc->GetInputLocation(kParams + 1);
   EXPECT_TRUE(last_param.IsCallerFrameSlot());
   EXPECT_EQ(MachineType::Float32(), last_param.GetType());
   EXPECT_EQ(-1, last_param.GetLocation());
 
+  LinkageLocation return_location = desc->GetReturnLocation(kReturns - 1);
+#if defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_RISCV64) || \
+    defined(V8_TARGET_ARCH_PPC64)
+  // On these platforms, S128 values are passed/returned in registers.
+  EXPECT_TRUE(return_location.IsRegister());
+#else
   // The stack return slot should be right above our last parameter, and any
   // argument padding slots. The return slot itself should not be padded.
   const int padding = ShouldPadArguments(1);
   const int first_return_slot = -1 - (padding + 1);
-  compiler::LinkageLocation return_location =
-      desc->GetReturnLocation(kReturns - 1);
   EXPECT_TRUE(return_location.IsCallerFrameSlot());
   EXPECT_EQ(MachineType::Simd128(), return_location.GetType());
   EXPECT_EQ(first_return_slot, return_location.GetLocation());
+#endif
+}
+
+TEST(WasmTypeCheckConfigTest, EqualityAndHash) {
+  using compiler::kExactMatchLastSupertype;
+  using compiler::kExactMatchOnly;
+  using compiler::kMayBeSubtype;
+  using compiler::WasmTypeCheckConfig;
+
+  WasmTypeCheckConfig c1{kWasmAnyRef, kWasmFuncRef, kMayBeSubtype};
+  WasmTypeCheckConfig c2{kWasmAnyRef, kWasmFuncRef, kMayBeSubtype};
+  WasmTypeCheckConfig c_diff_from{kWasmExternRef, kWasmFuncRef, kMayBeSubtype};
+  WasmTypeCheckConfig c_diff_to{kWasmAnyRef, kWasmEqRef, kMayBeSubtype};
+  WasmTypeCheckConfig c_diff_exact1{kWasmAnyRef, kWasmFuncRef, kExactMatchOnly};
+  WasmTypeCheckConfig c_diff_exact2{kWasmAnyRef, kWasmFuncRef,
+                                    kExactMatchLastSupertype};
+
+  EXPECT_EQ(c1, c2);
+  EXPECT_EQ(hash_value(c1), hash_value(c2));
+
+  EXPECT_NE(c1, c_diff_from);
+  EXPECT_NE(hash_value(c1), hash_value(c_diff_from));
+
+  EXPECT_NE(c1, c_diff_to);
+  EXPECT_NE(hash_value(c1), hash_value(c_diff_to));
+
+  EXPECT_NE(c1, c_diff_exact1);
+  EXPECT_NE(hash_value(c1), hash_value(c_diff_exact1));
+
+  EXPECT_NE(c1, c_diff_exact2);
+  EXPECT_NE(hash_value(c1), hash_value(c_diff_exact2));
+
+  EXPECT_NE(c_diff_exact1, c_diff_exact2);
+  EXPECT_NE(hash_value(c_diff_exact1), hash_value(c_diff_exact2));
 }
 
 }  // namespace wasm

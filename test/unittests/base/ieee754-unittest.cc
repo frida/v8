@@ -132,7 +132,7 @@ TEST(Ieee754, Atanh) {
 }
 
 TEST(Ieee754, Cos) {
-  // Test values mentioned in the EcmaScript spec.
+  // Test values mentioned in the ECMAScript spec.
   EXPECT_THAT(cos(kQNaN), IsNaN());
   EXPECT_THAT(cos(kSNaN), IsNaN());
   EXPECT_THAT(cos(kInfinity), IsNaN());
@@ -177,8 +177,45 @@ TEST(Ieee754, Cos) {
   EXPECT_EQ(-0.9258790228548379e0, cos(-kTwo120));
 }
 
+TEST(Ieee754, Sin) {
+  // Test values mentioned in the ECMAScript spec.
+  EXPECT_THAT(sin(kQNaN), IsNaN());
+  EXPECT_THAT(sin(kSNaN), IsNaN());
+  EXPECT_THAT(sin(kInfinity), IsNaN());
+  EXPECT_THAT(sin(-kInfinity), IsNaN());
+
+  // Tests for sin for |x| < pi/4
+  EXPECT_EQ(-kInfinity, Divide(1.0, sin(-0.0)));
+  EXPECT_EQ(kInfinity, Divide(1.0, sin(0.0)));
+  // sin(x) = x for x < 2^-27
+  EXPECT_EQ(2.3283064365386963e-10, sin(2.3283064365386963e-10));
+  EXPECT_EQ(-2.3283064365386963e-10, sin(-2.3283064365386963e-10));
+  // sin(pi/8) = sqrt(sqrt(2)-1)/2^(3/4)
+  EXPECT_EQ(0.3826834323650898, sin(0.39269908169872414));
+  EXPECT_EQ(-0.3826834323650898, sin(-0.39269908169872414));
+
+  // Tests for sin.
+  EXPECT_EQ(0.479425538604203, sin(0.5));
+  EXPECT_EQ(-0.479425538604203, sin(-0.5));
+  EXPECT_EQ(1, sin(kPI / 2.0));
+  EXPECT_EQ(-1, sin(-kPI / 2.0));
+  // Test that sin(Math.PI) != 0 since Math.PI is not exact.
+  EXPECT_EQ(1.2246467991473532e-16, sin(kPI));
+  EXPECT_EQ(-7.047032979958965e-14, sin(2200.0 * kPI));
+  // Test sin for various phases.
+  EXPECT_EQ(-0.7071067811865477, sin(7.0 / 4.0 * kPI));
+  EXPECT_EQ(0.7071067811865474, sin(9.0 / 4.0 * kPI));
+  EXPECT_EQ(0.7071067811865483, sin(11.0 / 4.0 * kPI));
+  EXPECT_EQ(-0.7071067811865479, sin(13.0 / 4.0 * kPI));
+  EXPECT_EQ(-3.2103381051568376e-11, sin(1048576.0 / 4 * kPI));
+
+  // Test Hayne-Panek reduction.
+  EXPECT_EQ(0.377820109360752e0, sin(kTwo120));
+  EXPECT_EQ(-0.377820109360752e0, sin(-kTwo120));
+}
+
 TEST(Ieee754, Cosh) {
-  // Test values mentioned in the EcmaScript spec.
+  // Test values mentioned in the ECMAScript spec.
   EXPECT_THAT(cosh(kQNaN), IsNaN());
   EXPECT_THAT(cosh(kSNaN), IsNaN());
   EXPECT_THAT(cosh(kInfinity), kInfinity);
@@ -226,7 +263,7 @@ TEST(Ieee754, Expm1) {
   EXPECT_EQ(kInfinity, expm1(kInfinity));
   EXPECT_EQ(0.0, expm1(-0.0));
   EXPECT_EQ(0.0, expm1(0.0));
-  EXPECT_EQ(1.718281828459045, expm1(1.0));
+  EXPECT_EQ(1.7182818284590453, expm1(1.0));
   EXPECT_EQ(2.6881171418161356e+43, expm1(100.0));
   EXPECT_EQ(8.218407461554972e+307, expm1(709.0));
   EXPECT_EQ(kInfinity, expm1(710.0));
@@ -306,45 +343,8 @@ TEST(Ieee754, Cbrt) {
   EXPECT_EQ(46.415888336127786, cbrt(100000));
 }
 
-TEST(Ieee754, Sin) {
-  // Test values mentioned in the EcmaScript spec.
-  EXPECT_THAT(sin(kQNaN), IsNaN());
-  EXPECT_THAT(sin(kSNaN), IsNaN());
-  EXPECT_THAT(sin(kInfinity), IsNaN());
-  EXPECT_THAT(sin(-kInfinity), IsNaN());
-
-  // Tests for sin for |x| < pi/4
-  EXPECT_EQ(-kInfinity, Divide(1.0, sin(-0.0)));
-  EXPECT_EQ(kInfinity, Divide(1.0, sin(0.0)));
-  // sin(x) = x for x < 2^-27
-  EXPECT_EQ(2.3283064365386963e-10, sin(2.3283064365386963e-10));
-  EXPECT_EQ(-2.3283064365386963e-10, sin(-2.3283064365386963e-10));
-  // sin(pi/8) = sqrt(sqrt(2)-1)/2^(3/4)
-  EXPECT_EQ(0.3826834323650898, sin(0.39269908169872414));
-  EXPECT_EQ(-0.3826834323650898, sin(-0.39269908169872414));
-
-  // Tests for sin.
-  EXPECT_EQ(0.479425538604203, sin(0.5));
-  EXPECT_EQ(-0.479425538604203, sin(-0.5));
-  EXPECT_EQ(1, sin(kPI / 2.0));
-  EXPECT_EQ(-1, sin(-kPI / 2.0));
-  // Test that sin(Math.PI) != 0 since Math.PI is not exact.
-  EXPECT_EQ(1.2246467991473532e-16, sin(kPI));
-  EXPECT_EQ(-7.047032979958965e-14, sin(2200.0 * kPI));
-  // Test sin for various phases.
-  EXPECT_EQ(-0.7071067811865477, sin(7.0 / 4.0 * kPI));
-  EXPECT_EQ(0.7071067811865474, sin(9.0 / 4.0 * kPI));
-  EXPECT_EQ(0.7071067811865483, sin(11.0 / 4.0 * kPI));
-  EXPECT_EQ(-0.7071067811865479, sin(13.0 / 4.0 * kPI));
-  EXPECT_EQ(-3.2103381051568376e-11, sin(1048576.0 / 4 * kPI));
-
-  // Test Hayne-Panek reduction.
-  EXPECT_EQ(0.377820109360752e0, sin(kTwo120));
-  EXPECT_EQ(-0.377820109360752e0, sin(-kTwo120));
-}
-
 TEST(Ieee754, Sinh) {
-  // Test values mentioned in the EcmaScript spec.
+  // Test values mentioned in the ECMAScript spec.
   EXPECT_THAT(sinh(kQNaN), IsNaN());
   EXPECT_THAT(sinh(kSNaN), IsNaN());
   EXPECT_THAT(sinh(kInfinity), kInfinity);
@@ -354,7 +354,7 @@ TEST(Ieee754, Sinh) {
 }
 
 TEST(Ieee754, Tan) {
-  // Test values mentioned in the EcmaScript spec.
+  // Test values mentioned in the ECMAScript spec.
   EXPECT_THAT(tan(kQNaN), IsNaN());
   EXPECT_THAT(tan(kSNaN), IsNaN());
   EXPECT_THAT(tan(kInfinity), IsNaN());
@@ -391,7 +391,7 @@ TEST(Ieee754, Tan) {
 }
 
 TEST(Ieee754, Tanh) {
-  // Test values mentioned in the EcmaScript spec.
+  // Test values mentioned in the ECMAScript spec.
   EXPECT_THAT(tanh(kQNaN), IsNaN());
   EXPECT_THAT(tanh(kSNaN), IsNaN());
   EXPECT_THAT(tanh(kInfinity), 1);

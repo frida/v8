@@ -6,52 +6,24 @@
 #define HEAP_HEAP_UTILS_H_
 
 #include "src/api/api-inl.h"
+#include "src/flags/flags.h"
 #include "src/heap/heap.h"
+#include "test/cctest/cctest.h"
 
-namespace v8 {
-namespace internal {
+namespace v8::internal {
+
 namespace heap {
-
-START_ALLOW_USE_DEPRECATED()
-
-class V8_NODISCARD TemporaryEmbedderHeapTracerScope {
- public:
-  TemporaryEmbedderHeapTracerScope(v8::Isolate* isolate,
-                                   v8::EmbedderHeapTracer* tracer)
-      : isolate_(isolate) {
-    isolate_->SetEmbedderHeapTracer(tracer);
-  }
-
-  ~TemporaryEmbedderHeapTracerScope() {
-    isolate_->SetEmbedderHeapTracer(nullptr);
-  }
-
- private:
-  v8::Isolate* const isolate_;
-};
-
-END_ALLOW_USE_DEPRECATED()
 
 void SealCurrentObjects(Heap* heap);
 
 int FixedArrayLenFromSize(int size);
 
-// Fill a page with fixed arrays leaving remainder behind. The function does
-// not create additional fillers and assumes that the space has just been
-// sealed.
-std::vector<Handle<FixedArray>> FillOldSpacePageWithFixedArrays(Heap* heap,
-                                                                int remainder);
-
-std::vector<Handle<FixedArray>> CreatePadding(
-    Heap* heap, int padding_size, AllocationType allocation,
-    int object_size = kMaxRegularHeapObjectSize);
+void CreatePadding(Heap* heap, int padding_size, AllocationType allocation,
+                   DirectHandleVector<FixedArray>* out_handles = nullptr,
+                   int object_size = kMaxRegularHeapObjectSize);
 
 void FillCurrentPage(v8::internal::NewSpace* space,
-                     std::vector<Handle<FixedArray>>* out_handles = nullptr);
-
-void FillCurrentPageButNBytes(
-    v8::internal::NewSpace* space, int extra_bytes,
-    std::vector<Handle<FixedArray>>* out_handles = nullptr);
+                     DirectHandleVector<FixedArray>* out_handles = nullptr);
 
 // Helper function that simulates many incremental marking steps until
 // marking is completed.
@@ -62,37 +34,98 @@ void SimulateFullSpace(v8::internal::PagedSpace* space);
 
 void AbandonCurrentlyFreeMemory(PagedSpace* space);
 
-void GcAndSweep(Heap* heap, AllocationSpace space);
+void InvokeMajorGC(Heap* heap);
+void InvokeMajorGC(Heap* heap, GCFlag gc_flag);
+void InvokeMinorGC(Heap* heap);
+void InvokeAtomicMajorGC(Heap* heap);
+void InvokeAtomicMinorGC(Heap* heap);
+void InvokeMemoryReducingMajorGCs(Heap* heap);
+void CollectSharedGarbage(Heap* heap);
 
-void ForceEvacuationCandidate(Page* page);
+void EmptyNewSpaceUsingGC(Heap* heap);
 
-void InvokeScavenge(Isolate* isolate = nullptr);
-
-void InvokeMarkSweep(Isolate* isolate = nullptr);
-
-void GrowNewSpace(Heap* heap);
+void ForceEvacuationCandidate(NormalPage* page);
 
 void GrowNewSpaceToMaximumCapacity(Heap* heap);
 
-template <typename GlobalOrPersistent>
-bool InYoungGeneration(v8::Isolate* isolate, const GlobalOrPersistent& global) {
-  v8::HandleScope scope(isolate);
-  auto tmp = global.Get(isolate);
-  return i::Heap::InYoungGeneration(*v8::Utils::OpenHandle(*tmp));
-}
+bool InCorrectGeneration(Tagged<HeapObject> object);
 
-bool InCorrectGeneration(HeapObject object);
+class ManualEvacuationCandidatesSelectionScope {
+ public:
+  // Marking a page as an evacuation candidate update the page flags which may
+  // race with reading the page flag during concurrent marking.
+  explicit ManualEvacuationCandidatesSelectionScope(ManualGCScope&) {
+    DCHECK(!v8_flags.manual_evacuation_candidates_selection);
+    v8_flags.manual_evacuation_candidates_selection = true;
+  }
+  ~ManualEvacuationCandidatesSelectionScope() {
+    DCHECK(v8_flags.manual_evacuation_candidates_selection);
+    v8_flags.manual_evacuation_candidates_selection = false;
+  }
 
-template <typename GlobalOrPersistent>
-bool InCorrectGeneration(v8::Isolate* isolate,
-                         const GlobalOrPersistent& global) {
-  v8::HandleScope scope(isolate);
-  auto tmp = global.Get(isolate);
-  return InCorrectGeneration(*v8::Utils::OpenHandle(*tmp));
-}
+ private:
+};
+
+class MockTaskRunner;
+class MockPlatform : public TestPlatform {
+ public:
+  MockPlatform();
+  ~MockPlatform() override {
+    for (auto& task : worker_tasks_) {
+      CcTest::default_platform()->PostTaskOnWorkerThread(
+          TaskPriority::kUserVisible, std::move(task));
+    }
+    worker_tasks_.clear();
+  }
+
+  std::shared_ptr<v8::TaskRunner> GetForegroundTaskRunner(
+      v8::Isolate* isolate, v8::TaskPriority) override;
+
+  void PostTaskOnWorkerThreadImpl(TaskPriority priority,
+                                  std::unique_ptr<Task> task,
+                                  const SourceLocation& location) override {
+    worker_tasks_.push_back(std::move(task));
+  }
+
+  bool IdleTasksEnabled(v8::Isolate* isolate) override { return false; }
+
+  bool PendingTask();
+
+  void PerformTask();
+
+  double Delay();
+
+ private:
+  std::shared_ptr<MockTaskRunner> taskrunner_;
+  std::vector<std::unique_ptr<Task>> worker_tasks_;
+};
 
 }  // namespace heap
-}  // namespace internal
-}  // namespace v8
+
+// ManualGCScope allows for disabling GC heuristics. This is useful for tests
+// that want to check specific corner cases around GC.
+//
+// The scope will finalize any ongoing GC on the provided Isolate. If no Isolate
+// is manually provided, it is assumed that a CcTest setup (e.g.
+// CcTest::InitializeVM()) is used.
+class V8_NODISCARD ManualGCScope final {
+ public:
+  explicit ManualGCScope(
+      Isolate* isolate = reinterpret_cast<Isolate*>(CcTest::isolate_));
+  ~ManualGCScope();
+
+ private:
+  Isolate* const isolate_;
+  const bool flag_concurrent_marking_;
+  const bool flag_concurrent_sweeping_;
+  const bool flag_concurrent_minor_ms_marking_;
+  const bool flag_stress_concurrent_allocation_;
+  const bool flag_stress_incremental_marking_;
+  const bool flag_parallel_marking_;
+  const bool flag_detect_ineffective_gcs_near_heap_limit_;
+  const bool flag_cppheap_concurrent_marking_;
+};
+
+}  // namespace v8::internal
 
 #endif  // HEAP_HEAP_UTILS_H_

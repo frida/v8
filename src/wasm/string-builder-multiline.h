@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#ifndef V8_WASM_STRING_BUILDER_MULTILINE_H_
+#define V8_WASM_STRING_BUILDER_MULTILINE_H_
+
 #if !V8_ENABLE_WEBASSEMBLY
 #error This header should only be included if WebAssembly is enabled.
 #endif  // !V8_ENABLE_WEBASSEMBLY
-
-#ifndef V8_WASM_STRING_BUILDER_MULTILINE_H_
-#define V8_WASM_STRING_BUILDER_MULTILINE_H_
 
 #include <cstring>
 #include <iostream>
@@ -24,6 +24,13 @@ class DisassemblyCollector;
 
 namespace internal {
 namespace wasm {
+
+// Computes the number of decimal digits required to print {value}.
+inline int GetNumDigits(uint32_t value) {
+  int digits = 1;
+  for (uint32_t compare = 10; value >= compare; compare *= 10) digits++;
+  return digits;
+}
 
 struct LabelInfo {
   LabelInfo(size_t line_number, size_t offset,
@@ -54,6 +61,7 @@ class MultiLineStringBuilder : public StringBuilder {
   void set_current_line_bytecode_offset(uint32_t offset) {
     pending_bytecode_offset_ = offset;
   }
+  uint32_t current_line_bytecode_offset() { return pending_bytecode_offset_; }
 
   // Label backpatching support. Parameters:
   // {label}: Information about where to insert the label. Fields {line_number},
@@ -92,7 +100,7 @@ class MultiLineStringBuilder : public StringBuilder {
       // Write the unfinished line into its new location.
       start_here();
       char* new_location = allocate(unfinished_length);
-      memcpy(new_location, unfinished_start, unfinished_length);
+      memmove(new_location, unfinished_start, unfinished_length);
       if (label_source >= unfinished_start &&
           label_source < unfinished_start + unfinished_length) {
         label_source = new_location + (label_source - unfinished_start);
@@ -115,12 +123,51 @@ class MultiLineStringBuilder : public StringBuilder {
   // Note: implemented in wasm-disassembler.cc (which is also the only user).
   void ToDisassemblyCollector(v8::debug::DisassemblyCollector* collector);
 
-  void WriteTo(std::ostream& out) {
+  void WriteTo(std::ostream& out, bool print_offsets,
+               std::vector<uint32_t>* collect_offsets = nullptr) {
     if (length() != 0) NextLine(0);
+    if (lines_.size() == 0) return;
 
+    if (print_offsets) {
+      // The last offset is expected to be the largest. However, when callers
+      // emit multiple snippets (such as wami's --single-wat mode), this is
+      // not always true. Approximate detection of that case.
+      uint32_t largest_offset = lines_.back().bytecode_offset;
+      if (lines_[0].bytecode_offset > largest_offset) {
+        for (const Line& l : lines_) {
+          if (l.bytecode_offset > largest_offset) {
+            largest_offset = l.bytecode_offset;
+          }
+        }
+      }
+      int width = GetNumDigits(largest_offset);
+      // We could have used std::setw(width), but this is faster.
+      constexpr int kBufSize = 12;  // Enough for any uint32 plus '|'.
+      char buffer[kBufSize] = {32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, '|'};
+      char* const buffer_end = buffer + kBufSize - 1;
+      char* const buffer_start = buffer_end - width;
+      uint32_t prev_offset = 0;
+      for (const Line& l : lines_) {
+        uint32_t offset = l.bytecode_offset;
+        // We usually encounter offsets in ascending order, so we can just
+        // overwrite the previous value without clearing it first; unless we
+        // just skipped to a new snippet with a smaller offset.
+        if (offset < prev_offset) {
+          memset(buffer_start, 32, width);
+        }
+        prev_offset = offset;
+        char* ptr = buffer_end;
+        do {
+          *(--ptr) = '0' + (offset % 10);
+          offset /= 10;
+        } while (offset > 0);
+        out.write(buffer_start, width + 1);  // +1 for the '|'.
+        out.write(l.data, l.len);
+      }
+      return;
+    }
     // In the name of speed, batch up lines that happen to be stored
     // consecutively.
-    if (lines_.size() == 0) return;
     const Line& first = lines_[0];
     const char* last_start = first.data;
     size_t len = first.len;
@@ -135,7 +182,15 @@ class MultiLineStringBuilder : public StringBuilder {
       }
     }
     out.write(last_start, len);
+    if (collect_offsets) {
+      collect_offsets->reserve(lines_.size());
+      for (const Line& l : lines_) {
+        collect_offsets->push_back(l.bytecode_offset);
+      }
+    }
   }
+
+  size_t ApproximateSizeMB() { return approximate_size_mb(); }
 
  private:
   struct Line {

@@ -3,6 +3,9 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from pathlib import Path
+
+import copy
 import json
 import os
 import platform
@@ -28,7 +31,7 @@ from testrunner.objects.output import Output, NULL_OUTPUT
 RUN_PERF = os.path.join(TOOLS_ROOT, 'run_perf.py')
 TEST_DATA = os.path.join(TOOLS_ROOT, 'unittests', 'testdata')
 
-TEST_WORKSPACE = os.path.join(tempfile.gettempdir(), 'test-v8-run-perf')
+TEST_WORKSPACE = Path(tempfile.gettempdir()) / 'test-v8-run-perf'
 
 SORT_KEY = lambda x: x['graphs']
 
@@ -114,13 +117,56 @@ V8_NESTED_SUITES_JSON = {
 }
 
 V8_GENERIC_JSON = {
-  'path': ['.'],
-  'owners': ['username@chromium.org'],
-  'binary': 'cc',
-  'flags': ['--flag'],
-  'generic': True,
-  'run_count': 1,
-  'units': 'ms',
+    'path': ['.'],
+    'owners': ['username@chromium.org'],
+    'binary': 'cc',
+    'flags': ['--flag'],
+    'run_count': 1,
+    'units': 'ms',
+}
+
+V8_DYNAMIC_GENERIC_JSON = {
+    'path': ['.'],
+    'owners': ['username@chromium.org'],
+    'binary':
+        'd7',
+    'timeout':
+        60,
+    'flags': ['--flag'],
+    'main':
+        'run.js',
+    'run_count':
+        1,
+    'units':
+        'pts',
+    'tests': [
+        {
+            'name': 'FixedTest',
+            'units': 'score-fixed',
+            'results_regexp': r'^FixedTest:\s+(?P<value>[\d\.]+) pts$',
+        },
+        {
+            'name': 'FixedTest2',
+            'units': 'score-fixed2',
+            'results_regexp': r'^FixedTest2:\s+(?P<value>[\d\.]+) pts$',
+        },
+        {
+            'unit':
+                'score',
+            'dynamic':
+                True,
+            'results_regexp':
+                r'^(?P<name>[\w\-]+(?: [\w\-]+)+)[\s\:]+(?P<value>[\d\.]+)\s+pts$',
+        },
+        {
+            'unit':
+                'ms',
+            'dynamic':
+                True,
+            'results_regexp':
+                r'^(?P<name>[\w\-]+(?: [\w\-]+)+)[\s\:]+(?P<value>[\d\.]+)\s+ms$',
+        },
+    ]
 }
 
 
@@ -169,7 +215,8 @@ class PerfTest(unittest.TestCase):
             stdout=output,
             timed_out=kwargs.get('timed_out', False),
             exit_code=kwargs.get('exit_code', 0),
-            duration=42) for output in raw_outputs
+            start_time=0,
+            end_time=42) for output in raw_outputs
     ]
 
     def create_cmd(*args, **kwargs):
@@ -283,6 +330,56 @@ class PerfTest(unittest.TestCase):
     self._VerifyMock(
         os.path.join('out', 'x64.release', 'd7'), '--flag', 'run.js')
 
+  def testWarmup_OnEmpty(self):
+    warmup_cache = TEST_WORKSPACE / 'test_cache.json'
+    mock.patch('run_perf.WARMUP_CACHE_FILE', warmup_cache).start()
+    mock.patch('psutil.boot_time', return_value=42).start()
+    mock.patch('time.time', return_value=123).start()
+    cache_handler = run_perf.CacheHandler(warmup_cache)
+    self.assertFalse(cache_handler.cache_file.exists())
+    self._WriteTestInput(V8_JSON)
+
+    # Require 2 runs. One for the warm-up.
+    self._MockCommand(2 * ['.'], 2 * ['Richards: 1\nDeltaBlue: 2\n'])
+    self.assertEqual(0, self._CallMain('--checked-warmup'))
+
+    # The warm-up ran at the current time and cache is up to date.
+    self.assertDictEqual({'test': 123}, cache_handler.read_cache())
+
+  def testWarmup_NotNeeded(self):
+    warmup_cache = TEST_WORKSPACE / 'test_cache.json'
+    mock.patch('run_perf.WARMUP_CACHE_FILE', warmup_cache).start()
+    mock.patch('psutil.boot_time', return_value=42).start()
+    mock.patch('time.time', return_value=123).start()
+    cache_handler = run_perf.CacheHandler(warmup_cache)
+
+    # Test that the old entry is trimmed.
+    cache_handler.write_cache({'test': 87, 'some_old_entry': 23})
+    self._WriteTestInput(V8_JSON)
+
+    # One run only since no warm-up is required.
+    self._MockCommand(1 * ['.'], 1 * ['Richards: 1\nDeltaBlue: 2\n'])
+    self.assertEqual(0, self._CallMain('--checked-warmup'))
+
+    # No warm-up ran, cache is only trimmed.
+    self.assertDictEqual({'test': 87}, cache_handler.read_cache())
+
+  def testWarmup_Needed(self):
+    warmup_cache = TEST_WORKSPACE / 'test_cache.json'
+    mock.patch('run_perf.WARMUP_CACHE_FILE', warmup_cache).start()
+    mock.patch('psutil.boot_time', return_value=42).start()
+    mock.patch('time.time', return_value=123).start()
+    cache_handler = run_perf.CacheHandler(warmup_cache)
+    cache_handler.write_cache({'test': 23})
+    self._WriteTestInput(V8_JSON)
+
+    # Require 2 runs. One for the warm-up.
+    self._MockCommand(2 * ['.'], 2 * ['Richards: 1\nDeltaBlue: 2\n'])
+    self.assertEqual(0, self._CallMain('--checked-warmup'))
+
+    # The warm-up ran at the current time and cache is up to date.
+    self.assertDictEqual({'test': 123}, cache_handler.read_cache())
+
   def testOneRunVariants(self):
     self._WriteTestInput(V8_VARIANTS_JSON)
     self._MockCommand(['.', '.', '.'], [
@@ -337,6 +434,65 @@ class PerfTest(unittest.TestCase):
         (os.path.join('out', 'x64.release',
                       'd7'), '--flag', '--variant-b-flag', 'run.js'))
 
+  def testOneRunVariantsWithDefault(self):
+    config = dict(V8_VARIANTS_JSON)
+
+    # Default value for DeltaBlue
+    config['tests'][1]['results_default'] = 42
+
+    self._WriteTestInput(config)
+    self._MockCommand(['.', '.', '.'], [
+        'x\nRichards: 3.3\nDeltaBlue: 3000\ny\n',
+        'x\nRichards: 2.2\nDeltaBlue: 2000\ny\n',
+        'x\nRichards: 1.1\ny\n',  # One variant lacks DeltaBlue.
+    ])
+    self.assertEqual(0, self._CallMain())
+    self._VerifyResultTraces([
+        {
+            'units': 'score',
+            'graphs': ['test', 'default', 'Richards'],
+            'results': [1.1],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'default', 'DeltaBlue'],
+            'results': [42],  # Expected default value.
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantA', 'Richards'],
+            'results': [2.2],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantA', 'DeltaBlue'],
+            'results': [2000],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantB', 'Richards'],
+            'results': [3.3],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantB', 'DeltaBlue'],
+            'results': [3000],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMockMultiple(
+        (os.path.join('out', 'x64.release', 'd7'), '--flag', 'run.js'),
+        (os.path.join('out', 'x64.release',
+                      'd7'), '--flag', '--variant-a-flag', 'run.js'),
+        (os.path.join('out', 'x64.release',
+                      'd7'), '--flag', '--variant-b-flag', 'run.js'))
+
   def testOneRunWithTestFlags(self):
     test_input = dict(V8_JSON)
     test_input['test_flags'] = ['2', 'test_name']
@@ -350,6 +506,130 @@ class PerfTest(unittest.TestCase):
     self._VerifyErrors([])
     self._VerifyMock(os.path.join(
       'out', 'x64.release', 'd7'), '--flag', 'run.js', '--', '2', 'test_name')
+
+  def testOneRunVariantsWithTestFlags(self):
+    config = dict(V8_VARIANTS_JSON)
+    config['test_flags'] = ['2', 'test_name']
+
+    self._WriteTestInput(config)
+    self._MockCommand(['.', '.', '.'], [
+        'x\nRichards: 3.3\nDeltaBlue: 3000\ny\n',
+        'x\nRichards: 2.2\nDeltaBlue: 2000\ny\n',
+        'x\nRichards: 1.1\nDeltaBlue: 1000\ny\n'
+    ])
+    self.assertEqual(0, self._CallMain())
+    self._VerifyResultTraces([
+        {
+            'units': 'score',
+            'graphs': ['test', 'default', 'Richards'],
+            'results': [1.1],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'default', 'DeltaBlue'],
+            'results': [1000],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantA', 'Richards'],
+            'results': [2.2],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantA', 'DeltaBlue'],
+            'results': [2000],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantB', 'Richards'],
+            'results': [3.3],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'VariantB', 'DeltaBlue'],
+            'results': [3000],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMockMultiple(
+        (os.path.join('out', 'x64.release',
+                      'd7'), '--flag', 'run.js', '--', '2', 'test_name'),
+        (os.path.join('out', 'x64.release', 'd7'), '--flag', '--variant-a-flag',
+         'run.js', '--', '2', 'test_name'),
+        (os.path.join('out', 'x64.release', 'd7'), '--flag', '--variant-b-flag',
+         'run.js', '--', '2', 'test_name'))
+
+  def testOneRunVariantsWithTestFlagsAppend(self):
+    config = copy.deepcopy(V8_VARIANTS_JSON)
+    config['test_flags'] = ['top']
+    config['variants'][1]['test_flags'] = ['variant-a']
+
+    self._WriteTestInput(config)
+    self._MockCommand(['.', '.', '.'], [
+        'Richards: 1.1\nDeltaBlue: 1000\n',
+        'Richards: 1.1\nDeltaBlue: 1000\n',
+        'Richards: 1.1\nDeltaBlue: 1000\n',
+    ])
+    self.assertEqual(0, self._CallMain())
+    self._VerifyErrors([])
+    self._VerifyMockMultiple(
+        (os.path.join('out', 'x64.release',
+                      'd7'), '--flag', 'run.js', '--', 'top'),
+        (os.path.join('out', 'x64.release', 'd7'), '--flag', '--variant-a-flag',
+         'run.js', '--', 'top', 'variant-a'),
+        (os.path.join('out', 'x64.release', 'd7'), '--flag', '--variant-b-flag',
+         'run.js', '--', 'top'))
+
+  def testOneRunWithForwardFlags(self):
+    test_input = dict(V8_JSON)
+    self._WriteTestInput(test_input)
+    self._MockCommand(['.'], ['Richards: 1.234\nDeltaBlue: 10657567'])
+    self.assertEqual(0, self._CallMain('--', '--max-opt=1', '--no-foo'))
+    self._VerifyResults('test', 'score', [
+        {
+            'name': 'Richards',
+            'results': [1.234],
+            'stddev': ''
+        },
+        {
+            'name': 'DeltaBlue',
+            'results': [10657567.0],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMock(
+        os.path.join('out', 'x64.release', 'd7'), '--flag', '--max-opt=1',
+        '--no-foo', 'run.js')
+
+  def testOneRunWithForwardFlagsWithTestFlags(self):
+    test_input = dict(V8_JSON)
+    test_input['test_flags'] = ['2', 'test_name']
+    self._WriteTestInput(test_input)
+    self._MockCommand(['.'], ['Richards: 1.234\nDeltaBlue: 10657567'])
+    self.assertEqual(0, self._CallMain('--', '--max-opt=1', '--no-foo'))
+    self._VerifyResults('test', 'score', [
+        {
+            'name': 'Richards',
+            'results': [1.234],
+            'stddev': ''
+        },
+        {
+            'name': 'DeltaBlue',
+            'results': [10657567.0],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMock(
+        os.path.join('out', 'x64.release', 'd7'), '--flag', '--max-opt=1',
+        '--no-foo', 'run.js', '--', '2', 'test_name')
 
   def testTwoRuns_Units_SuiteName(self):
     test_input = dict(V8_JSON)
@@ -471,6 +751,190 @@ class PerfTest(unittest.TestCase):
         (os.path.join('out', 'x64.release', 'd8'),
          '--flag', '--flag2', 'run.js'))
 
+  def testVariableGenericRuns(self):
+    test_input = dict(V8_DYNAMIC_GENERIC_JSON)
+    self._WriteTestInput(test_input)
+    self._MockCommand(['.', '.'], [
+        'FixedTest:                                       11.2 pts\n'
+        'FixedTest2:                                     120.3 pts\n'
+        '8bitbench-wasm Wall-Time                      2600.00 ms\n'
+        'Overall Score                                  258.12 pts\n'
+    ])
+    self.assertEqual(0, self._CallMain())
+    self._VerifyResultTraces([
+        {
+            'units': 'score-fixed',
+            'graphs': ['test', 'FixedTest'],
+            'results': [11.2],
+            'stddev': ''
+        },
+        {
+            'units': 'score-fixed2',
+            'graphs': ['test', 'FixedTest2'],
+            'results': [120.3],
+            'stddev': ''
+        },
+        {
+            'units': 'ms',
+            'graphs': ['test', '8bitbench-wasm', 'Wall-Time'],
+            'results': [2600.00],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'Overall', 'Score'],
+            'results': [258.12],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMock(
+        os.path.join('out', 'x64.release', 'd7'), '--flag', 'run.js')
+
+  def testVariableGenericMultipleRuns(self):
+    test_input = dict(V8_DYNAMIC_GENERIC_JSON)
+    test_input['run_count'] = 2
+    self._WriteTestInput(test_input)
+    self._MockCommand(['.', '.'], [
+        'FixedTest:                                       11.2 pts\n'
+        'FixedTest2:                                     120.3 pts\n'
+        '8bitbench-wasm Wall-Time                      2600.00 ms\n'
+        'Overall Score                                  258.12 pts\n',
+        'FixedTest:                                       12.3 pts\n'
+        'FixedTest2:                                     120.3 pts\n'
+        '8bitbench-wasm Wall-Time                      2592.96 ms\n'
+        'Overall Score                                  260.34 pts\n'
+    ])
+    self.assertEqual(0, self._CallMain())
+    self._VerifyResultTraces([
+        {
+            'units': 'score-fixed',
+            'graphs': ['test', 'FixedTest'],
+            'results': [12.3, 11.2],
+            'stddev': ''
+        },
+        {
+            'units': 'score-fixed2',
+            'graphs': ['test', 'FixedTest2'],
+            'results': [120.3, 120.3],
+            'stddev': ''
+        },
+        {
+            'units': 'ms',
+            'graphs': ['test', '8bitbench-wasm', 'Wall-Time'],
+            'results': [2592.96, 2600.00],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'Overall', 'Score'],
+            'results': [260.34, 258.12],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMock(
+        os.path.join('out', 'x64.release', 'd7'), '--flag', 'run.js')
+
+  def testVariableGenericExtendedValues(self):
+    test_input = dict(V8_DYNAMIC_GENERIC_JSON)
+    self._WriteTestInput(test_input)
+    self._MockCommand(['.', '.'], [
+        'FixedTest:                                       11.2 pts\n'
+        '8bitbench-wasm Wall-Time                      2600.00 ms\n'
+        'FixedTest2:                                     120.3 pts\n'
+        'jsprism Total-Score                              44.3 pts\n'
+        'Overall Score                                  260.34 pts\n'
+    ])
+    return_code = self._CallMain()
+    self.assertEqual(0, return_code, msg=self._LoadResults().get('errors', []))
+    self._VerifyResultTraces([
+        {
+            'units': 'score-fixed',
+            'graphs': ['test', 'FixedTest'],
+            'results': [11.2],
+            'stddev': ''
+        },
+        {
+            'units': 'ms',
+            'graphs': ['test', '8bitbench-wasm', 'Wall-Time'],
+            'results': [2600.00],
+            'stddev': ''
+        },
+        {
+            'units': 'score-fixed2',
+            'graphs': ['test', 'FixedTest2'],
+            'results': [120.3],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'jsprism', 'Total-Score'],
+            'results': [44.3],
+            'stddev': ''
+        },
+        {
+            'units': 'score',
+            'graphs': ['test', 'Overall', 'Score'],
+            'results': [260.34],
+            'stddev': ''
+        },
+    ])
+    self._VerifyErrors([])
+    self._VerifyMock(
+        os.path.join('out', 'x64.release', 'd7'), '--flag', 'run.js')
+
+  def testStrictConfig_MissingName(self):
+    config = dict(V8_JSON)
+    # Remove name from first test
+    new_tests = list(config['tests'])
+    new_tests[0] = dict(new_tests[0])
+    del new_tests[0]['name']
+    config['tests'] = new_tests
+    self._WriteTestInput(config)
+    with self.assertRaises(Exception):
+      self._CallMain()
+
+  def testStrictConfig_MissingNameWithDynamic(self):
+    config = dict(V8_DYNAMIC_GENERIC_JSON)
+    self._WriteTestInput(config)
+    self._MockCommand(['.', '.'], [
+        'FixedTest: 11.2 pts\n'
+        'FixedTest2: 120.3 pts\n'
+        'OtherTest Wall-Time 2600.00 ms\n'
+        'Overall Score Score 258.12 pts\n'
+    ])
+    self.assertEqual(0, self._CallMain())
+
+  def testStrictConfig_InvalidRegexpWithDynamic(self):
+    config = dict(V8_DYNAMIC_GENERIC_JSON)
+    new_tests = list(config['tests'])
+    new_tests[2] = dict(new_tests[2])
+    new_tests[2]['results_regexp'] = r'^Richards: (.+)$'  # Only 1 group
+    config['tests'] = new_tests
+    self._WriteTestInput(config)
+    with self.assertRaises(Exception):
+      self._CallMain()
+
+  def testStrictConfig_MissingRegexpWithDynamic(self):
+    config = dict(V8_DYNAMIC_GENERIC_JSON)
+    new_tests = list(config['tests'])
+    new_tests[2] = dict(new_tests[2])
+    del new_tests[2]['results_regexp']
+    config['tests'] = new_tests
+    self._WriteTestInput(config)
+    with self.assertRaises(Exception):
+      self._CallMain()
+
+  def testStrictConfig_InvalidPositionalRegexpWithDynamic(self):
+    config = dict(V8_DYNAMIC_GENERIC_JSON)
+    new_tests = list(config['tests'])
+    new_tests[2] = dict(new_tests[2])
+    new_tests[2]['results_regexp'] = r'^(TestName): ([\d\.]+) pts$'  # 2 groups
+    config['tests'] = new_tests
+    self._WriteTestInput(config)
+    with self.assertRaises(Exception):
+      self._CallMain()
 
   def testOneRunStdDevRegExp(self):
     test_input = dict(V8_JSON)

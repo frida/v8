@@ -6,6 +6,8 @@
 #define V8_DATE_DATEPARSER_INL_H_
 
 #include "src/date/dateparser.h"
+// Include the non-inl header before the rest of the headers.
+
 #include "src/execution/isolate.h"
 #include "src/strings/char-predicates-inl.h"
 
@@ -105,8 +107,9 @@ bool DateParser::Parse(Isolate* isolate, base::Vector<Char> str, double* out) {
         // finalizing time.
         DateToken peek = scanner.Peek();
         if (!peek.IsEndOfInput() && !peek.IsWhiteSpace() &&
-            !peek.IsKeywordZ() && !peek.IsAsciiSign())
+            !peek.IsKeywordZ() && !peek.IsAsciiSign()) {
           return false;
+        }
       } else {
         if (!day.Add(n)) return false;
         scanner.SkipSymbol('-');
@@ -192,7 +195,7 @@ DateParser::DateToken DateParser::DateStringTokenizer<CharType>::Scan() {
   if (in_->Skip('+')) return DateToken::Symbol('+');
   if (in_->Skip('.')) return DateToken::Symbol('.');
   if (in_->Skip(')')) return DateToken::Symbol(')');
-  if (in_->IsAsciiAlphaOrAbove()) {
+  if (in_->IsAsciiAlphaOrAbove() && !in_->IsWhiteSpaceChar()) {
     DCHECK_EQ(KeywordTable::kPrefixLength, 3);
     uint32_t buffer[3] = {0, 0, 0};
     int length = in_->ReadWord(buffer, 3);
@@ -224,10 +227,11 @@ bool DateParser::InputReader<Char>::SkipParentheses() {
   if (ch_ != '(') return false;
   int balance = 0;
   do {
-    if (ch_ == ')')
+    if (ch_ == ')') {
       --balance;
-    else if (ch_ == '(')
+    } else if (ch_ == '(') {
       ++balance;
+    }
     Next();
   } while (balance > 0 && ch_);
   return true;
@@ -258,13 +262,15 @@ DateParser::DateToken DateParser::ParseES5DateTime(
   }
   if (scanner->SkipSymbol('-')) {
     if (!scanner->Peek().IsFixedLengthNumber(2) ||
-        !DayComposer::IsMonth(scanner->Peek().number()))
+        !DayComposer::IsMonth(scanner->Peek().number())) {
       return scanner->Next();
+    }
     day->Add(scanner->Next().number());
     if (scanner->SkipSymbol('-')) {
       if (!scanner->Peek().IsFixedLengthNumber(2) ||
-          !DayComposer::IsDay(scanner->Peek().number()))
+          !DayComposer::IsDay(scanner->Peek().number())) {
         return scanner->Next();
+      }
       day->Add(scanner->Next().number());
     }
   }
@@ -338,8 +344,9 @@ DateParser::DateToken DateParser::ParseES5DateTime(
     if (!scanner->Peek().IsEndOfInput()) return DateToken::Invalid();
   }
   // Successfully parsed ES5 Date Time String.
-  // ES#sec-date-time-string-format Date Time String Format
-  // "When the time zone offset is absent, date-only forms are interpreted
+  // https://tc39.es/ecma262/#sec-date-time-string-format Date Time String
+  // Format "When the time zone offset is absent, date-only forms are
+  // interpreted
   //  as a UTC time and date-time forms are interpreted as a local time."
   if (tz->IsEmpty() && time->IsEmpty()) {
     tz->Set(0);

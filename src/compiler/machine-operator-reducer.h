@@ -5,6 +5,8 @@
 #ifndef V8_COMPILER_MACHINE_OPERATOR_REDUCER_H_
 #define V8_COMPILER_MACHINE_OPERATOR_REDUCER_H_
 
+#include <optional>
+
 #include "src/base/compiler-specific.h"
 #include "src/common/globals.h"
 #include "src/compiler/graph-reducer.h"
@@ -25,8 +27,14 @@ class Word64Adapter;
 class V8_EXPORT_PRIVATE MachineOperatorReducer final
     : public NON_EXPORTED_BASE(AdvancedReducer) {
  public:
-  explicit MachineOperatorReducer(Editor* editor, MachineGraph* mcgraph,
-                                  bool allow_signalling_nan = true);
+  enum SignallingNanPropagation {
+    kSilenceSignallingNan,
+    kPropagateSignallingNan
+  };
+
+  explicit MachineOperatorReducer(
+      Editor* editor, MachineGraph* mcgraph,
+      SignallingNanPropagation signalling_nan_propagation);
   ~MachineOperatorReducer() override;
 
   const char* reducer_name() const override { return "MachineOperatorReducer"; }
@@ -54,18 +62,27 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
     return Word32And(lhs, Uint32Constant(rhs));
   }
   Node* Word32Sar(Node* lhs, uint32_t rhs);
+  Node* Word64Sar(Node* lhs, uint32_t rhs);
   Node* Word32Shr(Node* lhs, uint32_t rhs);
+  Node* Word64Shr(Node* lhs, uint32_t rhs);
   Node* Word32Equal(Node* lhs, Node* rhs);
+  Node* Word64Equal(Node* lhs, Node* rhs);
   Node* Word64And(Node* lhs, Node* rhs);
   Node* Word64And(Node* lhs, uint64_t rhs) {
     return Word64And(lhs, Uint64Constant(rhs));
   }
   Node* Int32Add(Node* lhs, Node* rhs);
+  Node* Int64Add(Node* lhs, Node* rhs);
   Node* Int32Sub(Node* lhs, Node* rhs);
+  Node* Int64Sub(Node* lhs, Node* rhs);
   Node* Int32Mul(Node* lhs, Node* rhs);
+  Node* Int64Mul(Node* lhs, Node* rhs);
   Node* Int32Div(Node* dividend, int32_t divisor);
+  Node* Int64Div(Node* dividend, int64_t divisor);
   Node* Uint32Div(Node* dividend, uint32_t divisor);
+  Node* Uint64Div(Node* dividend, uint64_t divisor);
   Node* TruncateInt64ToInt32(Node* value);
+  Node* ChangeInt32ToInt64(Node* value);
 
   Reduction ReplaceBool(bool value) { return ReplaceInt32(value ? 1 : 0); }
   Reduction ReplaceFloat32(float value) {
@@ -83,6 +100,9 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   Reduction ReplaceInt64(int64_t value) {
     return Replace(Int64Constant(value));
   }
+  Reduction ReplaceUint64(uint64_t value) {
+    return Replace(Uint64Constant(value));
+  }
 
   Reduction ReduceInt32Add(Node* node);
   Reduction ReduceInt64Add(Node* node);
@@ -90,9 +110,13 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   Reduction ReduceInt64Sub(Node* node);
   Reduction ReduceInt64Mul(Node* node);
   Reduction ReduceInt32Div(Node* node);
+  Reduction ReduceInt64Div(Node* node);
   Reduction ReduceUint32Div(Node* node);
+  Reduction ReduceUint64Div(Node* node);
   Reduction ReduceInt32Mod(Node* node);
+  Reduction ReduceInt64Mod(Node* node);
   Reduction ReduceUint32Mod(Node* node);
+  Reduction ReduceUint64Mod(Node* node);
   Reduction ReduceStore(Node* node);
   Reduction ReduceProjection(size_t index, Node* node);
   const Operator* Map64To32Comparison(const Operator* op, bool sign_extended);
@@ -121,7 +145,7 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   Reduction ReduceTruncateInt64ToInt32(Node* node);
   Reduction ReduceConditional(Node* node);
 
-  Graph* graph() const;
+  TFGraph* graph() const;
   MachineGraph* mcgraph() const { return mcgraph_; }
   CommonOperatorBuilder* common() const;
   MachineOperatorBuilder* machine() const;
@@ -134,6 +158,8 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   Reduction ReduceWordNOr(Node* node);
   template <typename WordNAdapter>
   Reduction ReduceWordNXor(Node* node);
+  template <typename WordNAdapter>
+  Reduction ReduceUintNLessThanOrEqual(Node* node);
 
   // Tries to simplify "if(x == 0)" by removing the "== 0" and inverting
   // branches.
@@ -144,7 +170,7 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   // Helper for ReduceConditional. Does not perform the actual reduction; just
   // returns a new Node that could be used as the input to the condition.
   template <typename WordNAdapter>
-  base::Optional<Node*> ReduceConditionalN(Node* node);
+  std::optional<Node*> ReduceConditionalN(Node* node);
 
   // Helper for finding a reduced equality condition. Does not perform the
   // actual reduction; just returns a new pair that could be compared for the
@@ -153,12 +179,12 @@ class V8_EXPORT_PRIVATE MachineOperatorReducer final
   // size of lhs, with the sizes being different for
   // Word32Equal(TruncateInt64ToInt32(lhs), rhs).
   template <typename WordNAdapter, typename uintN_t,
-            typename intN_t = typename std::make_signed<uintN_t>::type>
-  base::Optional<std::pair<Node*, uintN_t>> ReduceWordEqualForConstantRhs(
+            typename intN_t = std::make_signed_t<uintN_t>>
+  std::optional<std::pair<Node*, uintN_t>> ReduceWordEqualForConstantRhs(
       Node* lhs, uintN_t rhs);
 
   MachineGraph* mcgraph_;
-  bool allow_signalling_nan_;
+  SignallingNanPropagation signalling_nan_propagation_;
 };
 
 }  // namespace compiler

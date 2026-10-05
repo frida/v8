@@ -6,6 +6,7 @@
 #define V8_CODEGEN_RISCV_EXTENSION_RISCV_V_H_
 
 #include "src/codegen/assembler.h"
+#include "src/codegen/machine-type.h"
 #include "src/codegen/riscv/base-assembler-riscv.h"
 #include "src/codegen/riscv/constant-riscv-v.h"
 #include "src/codegen/riscv/register-riscv.h"
@@ -67,7 +68,6 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
 #undef SegInstr
 
       // RVV Vector Arithmetic Instruction
-
       void vmv_vv(VRegister vd, VRegister vs1);
   void vmv_vx(VRegister vd, Register rs1);
   void vmv_vi(VRegister vd, uint8_t simm5);
@@ -94,9 +94,10 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
   void vmadc_vx(VRegister vd, Register rs1, VRegister vs2);
   void vmadc_vi(VRegister vd, uint8_t imm5, VRegister vs2);
 
-  void vfmv_vf(VRegister vd, FPURegister fs1, MaskType mask = NoMask);
+  void vfmv_vf(VRegister vd, FPURegister fs1);
   void vfmv_fs(FPURegister fd, VRegister vs2);
   void vfmv_sf(VRegister vd, FPURegister fs);
+  void vfmerge_vf(VRegister vd, FPURegister fs1, VRegister vs2);
 
   void vwaddu_wx(VRegister vd, VRegister vs2, Register rs1,
                  MaskType mask = NoMask);
@@ -178,7 +179,7 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
   DEFINE_OPIVX(vsadd, VSADD_FUNCT6)
   DEFINE_OPIVV(vsadd, VSADD_FUNCT6)
   DEFINE_OPIVI(vsadd, VSADD_FUNCT6)
-  DEFINE_OPIVX(vsaddu, VSADD_FUNCT6)
+  DEFINE_OPIVX(vsaddu, VSADDU_FUNCT6)
   DEFINE_OPIVV(vsaddu, VSADDU_FUNCT6)
   DEFINE_OPIVI(vsaddu, VSADDU_FUNCT6)
   DEFINE_OPIVX(vssub, VSSUB_FUNCT6)
@@ -210,8 +211,12 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
 
   DEFINE_OPIVX(vslidedown, VSLIDEDOWN_FUNCT6)
   DEFINE_OPIVI(vslidedown, VSLIDEDOWN_FUNCT6)
+  DEFINE_OPMVX(vslide1down, VSLIDEDOWN_FUNCT6)
+  DEFINE_OPFVF(vfslide1down, VSLIDEDOWN_FUNCT6)
   DEFINE_OPIVX(vslideup, VSLIDEUP_FUNCT6)
   DEFINE_OPIVI(vslideup, VSLIDEUP_FUNCT6)
+  DEFINE_OPMVX(vslide1up, VSLIDEUP_FUNCT6)
+  DEFINE_OPFVF(vfslide1up, VSLIDEUP_FUNCT6)
 
   DEFINE_OPIVV(vmseq, VMSEQ_FUNCT6)
   DEFINE_OPIVX(vmseq, VMSEQ_FUNCT6)
@@ -276,8 +281,8 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
   DEFINE_OPFWF(vfwsub, VFWSUB_W_FUNCT6)
 
   // Vector Widening Floating-Point Reduction Instructions
-  DEFINE_OPFVV(vfwredusum, VFWREDUSUM_FUNCT6)
-  DEFINE_OPFVV(vfwredosum, VFWREDOSUM_FUNCT6)
+  DEFINE_OPFRED(vfwredusum, VFWREDUSUM_FUNCT6)
+  DEFINE_OPFRED(vfwredosum, VFWREDOSUM_FUNCT6)
 
   // Vector Widening Floating-Point Multiply
   DEFINE_OPFVV(vfwmul, VFWMUL_FUNCT6)
@@ -399,6 +404,18 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
 
   void vcpop_m(Register rd, VRegister vs2, MaskType mask = NoMask);
 
+  void vmslt_vi(VRegister vd, VRegister vs1, int8_t imm5,
+                MaskType mask = NoMask) {
+    DCHECK(imm5 >= -15 && imm5 <= 16);
+    vmsle_vi(vd, vs1, imm5 - 1, mask);
+  }
+
+  void vmsltu_vi(VRegister vd, VRegister vs1, int8_t imm5,
+                 MaskType mask = NoMask) {
+    DCHECK(imm5 >= 1 && imm5 <= 16);
+    vmsleu_vi(vd, vs1, imm5 - 1, mask);
+  }
+
  protected:
   void vsetvli(Register rd, Register rs1, VSew vsew, Vlmul vlmul,
                TailAgnosticType tail = tu, MaskAgnosticType mask = mu);
@@ -425,25 +442,25 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
   // vsetvli
   void GenInstrV(Register rd, Register rs1, uint32_t zimm);
   // OPIVV OPFVV OPMVV
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, VRegister vd,
-                 VRegister vs1, VRegister vs2, MaskType mask = NoMask);
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, VRegister vd, int8_t vs1,
+  void GenInstrV(uint8_t funct6, Opcode opcode, VRegister vd, VRegister vs1,
                  VRegister vs2, MaskType mask = NoMask);
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, VRegister vd,
+  void GenInstrV(uint8_t funct6, Opcode opcode, VRegister vd, int8_t vs1,
                  VRegister vs2, MaskType mask = NoMask);
+  void GenInstrV(uint8_t funct6, Opcode opcode, VRegister vd, VRegister vs2,
+                 MaskType mask = NoMask);
   // OPMVV OPFVV
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, Register rd,
-                 VRegister vs1, VRegister vs2, MaskType mask = NoMask);
+  void GenInstrV(uint8_t funct6, Opcode opcode, Register rd, VRegister vs1,
+                 VRegister vs2, MaskType mask = NoMask);
   // OPFVV
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, FPURegister fd,
-                 VRegister vs1, VRegister vs2, MaskType mask = NoMask);
+  void GenInstrV(uint8_t funct6, Opcode opcode, FPURegister fd, VRegister vs1,
+                 VRegister vs2, MaskType mask = NoMask);
 
   // OPIVX OPMVX
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, VRegister vd,
-                 Register rs1, VRegister vs2, MaskType mask = NoMask);
+  void GenInstrV(uint8_t funct6, Opcode opcode, VRegister vd, Register rs1,
+                 VRegister vs2, MaskType mask = NoMask);
   // OPFVF
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, VRegister vd,
-                 FPURegister fs1, VRegister vs2, MaskType mask = NoMask);
+  void GenInstrV(uint8_t funct6, Opcode opcode, VRegister vd, FPURegister fs1,
+                 VRegister vs2, MaskType mask = NoMask);
   // OPMVX
   void GenInstrV(uint8_t funct6, Register rd, Register rs1, VRegister vs2,
                  MaskType mask = NoMask);
@@ -464,21 +481,10 @@ class AssemblerRISCVV : public AssemblerRiscvBase {
                  VRegister vs2, MaskType mask, uint8_t IsMop, bool IsMew,
                  uint8_t Nf);
   // vmv_xs vcpop_m vfirst_m
-  void GenInstrV(uint8_t funct6, OpcodeRISCVV opcode, Register rd, uint8_t vs1,
+  void GenInstrV(uint8_t funct6, Opcode opcode, Register rd, uint8_t vs1,
                  VRegister vs2, MaskType mask);
 };
 
-class LoadStoreLaneParams {
- public:
-  int sz;
-  uint8_t laneidx;
-
-  LoadStoreLaneParams(MachineRepresentation rep, uint8_t laneidx);
-
- private:
-  LoadStoreLaneParams(uint8_t laneidx, int sz, int lanes)
-      : sz(sz), laneidx(laneidx % lanes) {}
-};
 }  // namespace internal
 }  // namespace v8
 

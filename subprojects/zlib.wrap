@@ -1,7 +1,0 @@
-[wrap-git]
-url = https://github.com/frida/zlib.git
-revision = 171a3eacaea8b731ef1fc586e7777b77742e2a1d
-depth = 1
-
-[provide]
-dependency_names = zlib

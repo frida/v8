@@ -15,9 +15,42 @@ namespace internal {
 
 class EntryFrameConstants : public AllStatic {
  public:
+  // The layout of an EntryFrame is as follows:
+  //
+  //         BOTTOM OF THE STACK   HIGHEST ADDRESS
+  //  slot      Entry frame
+  //       +---------------------+-----------------------
+  //  -1   |   return address    |
+  //       |- - - - - - - - - - -|
+  //   0   |      saved fp       |  <-- frame ptr
+  //       |- - - - - - - - - - -|
+  //   1   | stack frame marker  |
+  //       |      (ENTRY)        |
+  //       |- - - - - - - - - - -|
+  //   2   |       context       |
+  //       |- - - - - - - - - - -|
+  //   3   | callee-saved regs * |
+  //  ...  |         ...         |
+  //       |- - - - - - - - - - -|
+  //   3   |     C entry FP      |
+  //       |- - - - - - - - - - -|
+  //   5   |  fast api call fp   |
+  //       |- - - - - - - - - - -|
+  //   6   |  fast api call pc   |
+  //       |- - - - - - - - - - -|
+  //   6   |  outermost marker   |  <-- stack ptr
+  //  -----+---------------------+-----------------------
+  //          TOP OF THE STACK     LOWEST ADDRESS
+  // * On Windows the callee-saved registers are (in push order):
+  // r12, r13, r14, r15, rdi, rsi, rbx, xmm6, xmm7, xmm8, xmm9, xmm10, xmm11,
+  // xmm12, xmm13, xmm14, xmm15
+  // xmm register pushes take 16 bytes on the stack.
+  // On other OS, the callee-saved registers are (in push order):
+  // r12, r13, r14, r15, rbx
+
+  static constexpr int kXMMRegisterSize = 16;
 #ifdef V8_TARGET_OS_WIN
   static constexpr int kCalleeSaveXMMRegisters = 10;
-  static constexpr int kXMMRegisterSize = 16;
   static constexpr int kXMMRegistersBlockSize =
       kXMMRegisterSize * kCalleeSaveXMMRegisters;
 
@@ -26,9 +59,9 @@ class EntryFrameConstants : public AllStatic {
   // On x64, there are 7 pushq() and 3 Push() calls between setting up rbp and
   // pushing the c_entry_fp, plus we manually allocate kXMMRegistersBlockSize
   // bytes on the stack.
-  static constexpr int kCallerFPOffset = -3 * kSystemPointerSize +
-                                         -7 * kSystemPointerSize -
-                                         kXMMRegistersBlockSize;
+  static constexpr int kNextExitFrameFPOffset = -3 * kSystemPointerSize +
+                                                -7 * kSystemPointerSize -
+                                                kXMMRegistersBlockSize;
 
   // Stack offsets for arguments passed to JSEntry.
   static constexpr int kArgcOffset = 6 * kSystemPointerSize;
@@ -38,9 +71,15 @@ class EntryFrameConstants : public AllStatic {
   // Isolate::c_entry_fp onto the stack.
   // On x64, there are 5 pushq() and 3 Push() calls between setting up rbp and
   // pushing the c_entry_fp.
-  static constexpr int kCallerFPOffset =
+  static constexpr int kNextExitFrameFPOffset =
       -3 * kSystemPointerSize + -5 * kSystemPointerSize;
 #endif
+  // This are the offsets to where JSEntry pushes the current values of
+  // IsolateData::fast_c_call_caller_fp and IsolateData::fast_c_call_caller_pc.
+  static constexpr int kNextFastCallFrameFPOffset =
+      kNextExitFrameFPOffset - kSystemPointerSize;
+  static constexpr int kNextFastCallFramePCOffset =
+      kNextFastCallFrameFPOffset - kSystemPointerSize;
 };
 
 class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
@@ -50,6 +89,7 @@ class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
   static constexpr int kNumberOfSavedFpParamRegs = 6;
 
   // There's one spilled value (which doesn't need visiting) below the instance.
+  static constexpr int kCallingPCOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
   static constexpr int kInstanceSpillOffset =
       TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
 
@@ -59,9 +99,15 @@ class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
       TYPED_FRAME_PUSHED_VALUE_OFFSET(6)};
 
   // SP-relative.
-  static constexpr int kWasmInstanceOffset = 2 * kSystemPointerSize;
-  static constexpr int kFunctionIndexOffset = 1 * kSystemPointerSize;
+  static constexpr int kWasmInstanceDataOffset = 2 * kSystemPointerSize;
+  static constexpr int kDeclaredFunctionIndexOffset = 1 * kSystemPointerSize;
   static constexpr int kNativeModuleOffset = 0;
+};
+
+class WasmLiftoffFrameConstants : public TypedFrameConstants {
+ public:
+  static constexpr int kFeedbackVectorOffset = 3 * kSystemPointerSize;
+  static constexpr int kInstanceDataOffset = 2 * kSystemPointerSize;
 };
 
 // Frame constructed by the {WasmDebugBreak} builtin.

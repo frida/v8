@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 
 // Test LdaModuleVariable with imports.
 import {b} from './lda-module-variable-import.mjs'
@@ -17,7 +17,7 @@ assertEquals(3, bar(2));
 %OptimizeMaglevOnNextCall(bar);
 assertEquals(2, bar(1));
 assertEquals(3, bar(2));
-assertTrue(isMaglevved(bar));
+assertMaglevved(bar);
 
 // Test LdaModuleVariable with exports.
 export let x = 1;
@@ -29,5 +29,5 @@ assertEquals(3, foo(2));
 %OptimizeMaglevOnNextCall(foo);
 assertEquals(2, foo(1));
 assertEquals(3, foo(2));
-assertTrue(isMaglevved(foo));
+assertMaglevved(foo);
 

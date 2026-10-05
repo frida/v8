@@ -15,7 +15,7 @@
 namespace v8 {
 namespace internal {
 
-class Code;
+class InstructionStream;
 class OptimizedCompilationInfo;
 class Script;
 class SharedFunctionInfo;
@@ -78,13 +78,14 @@ class SourcePosition final {
     return ExternalFileIdField::decode(value_);
   }
 
-  // Assumes that the code object is optimized
-  std::vector<SourcePositionInfo> InliningStack(Handle<Code> code) const;
+  // Assumes that the code object is optimized.
+  std::vector<SourcePositionInfo> InliningStack(Isolate* isolate,
+                                                Tagged<Code> code) const;
   std::vector<SourcePositionInfo> InliningStack(
-      OptimizedCompilationInfo* cinfo) const;
-  SourcePositionInfo FirstInfo(Handle<Code> code) const;
+      Isolate* isolate, OptimizedCompilationInfo* cinfo) const;
+  SourcePositionInfo FirstInfo(Isolate* isolate, Tagged<Code> code) const;
 
-  void Print(std::ostream& out, Code code) const;
+  void Print(std::ostream& out, Tagged<Code> code) const;
   void PrintJson(std::ostream& out) const;
 
   int ScriptOffset() const {
@@ -98,28 +99,26 @@ class SourcePosition final {
   }
   void SetExternalLine(int line) {
     DCHECK(IsExternal());
-    DCHECK(line <= ExternalLineField::kMax - 1);
     value_ = ExternalLineField::update(value_, line);
   }
   void SetExternalFileId(int file_id) {
     DCHECK(IsExternal());
-    DCHECK(file_id <= ExternalFileIdField::kMax - 1);
     value_ = ExternalFileIdField::update(value_, file_id);
   }
 
   void SetScriptOffset(int script_offset) {
     DCHECK(IsJavaScript());
-    DCHECK(script_offset <= ScriptOffsetField::kMax - 2);
     DCHECK_GE(script_offset, kNoSourcePosition);
     value_ = ScriptOffsetField::update(value_, script_offset + 1);
   }
   void SetInliningId(int inlining_id) {
-    DCHECK(inlining_id <= InliningIdField::kMax - 2);
     DCHECK_GE(inlining_id, kNotInlined);
     value_ = InliningIdField::update(value_, inlining_id + 1);
   }
 
-  static const int kNotInlined = -1;
+  static constexpr int MaxInliningId() { return InliningIdField::kMax; }
+
+  static constexpr int kNotInlined = -1;
   static_assert(kNoSourcePosition == -1);
 
   int64_t raw() const { return static_cast<int64_t>(value_); }
@@ -139,7 +138,7 @@ class SourcePosition final {
     SetInliningId(inlining_id);
   }
 
-  void Print(std::ostream& out, SharedFunctionInfo function) const;
+  void Print(std::ostream& out, Tagged<SharedFunctionInfo> function) const;
 
   using IsExternalField = base::BitField64<bool, 0, 1>;
 
@@ -174,12 +173,22 @@ struct InliningPosition {
   int inlined_function_id;
 };
 
+struct WasmInliningPosition {
+  // Non-canonicalized (module-specific) index of the inlined function.
+  int inlinee_func_index;
+  // Whether the call was a tail call.
+  bool was_tail_call;
+  // Source location of the caller.
+  SourcePosition caller_pos;
+};
+
 struct SourcePositionInfo {
-  SourcePositionInfo(SourcePosition pos, Handle<SharedFunctionInfo> f);
+  SourcePositionInfo(Isolate* isolate, SourcePosition pos,
+                     DirectHandle<SharedFunctionInfo> f);
 
   SourcePosition position;
-  Handle<SharedFunctionInfo> shared;
-  Handle<Script> script;
+  IndirectHandle<SharedFunctionInfo> shared;
+  IndirectHandle<Script> script;
   int line = -1;
   int column = -1;
 };

@@ -6,32 +6,65 @@
 #define V8_HEAP_FACTORY_BASE_INL_H_
 
 #include "src/heap/factory-base.h"
+// Include the non-inl header before the rest of the headers.
+
+#include <type_traits>
+
+#include "src/execution/local-isolate-inl.h"
 #include "src/numbers/conversions.h"
 #include "src/objects/heap-number.h"
+#include "src/objects/heap-object-field-inl.h"
 #include "src/objects/map.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/smi.h"
+#include "src/objects/struct-inl.h"
 #include "src/roots/roots.h"
 
 namespace v8 {
 namespace internal {
 
-#define ROOT_ACCESSOR(Type, name, CamelName)  \
-  template <typename Impl>                    \
-  Handle<Type> FactoryBase<Impl>::name() {    \
-    return read_only_roots().name##_handle(); \
+#define RO_ROOT_ACCESSOR(Type, name, CamelName) \
+  template <typename Impl>                      \
+  Handle<Type> FactoryBase<Impl>::name() {      \
+    return isolate()->roots_table().name();     \
   }
-READ_ONLY_ROOT_LIST(ROOT_ACCESSOR)
+READ_ONLY_ROOT_LIST(RO_ROOT_ACCESSOR)
+#ifndef V8_ENABLE_TDZ_HOLE
+RO_ROOT_ACCESSOR(TdzHole, tdz_hole_value, TdzHoleValue)
+#endif
+#undef ROOT_ACCESSOR
+
+#define MUTABLE_ROOT_ACCESSOR(Type, name, CamelName)     \
+  template <typename Impl>                               \
+  Handle<Type> FactoryBase<Impl>::name() {               \
+    return handle(isolate()->heap()->name(), isolate()); \
+  }
+MUTABLE_ROOT_LIST(MUTABLE_ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
 template <typename Impl>
-Handle<Oddball> FactoryBase<Impl>::ToBoolean(bool value) {
-  return value ? impl()->true_value() : impl()->false_value();
+Handle<Boolean> FactoryBase<Impl>::ToBoolean(bool value) {
+  return value ? Cast<Boolean>(impl()->true_value())
+               : Cast<Boolean>(impl()->false_value());
 }
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<Object> FactoryBase<Impl>::NewNumber(double value) {
+Handle<UninitializedHeapNumber>
+FactoryBase<Impl>::NewUninitializedHeapNumber() {
+  static_assert(sizeof(HeapNumber) == sizeof(UninitializedHeapNumber));
+  static_assert(sizeof(HeapNumber) <= kMaxRegularHeapObjectSize);
+  AllocationWitness witness = AllocateWithWitness(
+      sizeof(UninitializedHeapNumber), allocation,
+      USE_ALLOCATION_ALIGNMENT_HEAP_NUMBER_BOOL ? kDoubleUnaligned
+                                                : kTaggedAligned);
+  return handle(new (witness) UninitializedHeapNumber(read_only_roots()),
+                isolate());
+}
+
+template <typename Impl>
+template <AllocationType allocation>
+Handle<Number> FactoryBase<Impl>::NewNumber(double value) {
   // Materialize as a SMI if possible.
   int32_t int_value;
   if (DoubleToSmiInteger(value, &int_value)) {
@@ -42,7 +75,7 @@ Handle<Object> FactoryBase<Impl>::NewNumber(double value) {
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<Object> FactoryBase<Impl>::NewNumberFromInt(int32_t value) {
+Handle<Number> FactoryBase<Impl>::NewNumberFromInt(int32_t value) {
   if (Smi::IsValid(value)) return handle(Smi::FromInt(value), isolate());
   // Bypass NewNumber to avoid various redundant checks.
   return NewHeapNumber<allocation>(FastI2D(value));
@@ -50,7 +83,7 @@ Handle<Object> FactoryBase<Impl>::NewNumberFromInt(int32_t value) {
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<Object> FactoryBase<Impl>::NewNumberFromUint(uint32_t value) {
+Handle<Number> FactoryBase<Impl>::NewNumberFromUint(uint32_t value) {
   int32_t int32v = static_cast<int32_t>(value);
   if (int32v >= 0 && Smi::IsValid(int32v)) {
     return handle(Smi::FromInt(int32v), isolate());
@@ -60,22 +93,23 @@ Handle<Object> FactoryBase<Impl>::NewNumberFromUint(uint32_t value) {
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<Object> FactoryBase<Impl>::NewNumberFromSize(size_t value) {
+DirectHandle<Number> FactoryBase<Impl>::NewNumberFromSize(size_t value) {
   // We can't use Smi::IsValid() here because that operates on a signed
   // intptr_t, and casting from size_t could create a bogus sign bit.
   if (value <= static_cast<size_t>(Smi::kMaxValue)) {
-    return handle(Smi::FromIntptr(static_cast<intptr_t>(value)), isolate());
+    return direct_handle(Smi::FromIntptr(static_cast<intptr_t>(value)),
+                         isolate());
   }
   return NewHeapNumber<allocation>(static_cast<double>(value));
 }
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<Object> FactoryBase<Impl>::NewNumberFromInt64(int64_t value) {
+DirectHandle<Number> FactoryBase<Impl>::NewNumberFromInt64(int64_t value) {
   if (value <= std::numeric_limits<int32_t>::max() &&
       value >= std::numeric_limits<int32_t>::min() &&
       Smi::IsValid(static_cast<int32_t>(value))) {
-    return handle(Smi::FromInt(static_cast<int32_t>(value)), isolate());
+    return direct_handle(Smi::FromInt(static_cast<int32_t>(value)), isolate());
   }
   return NewHeapNumber<allocation>(static_cast<double>(value));
 }
@@ -83,46 +117,71 @@ Handle<Object> FactoryBase<Impl>::NewNumberFromInt64(int64_t value) {
 template <typename Impl>
 template <AllocationType allocation>
 Handle<HeapNumber> FactoryBase<Impl>::NewHeapNumber(double value) {
-  Handle<HeapNumber> heap_number = NewHeapNumber<allocation>();
-  heap_number->set_value(value, kRelaxedStore);
-  return heap_number;
+  static_assert(sizeof(HeapNumber) <= kMaxRegularHeapObjectSize);
+  AllocationWitness witness = AllocateWithWitness(
+      sizeof(HeapNumber), allocation,
+      USE_ALLOCATION_ALIGNMENT_HEAP_NUMBER_BOOL ? kDoubleUnaligned
+                                                : kTaggedAligned);
+  std::optional<SharedObjectConditionalSafePublishGuard> publish_guard;
+  if constexpr (IsSharedAllocationType(allocation)) {
+    publish_guard.emplace(witness.object(), allocation);
+  }
+  return handle(new (witness) HeapNumber(read_only_roots(), value), isolate());
 }
 
 template <typename Impl>
 template <AllocationType allocation>
 Handle<HeapNumber> FactoryBase<Impl>::NewHeapNumberFromBits(uint64_t bits) {
-  Handle<HeapNumber> heap_number = NewHeapNumber<allocation>();
-  heap_number->set_value_as_bits(bits, kRelaxedStore);
-  return heap_number;
+  static_assert(sizeof(HeapNumber) <= kMaxRegularHeapObjectSize);
+  AllocationWitness witness = AllocateWithWitness(
+      sizeof(HeapNumber), allocation,
+      USE_ALLOCATION_ALIGNMENT_HEAP_NUMBER_BOOL ? kDoubleUnaligned
+                                                : kTaggedAligned);
+  return handle(new (witness)
+                    HeapNumber(read_only_roots(), Float64::FromBits(bits)),
+                isolate());
 }
 
 template <typename Impl>
 template <AllocationType allocation>
-Handle<HeapNumber> FactoryBase<Impl>::NewHeapNumberWithHoleNaN() {
-  return NewHeapNumberFromBits<allocation>(kHoleNanInt64);
+Handle<HeapNumber> FactoryBase<Impl>::NewHeapInt32(int32_t value) {
+  return NewHeapNumberFromBits<allocation>(
+      (static_cast<uint64_t>(kHoleNanUpper32) << 32) |
+      static_cast<uint32_t>(value));
 }
 
 template <typename Impl>
 template <typename StructType>
-StructType FactoryBase<Impl>::NewStructInternal(InstanceType type,
-                                                AllocationType allocation) {
+Tagged<StructType> FactoryBase<Impl>::NewStructInternal(
+    InstanceType type, AllocationType allocation, bool initialize_fields) {
+  static_assert(std::is_base_of_v<Struct, StructType>);
   ReadOnlyRoots roots = read_only_roots();
-  Map map = Map::GetInstanceTypeMap(roots, type);
-  int size = StructType::kSize;
-  return StructType::cast(NewStructInternal(roots, map, size, allocation));
+  Tagged<Map> map = Map::GetMapFor(roots, type);
+  int size = sizeof(StructType);
+  return Cast<StructType>(
+      NewStructInternal(roots, map, size, allocation, initialize_fields));
 }
 
 template <typename Impl>
-Struct FactoryBase<Impl>::NewStructInternal(ReadOnlyRoots roots, Map map,
-                                            int size,
-                                            AllocationType allocation) {
-  DCHECK_EQ(size, map.instance_size());
-  HeapObject result = AllocateRawWithImmortalMap(size, allocation, map);
-  Struct str = Struct::cast(result);
-  Object value = roots.undefined_value();
-  int length = (size >> kTaggedSizeLog2) - 1;
-  MemsetTagged(str.RawField(Struct::kHeaderSize), value, length);
-  return str;
+Tagged<Struct> FactoryBase<Impl>::NewStructInternal(ReadOnlyRoots roots,
+                                                    Tagged<Map> map, int size,
+                                                    AllocationType allocation,
+                                                    bool initialize_fields) {
+  DCHECK_EQ(size, map->instance_size());
+  Tagged<HeapObject> result = AllocateRawWithImmortalMap(size, allocation, map);
+
+  const int length = (size >> kTaggedSizeLog2) - 1;
+  if (initialize_fields) {
+    MemsetTagged(result->RawField(sizeof(Struct)), roots.undefined_value(),
+                 length);
+
+  } else if (DEBUG_BOOL) {
+    // Zap the whole object in order to ensure that the caller initializes
+    // all fields.
+    MemsetTagged(result->RawField(sizeof(Struct)),
+                 Tagged<Object>(kDebugZapValue), length);
+  }
+  return Cast<Struct>(result);
 }
 
 }  // namespace internal

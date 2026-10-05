@@ -61,10 +61,15 @@ export class SchedulePhase extends Phase {
       const blockIdStrings = blockIdsString.split(",");
       predecessors = blockIdStrings.map(n => Number.parseInt(n, 10));
     }
+    const blockRpo = Number.parseInt(match.groups.rpo, 10);
     const blockId = Number.parseInt(match.groups.id, 10);
-    const block = new ScheduleBlock(blockId, match.groups.deferred !== undefined,
+    let blockCount = -1;
+    if (match.groups.count !== undefined){
+      blockCount = Number.parseInt(match.groups.count, 10);
+    }
+    const block = new ScheduleBlock(blockRpo, blockId, blockCount, match.groups.deferred !== undefined,
       predecessors.sort());
-    this.data.blocks[block.id] = block;
+    this.data.blocksRpo[block.rpo] = block;
   }
 
   private setGotoSuccessor = match => {
@@ -82,7 +87,11 @@ export class SchedulePhase extends Phase {
       process: this.createNode
     },
     {
-      lineRegexps: [/^\s*---\s*BLOCK\ B(?<id>\d+)\s*(?<deferred>\(deferred\))?(\ <-\ )?(?<in>[^-]*)?\ ---$/],
+      lineRegexps: [
+        /^\s*---\s*BLOCK\ B(?<rpo>\d+)\ id(?<id>\d+)\ PGO Execution Count:(?<count>\d+)\s*(?<deferred>\(deferred\))?(\ <-\ )?(?<in>[^-]*)?\ ---$/,
+        /^\s*---\s*BLOCK\ B(?<rpo>\d+)\ id(?<id>\d+)\s*(?<deferred>\(deferred\))?(\ <-\ )?(?<in>[^-]*)?\ ---$/,
+        /^\s*---\s*BLOCK\ B(?<rpo>\d+)\s*(?<deferred>\(deferred\))?(\ <-\ )?(?<in>[^-]*)?\ ---$/
+      ],
       process: this.createBlock
     },
     {
@@ -109,14 +118,18 @@ export class ScheduleNode {
 }
 
 export class ScheduleBlock {
+  rpo: number;
   id: number;
+  count: number;
   deferred: boolean;
   predecessors: Array<number>;
   successors: Array<number>;
   nodes: Array<ScheduleNode>;
 
-  constructor(id: number, deferred: boolean, predecessors: Array<number>) {
+  constructor(rpo: number, id: number, count: number, deferred: boolean, predecessors: Array<number>) {
+    this.rpo = rpo;
     this.id = id;
+    this.count = count;
     this.deferred = deferred;
     this.predecessors = predecessors;
     this.successors = new Array<number>();
@@ -126,15 +139,15 @@ export class ScheduleBlock {
 
 export class ScheduleData {
   nodes: Array<ScheduleNode>;
-  blocks: Array<ScheduleBlock>;
+  blocksRpo: Array<ScheduleBlock>;
 
   constructor() {
     this.nodes = new Array<ScheduleNode>();
-    this.blocks = new Array<ScheduleBlock>();
+    this.blocksRpo = new Array<ScheduleBlock>();
   }
 
   public lastBlock(): ScheduleBlock {
-    if (this.blocks.length == 0) return null;
-    return this.blocks[this.blocks.length - 1];
+    if (this.blocksRpo.length == 0) return null;
+    return this.blocksRpo[this.blocksRpo.length - 1];
   }
 }

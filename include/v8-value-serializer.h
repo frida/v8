@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <utility>
+#include <vector>
 
 #include "v8-local-handle.h"  // NOLINT(build/include_directory)
 #include "v8-maybe.h"         // NOLINT(build/include_directory)
@@ -18,6 +19,7 @@
 namespace v8 {
 
 class ArrayBuffer;
+class BackingStore;
 class Isolate;
 class Object;
 class SharedArrayBuffer;
@@ -74,6 +76,20 @@ class V8_EXPORT ValueSerializer {
      * type.
      */
     virtual void ThrowDataCloneError(Local<String> message) = 0;
+
+    /**
+     * The embedder overrides this method to enable custom host object filter
+     * with Delegate::IsHostObject.
+     *
+     * This method is called at most once per serializer.
+     */
+    virtual bool HasCustomHostObject(Isolate* isolate);
+
+    /**
+     * The embedder overrides this method to determine if an JS object is a
+     * host object and needs to be serialized by the host.
+     */
+    virtual Maybe<bool> IsHostObject(Isolate* isolate, Local<Object> object);
 
     /**
      * The embedder overrides this method to write some kind of host object, if
@@ -136,8 +152,18 @@ class V8_EXPORT ValueSerializer {
     virtual void FreeBufferMemory(void* buffer);
   };
 
-  explicit ValueSerializer(Isolate* isolate);
-  ValueSerializer(Isolate* isolate, Delegate* delegate);
+  enum class SharedImmutableArrayBufferMode {
+    kDisabled,
+    kEnabled,
+  };
+
+  explicit ValueSerializer(
+      Isolate* isolate,
+      SharedImmutableArrayBufferMode share_immutable_array_buffer =
+          SharedImmutableArrayBufferMode::kDisabled);
+  ValueSerializer(Isolate* isolate, Delegate* delegate,
+                  SharedImmutableArrayBufferMode share_immutable_array_buffer =
+                      SharedImmutableArrayBufferMode::kDisabled);
   ~ValueSerializer();
 
   /**
@@ -175,6 +201,18 @@ class V8_EXPORT ValueSerializer {
    * The default is not to treat ArrayBufferViews as host objects.
    */
   void SetTreatArrayBufferViewsAsHostObjects(bool mode);
+
+  /**
+   * Returns the backing stores of all immutable JSArrayBuffers that were
+   * serialized without copying.
+   *
+   * When SharedImmutableArrayBufferMode::kEnabled is passed to the constructor,
+   * the embedder MUST call this method after serialization and transmit these
+   * backing stores to the receiver, where they must be passed to
+   * ValueDeserializer::SetSharedImmutableBackingStores.
+   */
+  std::vector<std::shared_ptr<v8::BackingStore>>
+  ReleaseSharedImmutableBackingStores();
 
   /**
    * Write raw data in various common formats to the buffer.
@@ -262,6 +300,12 @@ class V8_EXPORT ValueDeserializer {
    */
   void TransferSharedArrayBuffer(uint32_t id,
                                  Local<SharedArrayBuffer> shared_array_buffer);
+
+  /**
+   * Accepts shared immutable backing stores from ValueSerializer.
+   */
+  void SetSharedImmutableBackingStores(
+      std::vector<std::shared_ptr<v8::BackingStore>> backing_stores);
 
   /**
    * Must be called before ReadHeader to enable support for reading the legacy

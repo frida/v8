@@ -15,7 +15,13 @@
             },
             {
                 "domain": "Debugger",
-                "exported": ["SearchMatch", "paused.reason"]
+                "exported": [
+                    "SearchMatch",
+                    "paused.reason"
+                ],
+                "pass_associated_data": [
+                    "setBreakpointByUrl"
+                ]
             },
             {
                 "domain": "Console"
@@ -25,7 +31,7 @@
             },
             {
                 "domain": "HeapProfiler",
-                "async": ["collectGarbage"]
+                "async": ["collectGarbage", "takeHeapSnapshot"]
             }
         ]
     },

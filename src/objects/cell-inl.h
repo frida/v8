@@ -6,9 +6,12 @@
 #define V8_OBJECTS_CELL_INL_H_
 
 #include "src/objects/cell.h"
+// Include the non-inl header before the rest of the headers.
 
 #include "src/heap/heap-write-barrier-inl.h"
-#include "src/objects/objects-inl.h"
+#include "src/objects/heap-object-inl.h"
+#include "src/objects/heap-object-set-map-inl.h"
+#include "src/roots/roots-inl.h"
 
 // Has to be the last include (doesn't have include guards):
 #include "src/objects/object-macros.h"
@@ -16,12 +19,39 @@
 namespace v8 {
 namespace internal {
 
-#include "torque-generated/src/objects/cell-tq-inl.inc"
+Cell::Cell(ReadOnlyRoots roots)
+    : HeapObject(roots.cell_map()), maybe_value_(roots.undefined_value()) {}
 
-TQ_OBJECT_CONSTRUCTORS_IMPL(Cell)
+Cell::Cell(ReadOnlyRoots roots, Tagged<Smi> value)
+    : HeapObject(roots.cell_map()), maybe_value_(value) {}
 
-DEF_RELAXED_GETTER(Cell, value, Object) {
-  return TaggedField<Object, kValueOffset>::Relaxed_Load(cage_base, *this);
+Cell::Cell(ReadOnlyRoots roots, Tagged<ClearedWeakValue> value)
+    : HeapObject(roots.cell_map()), maybe_value_(value) {}
+
+Tagged<MaybeObject> Cell::maybe_value() const { return maybe_value_.load(); }
+
+Tagged<MaybeObject> Cell::maybe_value(RelaxedLoadTag) const {
+  return maybe_value_.Relaxed_Load();
+}
+
+void Cell::set_maybe_value(Tagged<MaybeObject> value, WriteBarrierMode mode) {
+  maybe_value_.store(this, value, mode);
+}
+
+Tagged<Object> Cell::value() const {
+  Tagged<MaybeObject> v = maybe_value();
+  DCHECK(v.IsObject());
+  return v.GetHeapObjectOrSmi();
+}
+
+Tagged<Object> Cell::value(RelaxedLoadTag) const {
+  Tagged<MaybeObject> v = maybe_value(kRelaxedLoad);
+  DCHECK(v.IsObject());
+  return v.GetHeapObjectOrSmi();
+}
+
+void Cell::set_value(Tagged<Object> value, WriteBarrierMode mode) {
+  set_maybe_value(value, mode);
 }
 
 }  // namespace internal

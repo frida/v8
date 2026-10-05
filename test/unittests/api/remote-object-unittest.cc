@@ -23,8 +23,10 @@ bool AccessCheck(Local<Context> accessing_context,
   return false;
 }
 
-void NamedGetter(Local<Name> property,
-                 const PropertyCallbackInfo<Value>& info) {}
+v8::Intercepted NamedGetter(Local<Name> property,
+                            const PropertyCallbackInfo<Value>& info) {
+  return v8::Intercepted::kNo;
+}
 
 void Constructor(const FunctionCallbackInfo<Value>& info) {
   ASSERT_TRUE(info.IsConstructCall());
@@ -40,7 +42,7 @@ TEST_F(RemoteObjectTest, CreationContextOfRemoteContext) {
 
   Local<Object> remote_context =
       Context::NewRemoteContext(isolate(), global_template).ToLocalChecked();
-  EXPECT_TRUE(remote_context->GetCreationContext().IsEmpty());
+  EXPECT_TRUE(remote_context->GetCreationContext(isolate()).IsEmpty());
 }
 
 TEST_F(RemoteObjectTest, CreationContextOfRemoteObject) {
@@ -52,7 +54,7 @@ TEST_F(RemoteObjectTest, CreationContextOfRemoteObject) {
 
   Local<Object> remote_object =
       constructor_template->NewRemoteInstance().ToLocalChecked();
-  EXPECT_TRUE(remote_object->GetCreationContext().IsEmpty());
+  EXPECT_TRUE(remote_object->GetCreationContext(isolate()).IsEmpty());
 }
 
 TEST_F(RemoteObjectTest, RemoteContextInstanceChecks) {
@@ -97,6 +99,30 @@ TEST_F(RemoteObjectTest, TypeOfRemoteObject) {
       constructor_template->NewRemoteInstance().ToLocalChecked();
   String::Utf8Value result(isolate(), remote_object->TypeOf(isolate()));
   EXPECT_STREQ("object", *result);
+}
+
+TEST_F(RemoteObjectTest, NormalizeRemoteObject) {
+  Local<FunctionTemplate> constructor_template =
+      FunctionTemplate::New(isolate(), Constructor);
+  constructor_template->InstanceTemplate()->SetAccessCheckCallbackAndHandler(
+      AccessCheck, NamedPropertyHandlerConfiguration(NamedGetter),
+      IndexedPropertyHandlerConfiguration());
+
+  Local<Object> remote_object =
+      constructor_template->NewRemoteInstance().ToLocalChecked();
+
+  Local<Context> context = Context::New(isolate());
+  Context::Scope context_scope(context);
+
+  context->Global()
+      ->Set(context, String::NewFromUtf8Literal(isolate(), "remoteObj"),
+            remote_object)
+      .Check();
+
+  TryRunJS(
+      "const src = {};"
+      "for (let i = 0; i < 1200; i++) src['p' + i] = 1;"
+      "try { Object.assign(remoteObj, src); } catch (e) {}");
 }
 
 }  // namespace remote_object_unittest

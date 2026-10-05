@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --turbofan --no-always-turbofan
+// Flags: --allow-natives-syntax --turbofan
 
 (function OptimizeAndTestOverflow() {
   function f(x, y) {
@@ -16,12 +16,15 @@
   assertOptimized(f);
   assertEquals(-(2n ** 63n), f(-(2n ** 32n), 2n ** 31n));
   assertOptimized(f);
-  // CheckedBigInt64Mul will trigger deopt due to overflow.
+  // Re-prepare the function before the first deopt to ensure type feedback is
+  // not cleared by an untimely gc.
+  %PrepareFunctionForOptimization(f);
+  assertOptimized(f);
+  // CheckedInt64Mul will trigger deopt due to overflow.
   assertEquals(-(2n ** 63n) - 1n, f(-77158673929n, 119537721n));
   if (%Is64Bit()) {
     assertUnoptimized(f);
 
-    %PrepareFunctionForOptimization(f);
     assertEquals(0n, f(0n, 1n));
     assertEquals(18n, f(2n, 9n));
     %OptimizeFunctionOnNextCall(f);

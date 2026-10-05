@@ -13,8 +13,10 @@ namespace internal {
 
 using RegList = RegListBase<Register>;
 using DoubleRegList = RegListBase<DoubleRegister>;
+using Simd128RegList = RegListBase<Simd128Register>;
 ASSERT_TRIVIALLY_COPYABLE(RegList);
 ASSERT_TRIVIALLY_COPYABLE(DoubleRegList);
+ASSERT_TRIVIALLY_COPYABLE(Simd128RegList);
 
 // Register list in load/store instructions
 // Note that the bit values must match those used in actual instruction encoding
@@ -28,13 +30,13 @@ const RegList kJSCallerSaved = {r0,   // r0 a1
 const int kNumJSCallerSaved = 4;
 
 // Callee-saved registers preserved when switching from C to JavaScript
-const RegList kCalleeSaved = {r4,  //  r4 v1
-                              r5,  //  r5 v2
-                              r6,  //  r6 v3
-                              r7,  //  r7 v4 (cp in JavaScript code)
-                              r8,  //  r8 v5 (pp in JavaScript code)
-                              kR9Available ? r9 : Register::no_reg(),  //  r9 v6
-                              r10,                                     // r10 v7
+const RegList kCalleeSaved = {r4,    //  r4 v1
+                              r5,    //  r5 v2
+                              r6,    //  r6 v3
+                              r7,    //  r7 v4 (cp in JavaScript code)
+                              r8,    //  r8 v5 (pp in JavaScript code)
+                              r9,    //  r9 v6
+                              r10,   // r10 v7
                               r11};  // r11 v8 (fp in JavaScript code)
 
 // When calling into C++ (only for C++ calls that can't cause a GC).
@@ -45,7 +47,7 @@ const RegList kCallerSaved = {r0,   // r0
                               r3,   // r3
                               r9};  // r9
 
-const int kNumCalleeSaved = 7 + kR9Available;
+const int kNumCalleeSaved = 8;
 
 // Double registers d8 to d15 are callee-saved.
 const int kNumDoubleCalleeSaved = 8;

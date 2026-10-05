@@ -6,11 +6,16 @@
 
 #include <set>
 
+#include "include/v8-isolate.h"
 #include "src/execution/isolate.h"
+#include "src/flags/flags.h"
 #include "src/heap/factory-inl.h"
+#include "src/heap/mutable-page.h"
+#include "src/heap/parked-scope-inl.h"
 #include "src/objects/heap-number-inl.h"
 #include "src/objects/objects.h"
 #include "src/zone/zone.h"
+#include "test/unittests/heap/heap-utils.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -26,8 +31,8 @@ class IdentityMapTester {
   IdentityMapTester(Heap* heap, Zone* zone)
       : map(heap, ZoneAllocationPolicy(zone)) {}
 
-  void TestInsertFind(Handle<Object> key1, void* val1, Handle<Object> key2,
-                      void* val2) {
+  void TestInsertFind(DirectHandle<Object> key1, void* val1,
+                      DirectHandle<Object> key2, void* val2) {
     CHECK_NULL(map.Find(key1));
     CHECK_NULL(map.Find(key2));
 
@@ -77,8 +82,8 @@ class IdentityMapTester {
     }
   }
 
-  void TestFindDelete(Handle<Object> key1, void* val1, Handle<Object> key2,
-                      void* val2) {
+  void TestFindDelete(DirectHandle<Object> key1, void* val1,
+                      DirectHandle<Object> key2, void* val2) {
     CHECK_NULL(map.Find(key1));
     CHECK_NULL(map.Find(key2));
 
@@ -142,26 +147,27 @@ class IdentityMapTester {
     for (int i = 0; i < map.capacity_; i++) {
       Address key = map.keys_[i];
       if (!Internals::HasHeapObjectTag(key)) {
-        map.keys_[i] = Internals::IntToSmi(Internals::SmiValue(key) + shift);
+        map.keys_[i] =
+            Internals::IntegralToSmi(Internals::SmiValue(key) + shift);
       }
     }
-    map.gc_counter_ = -1;
+    map.invalidated_ = true;
   }
 
-  void CheckFind(Handle<Object> key, void* value) {
+  void CheckFind(DirectHandle<Object> key, void* value) {
     void** entry = map.Find(key);
     CHECK_NOT_NULL(entry);
     CHECK_EQ(value, *entry);
   }
 
-  void CheckFindOrInsert(Handle<Object> key, void* value) {
+  void CheckFindOrInsert(DirectHandle<Object> key, void* value) {
     auto find_result = map.FindOrInsert(key);
     CHECK(find_result.already_exists);
     CHECK_NOT_NULL(find_result.entry);
     CHECK_EQ(value, *find_result.entry);
   }
 
-  void CheckDelete(Handle<Object> key, void* value) {
+  void CheckDelete(DirectHandle<Object> key, void* value) {
     void* entry;
     CHECK(map.Delete(key, &entry));
     CHECK_NOT_NULL(entry);
@@ -184,8 +190,8 @@ class IdentityMapTester {
 
 class IdentityMapTest : public TestWithIsolateAndZone {
  public:
-  Handle<Smi> smi(int value) {
-    return Handle<Smi>(Smi::FromInt(value), isolate());
+  DirectHandle<Smi> smi(int value) {
+    return DirectHandle<Smi>(Smi::FromInt(value), isolate());
   }
 
   Handle<Object> num(double value) {
@@ -695,7 +701,7 @@ TEST_F(IdentityMapTest, ExplicitGC) {
   }
 
   // Do an explicit, real GC.
-  CollectGarbage(i::NEW_SPACE);
+  InvokeMinorGC();
 
   // Check that searching for the numbers finds the same values.
   for (size_t i = 0; i < arraysize(num_keys); i++) {
@@ -704,90 +710,12 @@ TEST_F(IdentityMapTest, ExplicitGC) {
   }
 }
 
-TEST_F(IdentityMapTest, CanonicalHandleScope) {
-  HandleScope outer(isolate());
-  CanonicalHandleScope outer_canonical(isolate());
-
-  // Deduplicate smi handles.
-  std::vector<Handle<Object>> smi_handles;
-  for (int i = 0; i < 100; i++) {
-    smi_handles.push_back(Handle<Object>(Smi::FromInt(i), isolate()));
-  }
-  Address* next_handle = isolate()->handle_scope_data()->next;
-  for (int i = 0; i < 100; i++) {
-    Handle<Object> new_smi = Handle<Object>(Smi::FromInt(i), isolate());
-    Handle<Object> old_smi = smi_handles[i];
-    CHECK_EQ(new_smi.location(), old_smi.location());
-  }
-  // Check that no new handles have been allocated.
-  CHECK_EQ(next_handle, isolate()->handle_scope_data()->next);
-
-  // Deduplicate root list items.
-  Handle<String> empty_string(ReadOnlyRoots(isolate()->heap()).empty_string(),
-                              isolate());
-  Handle<Map> free_space_map(ReadOnlyRoots(isolate()->heap()).free_space_map(),
-                             isolate());
-  Handle<Symbol> uninitialized_symbol(
-      ReadOnlyRoots(isolate()->heap()).uninitialized_symbol(), isolate());
-  CHECK_EQ(isolate()->factory()->empty_string().location(),
-           empty_string.location());
-  CHECK_EQ(isolate()->factory()->free_space_map().location(),
-           free_space_map.location());
-  CHECK_EQ(isolate()->factory()->uninitialized_symbol().location(),
-           uninitialized_symbol.location());
-  // Check that no new handles have been allocated.
-  CHECK_EQ(next_handle, isolate()->handle_scope_data()->next);
-
-  // Test ordinary heap objects.
-  Handle<HeapNumber> number1 = isolate()->factory()->NewHeapNumber(3.3);
-  Handle<String> string1 =
-      isolate()->factory()->NewStringFromAsciiChecked("test");
-  next_handle = isolate()->handle_scope_data()->next;
-  Handle<HeapNumber> number2(*number1, isolate());
-  Handle<String> string2(*string1, isolate());
-  CHECK_EQ(number1.location(), number2.location());
-  CHECK_EQ(string1.location(), string2.location());
-  CollectAllGarbage();
-  Handle<HeapNumber> number3(*number2, isolate());
-  Handle<String> string3(*string2, isolate());
-  CHECK_EQ(number1.location(), number3.location());
-  CHECK_EQ(string1.location(), string3.location());
-  // Check that no new handles have been allocated.
-  CHECK_EQ(next_handle, isolate()->handle_scope_data()->next);
-
-  // Inner handle scope do not create canonical handles.
-  {
-    HandleScope inner(isolate());
-    Handle<HeapNumber> number4(*number1, isolate());
-    Handle<String> string4(*string1, isolate());
-    CHECK_NE(number1.location(), number4.location());
-    CHECK_NE(string1.location(), string4.location());
-
-    // Nested canonical scope does not conflict with outer canonical scope,
-    // but does not canonicalize across scopes.
-    CanonicalHandleScope inner_canonical(isolate());
-    Handle<HeapNumber> number5(*number4, isolate());
-    Handle<String> string5(*string4, isolate());
-    CHECK_NE(number4.location(), number5.location());
-    CHECK_NE(string4.location(), string5.location());
-    CHECK_NE(number1.location(), number5.location());
-    CHECK_NE(string1.location(), string5.location());
-
-    Handle<HeapNumber> number6(*number1, isolate());
-    Handle<String> string6(*string1, isolate());
-    CHECK_NE(number4.location(), number6.location());
-    CHECK_NE(string4.location(), string6.location());
-    CHECK_NE(number1.location(), number6.location());
-    CHECK_NE(string1.location(), string6.location());
-    CHECK_EQ(number5.location(), number6.location());
-    CHECK_EQ(string5.location(), string6.location());
-  }
-}
-
 TEST_F(IdentityMapTest, GCShortCutting) {
   if (v8_flags.single_generation) return;
   // We don't create ThinStrings immediately when using the forwarding table.
   if (v8_flags.always_use_string_forwarding_table) return;
+  v8_flags.shortcut_strings_with_stack = true;
+  v8_flags.scavenger_precise_object_pinning = false;
   ManualGCScope manual_gc_scope(isolate());
   IdentityMapTester t(isolate()->heap(), zone());
   Factory* factory = isolate()->factory();
@@ -806,7 +734,7 @@ TEST_F(IdentityMapTest, GCShortCutting) {
         factory->NewStringFromAsciiChecked("thin_string");
     Handle<String> internalized_string =
         factory->InternalizeString(thin_string);
-    DCHECK(thin_string->IsThinString());
+    DCHECK(IsThinString(*thin_string));
     DCHECK_NE(*thin_string, *internalized_string);
 
     // Insert both keys into the map.
@@ -814,9 +742,15 @@ TEST_F(IdentityMapTest, GCShortCutting) {
     t.map.Insert(internalized_string, &internalized_string);
 
     // Do an explicit, real GC, this should short-cut the thin string to point
-    // to the internalized string (this is not implemented for MinorMC).
-    CollectGarbage(i::NEW_SPACE);
-    DCHECK_IMPLIES(!v8_flags.minor_mc && !v8_flags.optimize_for_size,
+    // to the internalized string (this is not implemented for MinorMS).
+    {
+      // If CSS pins a this string, it will not be considered as a candidate
+      // for shortcutting.
+      DisableConservativeStackScanningScopeForTesting no_stack_scanning(
+          isolate()->heap());
+      InvokeMinorGC();
+    }
+    DCHECK_IMPLIES(!v8_flags.minor_ms && !v8_flags.optimize_for_size,
                    *thin_string == *internalized_string);
 
     // Check that getting the object points to one of the handles.
@@ -834,6 +768,136 @@ TEST_F(IdentityMapTest, GCShortCutting) {
     t.map.Clear();
   }
 }
+
+// In multi-cage mode we create one cage per isolate
+// and we don't share objects between cages.
+#if V8_CAN_CREATE_SHARED_HEAP_BOOL && !COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL
+
+namespace {
+
+struct V8_NODISCARD IsolateWrapper {
+  explicit IsolateWrapper(v8::Isolate* isolate) : isolate(isolate) {}
+  ~IsolateWrapper() { isolate->Dispose(); }
+  v8::Isolate* const isolate;
+};
+
+v8::Isolate* NewClientIsolate() {
+  std::unique_ptr<v8::ArrayBuffer::Allocator> allocator(
+      v8::ArrayBuffer::Allocator::NewDefaultAllocator());
+  v8::Isolate::CreateParams create_params;
+  create_params.array_buffer_allocator = allocator.get();
+  return v8::Isolate::New(create_params);
+}
+
+class IdentityMapOnClientThread final : public ParkingThread {
+ public:
+  IdentityMapOnClientThread(IndirectHandle<String> shared_string,
+                            ParkingSemaphore* sema_ready,
+                            ParkingSemaphore* sema_gc_done)
+      : ParkingThread(base::Thread::Options("IdentityMapOnClientThread")),
+        shared_string_(shared_string),
+        sema_ready_(sema_ready),
+        sema_gc_done_(sema_gc_done) {}
+
+  void Run() override {
+    IsolateWrapper isolate_wrapper(NewClientIsolate());
+    Isolate* i_client = reinterpret_cast<Isolate*>(isolate_wrapper.isolate);
+
+    {
+      v8::Isolate::Scope isolate_scope(isolate_wrapper.isolate);
+      HandleScope scope(i_client);
+
+      Zone zone(i_client->allocator(), "identity-map-test");
+      IdentityMap<int, ZoneAllocationPolicy> map(i_client->heap(),
+                                                 ZoneAllocationPolicy(&zone));
+
+      // Insert the shared string into the IdentityMap.
+      map.Insert(*shared_string_, 42);
+
+      // Verify it can be found before GC.
+      int* entry = map.Find(*shared_string_);
+      CHECK_NOT_NULL(entry);
+      CHECK_EQ(42, *entry);
+
+      // Signal the main thread that we're ready.
+      sema_ready_->Signal();
+
+      // Verify the map is not invalidated yet.
+      // CHECK(!map.IsInvalidatedForTesting());
+
+      // Wait for main thread to perform GC.
+      sema_gc_done_->ParkedWait(i_client->main_thread_local_isolate());
+
+      // Verify the map was invalidated by GC.
+      // CHECK(map.IsInvalidatedForTesting());
+
+      // Verify the string is still in the IdentityMap after GC.
+      // Note: Find() triggers rehash and clears the invalidated flag.
+      entry = map.Find(*shared_string_);
+      CHECK_NOT_NULL(entry);
+      CHECK_EQ(42, *entry);
+
+      map.Clear();
+    }
+  }
+
+ private:
+  IndirectHandle<String> shared_string_;
+  ParkingSemaphore* sema_ready_;
+  ParkingSemaphore* sema_gc_done_;
+};
+
+}  // namespace
+
+using IdentityMapTestWithSharedHeap =
+    WithHeapInternals<TestJSSharedMemoryWithIsolate>;
+
+TEST_F(IdentityMapTestWithSharedHeap, IdentityMapOnClientIsolate) {
+  if (!v8_flags.shared_string_table) return;
+
+  v8_flags.manual_evacuation_candidates_selection = true;
+  ManualGCScope manual_gc_scope(i_isolate());
+
+  HandleScope handle_scope(i_isolate());
+
+  // Ensure that shared space allocation doesn't land on never_evacuate() page.
+  SimulateFullSpace(i_isolate()->heap()->shared_space());
+
+  // Create a shared string.
+  const char raw_one_byte[] = "test_shared_string";
+  DirectHandle<String> shared_string =
+      i_isolate()->factory()->NewStringFromAsciiChecked(
+          raw_one_byte, AllocationType::kSharedOld);
+
+  ParkingSemaphore sema_ready(0);
+  ParkingSemaphore sema_gc_done(0);
+
+  std::vector<std::unique_ptr<IdentityMapOnClientThread>> threads;
+  auto thread = std::make_unique<IdentityMapOnClientThread>(
+      indirect_handle(shared_string, i_isolate()), &sema_ready, &sema_gc_done);
+  CHECK(thread->Start());
+  threads.push_back(std::move(thread));
+
+  // Wait for the client isolate thread to set up its IdentityMap.
+  LocalIsolate* local_isolate = i_isolate()->main_thread_local_isolate();
+  sema_ready.ParkedWait(local_isolate);
+
+  // Mark the page containing the shared string for compaction.
+  MutablePage::FromHeapObject(i_isolate(), *shared_string)
+      ->set_forced_evacuation_candidate_for_testing(true);
+
+  // Perform a shared GC to relocate the shared string.
+  i_isolate()->heap()->CollectGarbageShared(local_isolate->heap(),
+                                            GarbageCollectionReason::kTesting);
+
+  // Signal the client isolate  thread that GC is done.
+  sema_gc_done.Signal();
+
+  ParkingThread::ParkedJoinAll(local_isolate, threads);
+}
+
+#endif  // V8_CAN_CREATE_SHARED_HEAP_BOOL &&
+        // !COMPRESS_POINTERS_IN_MULTIPLE_CAGES_BOOL
 
 }  // namespace internal
 }  // namespace v8

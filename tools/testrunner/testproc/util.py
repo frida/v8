@@ -54,18 +54,17 @@ def kill_processes_linux():
       logging.exception('Failed to kill process')
 
 
-def strip_ascii_control_characters(unicode_string):
-  return re.sub(r'[^\x20-\x7E]', '?', str(unicode_string))
-
-
 def base_test_record(test, result, run):
   record = {
-      'name': test.full_name,
-      'flags': result.cmd.args,
-      'run': run + 1,
       'expected': test.expected_outcomes,
+      'flags': result.cmd.args,
+      'framework_name': test.framework_name,
+      'name': test.full_name,
       'random_seed': test.random_seed,
-      'target_name': test.get_shell(),
+      'run': run + 1,
+      'shard_id': test.shard_id,
+      'shard_count': test.shard_count,
+      'target_name': test.shell,
       'variant': test.variant,
       'variant_flags': test.variant_flags,
   }
@@ -73,22 +72,10 @@ def base_test_record(test, result, run):
     record.update(
         exit_code=result.output.exit_code,
         duration=result.output.duration,
+        max_rss=result.output.stats.max_rss,
+        max_vms=result.output.stats.max_vms,
     )
   return record
-
-
-def extract_tags(record):
-  tags = []
-  for k, v in record.items():
-    if type(v) == list:
-      tags += [sanitized_kv_dict(k, e) for e in v]
-    else:
-      tags.append(sanitized_kv_dict(k, v))
-  return tags
-
-
-def sanitized_kv_dict(k, v):
-  return dict(key=k, value=strip_ascii_control_characters(v))
 
 
 class FixedSizeTopList():

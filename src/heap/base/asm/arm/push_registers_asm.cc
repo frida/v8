@@ -17,17 +17,10 @@
 // Calling convention source:
 // https://en.wikipedia.org/wiki/Calling_convention#ARM_(A32)
 // http://infocenter.arm.com/help/index.jsp?topic=/com.arm.doc.faqs/ka4127.html
-asm(
-#ifdef __APPLE__
-    ".globl _PushAllRegistersAndIterateStack            \n"
-    ".private_extern _PushAllRegistersAndIterateStack   \n"
-    "_PushAllRegistersAndIterateStack:                  \n"
-#else
-    ".globl PushAllRegistersAndIterateStack             \n"
+asm(".globl PushAllRegistersAndIterateStack             \n"
     ".type PushAllRegistersAndIterateStack, %function   \n"
     ".hidden PushAllRegistersAndIterateStack            \n"
     "PushAllRegistersAndIterateStack:                   \n"
-#endif
     // Push all callee-saved registers and save return address.
     // Only {r4-r11} are callee-saved registers. Push r3 in addition to align
     // the stack back to 8 bytes.
@@ -43,4 +36,10 @@ asm(
     // Discard all the registers.
     "  add sp, sp, #36                                  \n"
     // Pop lr into pc which returns and switches mode if needed.
-    "  pop {pc}                                         \n");
+    "  pop {pc}                                         \n"
+#if !defined(__APPLE__)
+    ".Lfunc_end0:                                       \n"
+    ".size PushAllRegistersAndIterateStack, "
+    ".Lfunc_end0-PushAllRegistersAndIterateStack\n"
+#endif  // !defined(__APPLE__)
+    );

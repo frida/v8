@@ -40,6 +40,14 @@ class V8_BASE_EXPORT RegionAllocator final {
     kAllocated,
   };
 
+  enum class AllocationStrategy {
+    // Allocates in the first large enough free region.
+    kFirstFit,
+
+    // Allocates in the largest free region.
+    kLargestFit,
+  };
+
   RegionAllocator(Address address, size_t size, size_t page_size);
   RegionAllocator(const RegionAllocator&) = delete;
   RegionAllocator& operator=(const RegionAllocator&) = delete;
@@ -68,7 +76,8 @@ class V8_BASE_EXPORT RegionAllocator final {
 
   // Allocates region of |size| (must be |page_size|-aligned). Returns
   // the address of the region on success or kAllocationFailure.
-  Address AllocateRegion(size_t size);
+  Address AllocateRegion(size_t size, AllocationStrategy allocation_strategy =
+                                          AllocationStrategy::kFirstFit);
   // Same as above but tries to randomize the region displacement.
   Address AllocateRegion(RandomNumberGenerator* rng, size_t size);
 
@@ -97,13 +106,22 @@ class V8_BASE_EXPORT RegionAllocator final {
   // Frees region at given |address|, returns the size of the region.
   // There must be a used region starting at given address otherwise nothing
   // will be freed and 0 will be returned.
-  size_t FreeRegion(Address address) { return TrimRegion(address, 0); }
+  // If |free_region| is given, it receives the free region that the freed
+  // region became part of, after merging with any free neighbours.
+  size_t FreeRegion(Address address, AddressRegion* free_region = nullptr) {
+    return TrimRegion(address, 0, free_region);
+  }
 
   // Decreases size of the previously allocated region at |address|, returns
   // freed size. |new_size| must be |page_size|-aligned and
   // less than or equal to current region's size. Setting new size to zero
-  // frees the region.
-  size_t TrimRegion(Address address, size_t new_size);
+  // frees the region. |free_region| is as for FreeRegion().
+  size_t TrimRegion(Address address, size_t new_size,
+                    AddressRegion* free_region = nullptr);
+
+  // Tries to grow the region at |address| to the size |new_size|. Returns true
+  // on success.
+  bool TryGrowRegion(Address address, size_t new_size);
 
   // If there is a used region starting at given address returns its size
   // otherwise 0.
@@ -124,8 +142,10 @@ class V8_BASE_EXPORT RegionAllocator final {
     return whole_region_.contains(address, size);
   }
 
-  // Total size of not yet aquired regions.
+  // Total size of not yet acquired regions.
   size_t free_size() const { return free_size_; }
+
+  size_t GetLargestFreeRegionSize() const;
 
   // The alignment of the allocated region's addresses and granularity of
   // the allocated region's sizes.
@@ -198,6 +218,9 @@ class V8_BASE_EXPORT RegionAllocator final {
 
   // Finds best-fit free region for given size.
   Region* FreeListFindRegion(size_t size);
+
+  // Finds largest free region for given size.
+  Region* FreeListFindLargestRegion(size_t size) const;
 
   // Removes given region from the set of free regions.
   void FreeListRemoveRegion(Region* region);

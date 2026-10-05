@@ -17,19 +17,28 @@ namespace internal {
   V(r16) V(r17) V(r18) V(r19) V(r20) V(r21) V(r22) V(r23) \
   V(r24) V(r25) V(r26) V(r27) V(r28) V(r29) V(r30) V(fp)
 
+#define ALWAYS_ALLOCATABLE_GENERAL_REGISTERS(V)                  \
+  V(r3)  V(r4)  V(r5)  V(r6)  V(r7)                       \
+  V(r8)  V(r9)  V(r10) V(r14) V(r15)                      \
+  V(r16) V(r17) V(r18) V(r19) V(r20) V(r21) V(r22) V(r23) \
+  V(r24) V(r30)
+
 #if V8_EMBEDDED_CONSTANT_POOL_BOOL
-#define ALLOCATABLE_GENERAL_REGISTERS(V)                  \
-  V(r3)  V(r4)  V(r5)  V(r6)  V(r7)                       \
-  V(r8)  V(r9)  V(r10) V(r14) V(r15)                      \
-  V(r16) V(r17) V(r18) V(r19) V(r20) V(r21) V(r22) V(r23) \
-  V(r24) V(r25) V(r26) V(r27) V(r30)
+#define MAYBE_ALLOCATEABLE_CONSTANT_POOL_REGISTER(V)
 #else
-#define ALLOCATABLE_GENERAL_REGISTERS(V)                  \
-  V(r3)  V(r4)  V(r5)  V(r6)  V(r7)                       \
-  V(r8)  V(r9)  V(r10) V(r14) V(r15)                      \
-  V(r16) V(r17) V(r18) V(r19) V(r20) V(r21) V(r22) V(r23) \
-  V(r24) V(r25) V(r26) V(r27) V(r28) V(r30)
+#define MAYBE_ALLOCATEABLE_CONSTANT_POOL_REGISTER(V) V(r28)
 #endif
+
+#ifdef V8_COMPRESS_POINTERS
+#define MAYBE_ALLOCATABLE_CAGE_REGISTERS(V)
+#else
+#define MAYBE_ALLOCATABLE_CAGE_REGISTERS(V)  V(r27)
+#endif
+
+#define ALLOCATABLE_GENERAL_REGISTERS(V)  \
+  ALWAYS_ALLOCATABLE_GENERAL_REGISTERS(V) \
+  MAYBE_ALLOCATEABLE_CONSTANT_POOL_REGISTER(V) \
+  MAYBE_ALLOCATABLE_CAGE_REGISTERS(V)
 
 #define LOW_DOUBLE_REGISTERS(V)                           \
   V(d0)  V(d1)  V(d2)  V(d3)  V(d4)  V(d5)  V(d6)  V(d7)  \
@@ -64,6 +73,15 @@ namespace internal {
 #define C_REGISTERS(V)                                            \
   V(cr0)  V(cr1)  V(cr2)  V(cr3)  V(cr4)  V(cr5)  V(cr6)  V(cr7)  \
   V(cr8)  V(cr9)  V(cr10) V(cr11) V(cr12) V(cr15)
+
+#define C_CALL_CALLEE_SAVE_REGISTERS                                         \
+  r14, r15, r16, r17, r18, r19, r20, r21, r22, r23, r24, r25, r26, r27, r28, \
+      r29, r30
+
+#define C_CALL_CALLEE_SAVE_FP_REGISTERS                                      \
+  d14, d15, d16, d17, d18, d19, d20, d21, d22, d23, d24, d25, d26, d27, d28, \
+      d29, d30, d31
+
 // clang-format on
 
 // The following constants describe the stack frame linkage area as
@@ -127,6 +145,13 @@ ASSERT_TRIVIALLY_COPYABLE(Register);
 static_assert(sizeof(Register) <= sizeof(int),
               "Register can efficiently be passed by value");
 
+// Assign |source| value to |no_reg| and return the |source|'s previous value.
+inline Register ReassignRegister(Register& source) {
+  Register result = source;
+  source = Register::no_reg();
+  return result;
+}
+
 #define DEFINE_REGISTER(R) \
   constexpr Register R = Register::from_code(kRegCode_##R);
 GENERAL_REGISTERS(DEFINE_REGISTER)
@@ -137,6 +162,15 @@ constexpr Register no_reg = Register::no_reg();
 constexpr Register kConstantPoolRegister = r28;  // Constant pool.
 constexpr Register kRootRegister = r29;          // Roots array pointer.
 constexpr Register cp = r30;                     // JavaScript context pointer.
+#ifdef V8_COMPRESS_POINTERS
+constexpr Register kPtrComprCageBaseRegister = r27;  // callee save
+#else
+constexpr Register kPtrComprCageBaseRegister = no_reg;
+#endif
+
+// PPC64 calling convention
+constexpr Register kCArgRegs[] = {r3, r4, r5, r6, r7, r8, r9, r10};
+static const int kRegisterPassedArguments = arraysize(kCArgRegs);
 
 // Returns the number of padding slots needed for stack pointer alignment.
 constexpr int ArgumentPaddingSlots(int argument_count) {
@@ -210,15 +244,6 @@ class DoubleRegister : public RegisterBase<DoubleRegister, kDoubleAfterLast> {
   // 32.
   inline static int SupportedRegisterCount();
 
-  // On PPC Simdi128 registers are separate from Double registers.
-  // More details can be found here: https://crrev.com/c/2718472 . This is a
-  // helper function to cast a Double to a Simdi128 register.
-  Simd128Register toSimd() const {
-    int reg_code = code();
-    V8_ASSUME(reg_code >= 0 && reg_code < kSimd128AfterLast);
-    return Simd128Register(reg_code);
-  }
-
  private:
   friend class RegisterBase;
   explicit constexpr DoubleRegister(int code) : RegisterBase(code) {}
@@ -277,6 +302,7 @@ DEFINE_REGISTER_NAMES(DoubleRegister, DOUBLE_REGISTERS)
 DEFINE_REGISTER_NAMES(Simd128Register, SIMD128_REGISTERS)
 
 // Give alias names to registers for calling conventions.
+constexpr Register kStackPointerRegister = sp;
 constexpr Register kReturnRegister0 = r3;
 constexpr Register kReturnRegister1 = r4;
 constexpr Register kReturnRegister2 = r5;
@@ -293,12 +319,14 @@ constexpr Register kJavaScriptCallCodeStartRegister = r5;
 constexpr Register kJavaScriptCallTargetRegister = kJSFunctionRegister;
 constexpr Register kJavaScriptCallNewTargetRegister = r6;
 constexpr Register kJavaScriptCallExtraArg1Register = r5;
+// DispatchHandle is only needed for the sandbox which is not available on
+// ppc64.
+constexpr Register kJavaScriptCallDispatchHandleRegister = no_reg;
 
-constexpr Register kOffHeapTrampolineRegister = ip;
 constexpr Register kRuntimeCallFunctionRegister = r4;
 constexpr Register kRuntimeCallArgCountRegister = r3;
 constexpr Register kRuntimeCallArgvRegister = r5;
-constexpr Register kWasmInstanceRegister = r10;
+constexpr Register kWasmImplicitArgRegister = r10;
 constexpr Register kWasmCompileLazyFuncIndexRegister = r15;
 
 constexpr DoubleRegister kFPReturnRegister0 = d1;

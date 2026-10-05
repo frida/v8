@@ -2,8 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-rab-gsab --allow-natives-syntax
-// Flags: --harmony-relative-indexing-methods --harmony-array-find-last
+// Flags: --js-staging --allow-natives-syntax
 
 "use strict";
 
@@ -142,6 +141,25 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
     assertEquals([3, 4, 5, 6],
                  ToNumbers(new targetCtor(lengthTrackingWithOffset)));
   });
+
+  AllBigIntUnmatchedCtorCombinations((targetCtor, sourceCtor) => {
+    const gsab = CreateGrowableSharedArrayBuffer(
+        4 * sourceCtor.BYTES_PER_ELEMENT,
+        8 * sourceCtor.BYTES_PER_ELEMENT);
+    const fixedLength = new sourceCtor(gsab, 0, 4);
+    const fixedLengthWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new sourceCtor(gsab, 0);
+    const lengthTrackingWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT);
+
+    assertThrows(() => { new targetCtor(fixedLength); }, TypeError);
+    assertThrows(() => { new targetCtor(fixedLengthWithOffset); }, TypeError);
+    assertThrows(() => { new targetCtor(lengthTracking); }, TypeError);
+    assertThrows(() => { new targetCtor(lengthTrackingWithOffset); },
+                 TypeError);
+  });
+
 })();
 
 (function ConstructFromTypedArraySpeciesConstructorNotCalled() {
@@ -3859,7 +3877,7 @@ SortCallbackGrows(ArraySortHelper);
   }
   // Freezing zero-length TAs doesn't throw.
   for (let ctor of ctors) {
-    const gsab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+    const gsab = CreateGrowableSharedArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
                                            8 * ctor.BYTES_PER_ELEMENT);
     const fixedLength = new ctor(gsab, 0, 0);
     const fixedLengthWithOffset = new ctor(
@@ -3870,7 +3888,7 @@ SortCallbackGrows(ArraySortHelper);
 
     Object.freeze(fixedLength);
     Object.freeze(fixedLengthWithOffset);
-    Object.freeze(lengthTrackingWithOffset);
+    assertThrows(() => { Object.freeze(lengthTrackingWithOffset); }, TypeError);
   }
 })();
 
@@ -3905,5 +3923,105 @@ SortCallbackGrows(ArraySortHelper);
                  ToNumbers(func.apply(null, lengthTracking)));
     assertEquals([2, 3, 0, 0],
                  ToNumbers(func.apply(null, lengthTrackingWithOffset)));
+  }
+})();
+
+(function TypedArrayFrom() {
+  AllBigIntMatchedCtorCombinations((targetCtor, sourceCtor) => {
+    const gsab = CreateGrowableSharedArrayBuffer(
+        4 * sourceCtor.BYTES_PER_ELEMENT,
+        8 * sourceCtor.BYTES_PER_ELEMENT);
+    const fixedLength = new sourceCtor(gsab, 0, 4);
+    const fixedLengthWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new sourceCtor(gsab, 0);
+    const lengthTrackingWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT);
+
+    // Write some data into the array.
+    const taFull = new sourceCtor(gsab);
+    for (let i = 0; i < 4; ++i) {
+      WriteToTypedArray(taFull, i, i + 1);
+    }
+
+    // Orig. array: [1, 2, 3, 4]
+    //              [1, 2, 3, 4] << fixedLength
+    //                    [3, 4] << fixedLengthWithOffset
+    //              [1, 2, 3, 4, ...] << lengthTracking
+    //                    [3, 4, ...] << lengthTrackingWithOffset
+
+    assertEquals([1, 2, 3, 4], ToNumbers(targetCtor.from(fixedLength)));
+    assertEquals([3, 4], ToNumbers(targetCtor.from(fixedLengthWithOffset)));
+    assertEquals([1, 2, 3, 4], ToNumbers(targetCtor.from(lengthTracking)));
+    assertEquals([3, 4], ToNumbers(targetCtor.from(lengthTrackingWithOffset)));
+
+    // Grow.
+    gsab.grow(6 * sourceCtor.BYTES_PER_ELEMENT);
+
+    for (let i = 0; i < 6; ++i) {
+      WriteToTypedArray(taFull, i, i + 1);
+    }
+
+    // Orig. array: [1, 2, 3, 4, 5, 6]
+    //              [1, 2, 3, 4] << fixedLength
+    //                    [3, 4] << fixedLengthWithOffset
+    //              [1, 2, 3, 4, 5, 6, ...] << lengthTracking
+    //                    [3, 4, 5, 6, ...] << lengthTrackingWithOffset
+
+    assertEquals([1, 2, 3, 4], ToNumbers(targetCtor.from(fixedLength)));
+    assertEquals([3, 4], ToNumbers(targetCtor.from(fixedLengthWithOffset)));
+    assertEquals([1, 2, 3, 4, 5, 6],
+                 ToNumbers(targetCtor.from(lengthTracking)));
+    assertEquals([3, 4, 5, 6],
+                 ToNumbers(targetCtor.from(lengthTrackingWithOffset)));
+  });
+
+  AllBigIntUnmatchedCtorCombinations((targetCtor, sourceCtor) => {
+    const gsab = CreateGrowableSharedArrayBuffer(
+        4 * sourceCtor.BYTES_PER_ELEMENT,
+        8 * sourceCtor.BYTES_PER_ELEMENT);
+    const fixedLength = new sourceCtor(gsab, 0, 4);
+    const fixedLengthWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new sourceCtor(gsab, 0);
+    const lengthTrackingWithOffset = new sourceCtor(
+        gsab, 2 * sourceCtor.BYTES_PER_ELEMENT);
+
+    assertThrows(() => { targetCtor.from(fixedLength); }, TypeError);
+    assertThrows(() => { targetCtor.from(fixedLengthWithOffset); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTracking); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTrackingWithOffset); },
+                 TypeError);
+  });
+})();
+
+(function ArrayBufferSizeNotMultipleOfElementSize() {
+  // The buffer size is a prime, not multiple of anything.
+  const gsab = CreateGrowableSharedArrayBuffer(11, 20);
+  for (let ctor of ctors) {
+    if (ctor.BYTES_PER_ELEMENT == 1) continue;
+
+    // This should not throw.
+    new ctor(gsab);
+  }
+})();
+
+(function SetValueToNumberResizesToInBounds() {
+  for (let ctor of ctors) {
+    const gsab = CreateGrowableSharedArrayBuffer(0,
+                                                 1 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(gsab, 0);
+
+    const evil = { valueOf: () => {
+      // Grow so that `lengthTracking` is no longer OOB.
+      gsab.grow(1 * ctor.BYTES_PER_ELEMENT);
+      if (IsBigIntTypedArray(lengthTracking)) {
+        return 2n;
+      }
+      return 2;
+    }};
+
+    lengthTracking[0] = evil;
+    assertEquals([2], ToNumbers(lengthTracking));
   }
 })();

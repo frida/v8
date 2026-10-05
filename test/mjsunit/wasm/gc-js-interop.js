@@ -2,28 +2,26 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-gc --wasm-gc-js-interop --allow-natives-syntax
+// Flags: --turbofan --allow-natives-syntax
 
 d8.file.execute('test/mjsunit/wasm/gc-js-interop-helpers.js');
 
 let {struct, array} = CreateWasmObjects();
 for (const wasm_obj of [struct, array]) {
-  testThrowsRepeated(() => wasm_obj.foo, TypeError);
+  repeated(() => assertSame(undefined, wasm_obj.foo));
   testThrowsRepeated(() => wasm_obj.foo = 42, TypeError);
-  testThrowsRepeated(() => wasm_obj[0], TypeError);
+  repeated(() => assertSame(undefined, wasm_obj[0]));
   testThrowsRepeated(() => wasm_obj[0] = undefined, TypeError);
-  testThrowsRepeated(() => wasm_obj.__proto__, TypeError);
+  repeated(() => assertSame(undefined, wasm_obj.__proto__));
+  repeated(() => assertSame(
+      null, Object.prototype.__lookupGetter__("__proto__").call(wasm_obj)));
   testThrowsRepeated(
       () => Object.prototype.__proto__.call(wasm_obj), TypeError);
   testThrowsRepeated(() => wasm_obj.__proto__ = null, TypeError);
-  testThrowsRepeated(() => JSON.stringify(wasm_obj), TypeError);
+  // Wasm objects have no properties.
+  repeated(() => { for (let p in wasm_obj) { assertUnreachable(); } });
   testThrowsRepeated(() => {
-    for (let p in wasm_obj) {
-    }
-  }, TypeError);
-  testThrowsRepeated(() => {
-    for (let p of wasm_obj) {
-    }
+    for (let p of wasm_obj) {}
   }, TypeError);
   testThrowsRepeated(() => wasm_obj.toString(), TypeError);
   testThrowsRepeated(() => wasm_obj.valueOf(), TypeError);
@@ -50,7 +48,7 @@ for (const wasm_obj of [struct, array]) {
   testThrowsRepeated(() => `${wasm_obj}`, TypeError);
   testThrowsRepeated(() => wasm_obj`test`, TypeError);
   testThrowsRepeated(() => new wasm_obj, TypeError);
-  testThrowsRepeated(() => wasm_obj?.property, TypeError);
+  repeated(() => assertSame(undefined, wasm_obj?.property));
 
   repeated(() => assertEquals(undefined, void wasm_obj));
   testThrowsRepeated(() => 2 == wasm_obj, TypeError);
@@ -69,7 +67,7 @@ for (const wasm_obj of [struct, array]) {
   testThrowsRepeated(() => { let [] = wasm_obj; }, TypeError);
   testThrowsRepeated(() => { let [a, b] = wasm_obj; }, TypeError);
   testThrowsRepeated(() => { let [...all] = wasm_obj; }, TypeError);
-  testThrowsRepeated(() => { let {a} = wasm_obj; }, TypeError);
+  repeated(() => { let {a} = wasm_obj; assertSame(undefined, a); });
   repeated(() => { let {} = wasm_obj; }, TypeError);
   repeated(() => {
     let {...rest} = wasm_obj;
@@ -102,12 +100,14 @@ for (const wasm_obj of [struct, array]) {
   testThrowsRepeated(
       () => {class SubClass extends wasm_obj {}}, TypeError,
       'Class extends value [object Object] is not a constructor or null');
-  repeated(() => {
+  {
     class TestMemberInit {
       x = wasm_obj;
-    };
-    assertSame(wasm_obj, new TestMemberInit().x);
-  });
+    }
+    repeated(() => {
+      assertSame(wasm_obj, new TestMemberInit().x);
+    });
+  }
   repeated(() => assertSame(wasm_obj, eval('wasm_obj')));
 
   // Test functions of the global object.
@@ -124,7 +124,8 @@ for (const wasm_obj of [struct, array]) {
     repeated(
         () =>
             assertEquals([new Number(1), wasm_obj], fct.apply(1, [wasm_obj])));
-    testThrowsRepeated(() => fct.apply(1, wasm_obj), TypeError);
+    repeated(
+        () => assertEquals([new Number(1), undefined], fct.apply(1, wasm_obj)));
     repeated(() => assertEquals([wasm_obj, 1], fct.bind(wasm_obj)(1)));
     repeated(() => assertEquals([wasm_obj, 1], fct.call(wasm_obj, 1)));
   }
@@ -224,10 +225,12 @@ for (const wasm_obj of [struct, array]) {
 
   testThrowsRepeated(() => JSON.parse(wasm_obj), TypeError);
   repeated(() => assertEquals({x: 1}, JSON.parse('{"x": 1}', wasm_obj)));
-  testThrowsRepeated(() => JSON.stringify(wasm_obj), TypeError);
+  repeated(() => assertEquals(undefined, JSON.stringify(wasm_obj)));
   repeated(() => assertEquals('{"x":1}', JSON.stringify({x: 1}, wasm_obj)));
   repeated(
       () => assertEquals('{"x":1}', JSON.stringify({x: 1}, null, wasm_obj)));
+  repeated(
+      () => assertEquals("{}", JSON.stringify({wasm_obj})));
 
   // Yielding wasm objects from a generator function is valid.
   repeated(() => {

@@ -2,8 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --experimental-wasm-gc
-
 d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
 
 (function TestNominalTypesBasic() {
@@ -11,10 +9,11 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
   var builder = new WasmModuleBuilder();
   let struct1 = builder.addStruct([makeField(kWasmI32, true)]);
   let struct2 = builder.addStruct(
-      [makeField(kWasmI32, true), makeField(kWasmI32, true)], struct1);
+      {fields: [makeField(kWasmI32, true), makeField(kWasmI32, true)],
+       supertype: struct1});
 
-  let array1 = builder.addArray(kWasmI32, true);
-  let array2 = builder.addArray(kWasmI32, true, array1);
+  let array1 = builder.addArray(kWasmI32);
+  let array2 = builder.addArray(kWasmI32, {supertype: array1});
 
   builder.addFunction("main", kSig_v_v)
       .addLocals(wasmRefNullType(struct1), 1)
@@ -39,67 +38,8 @@ d8.file.execute("test/mjsunit/wasm/wasm-module-builder.js");
   print(arguments.callee.name);
   let builder = new WasmModuleBuilder();
   builder.addStruct([]);
-  for (let i = 0; i < 32; i++) builder.addStruct([], i);
+  for (let i = 0; i < 64; i++) builder.addStruct({fields: [], supertype: i});
   assertThrows(
       () => builder.instantiate(), WebAssembly.CompileError,
       /subtyping depth is greater than allowed/);
-})();
-
-(function TestArrayNewData() {
-  print(arguments.callee.name);
-  let builder = new WasmModuleBuilder();
-  builder.setEarlyDataCountSection();
-  let array_type_index = builder.addArray(kWasmI16, true);
-
-  let dummy_byte = 0xff;
-  let element_0 = 1000;
-  let element_1 = -2222;
-
-  let data_segment = builder.addPassiveDataSegment(
-    [dummy_byte, element_0 & 0xff, (element_0 >> 8) & 0xff,
-     element_1 & 0xff, (element_1 >> 8) & 0xff]);
-
-  let global = builder.addGlobal(
-    wasmRefType(array_type_index), true,
-    [...wasmI32Const(1), ...wasmI32Const(2),
-     kGCPrefix, kExprArrayNewData, array_type_index, data_segment],
-    builder);
-
-  builder.addFunction("global_get", kSig_i_i)
-    .addBody([
-      kExprGlobalGet, global.index,
-      kExprLocalGet, 0,
-      kGCPrefix, kExprArrayGetS, array_type_index])
-    .exportFunc();
-
-  // parameters: (segment offset, array length, array index)
-  builder.addFunction("init_from_data", kSig_i_iii)
-    .addBody([
-      kExprLocalGet, 0, kExprLocalGet, 1,
-      kGCPrefix, kExprArrayNewData,
-      array_type_index, data_segment,
-      kExprLocalGet, 2,
-      kGCPrefix, kExprArrayGetS, array_type_index])
-    .exportFunc();
-
-  builder.addFunction("drop_segment", kSig_v_v)
-    .addBody([kNumericPrefix, kExprDataDrop, data_segment])
-    .exportFunc();
-
-  let instance = builder.instantiate();
-
-  assertEquals(element_0, instance.exports.global_get(0));
-  assertEquals(element_1, instance.exports.global_get(1));
-
-  let init = instance.exports.init_from_data;
-
-  assertEquals(element_0, init(1, 2, 0));
-  assertEquals(element_1, init(1, 2, 1));
-
-  assertTraps(kTrapArrayTooLarge, () => init(1, 1000000000, 0));
-  assertTraps(kTrapDataSegmentOutOfBounds, () => init(2, 2, 0));
-
-  instance.exports.drop_segment();
-
-  assertTraps(kTrapDataSegmentOutOfBounds, () => init(1, 2, 0));
 })();

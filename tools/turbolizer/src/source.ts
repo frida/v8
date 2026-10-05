@@ -33,16 +33,21 @@ export class Source {
 
 export class BytecodeSource {
   sourceId: number;
+  inliningIds: Array<number>;
   functionName: string;
   data: Array<BytecodeSourceData>;
   constantPool: Array<string>;
+  feedbackVector: string;
 
-  constructor(sourceId: number, functionName: string, data: Array<BytecodeSourceData>,
-              constantPool: Array<string>) {
+  constructor(sourceId: number, inliningIds: Array<number>, functionName: string,
+              data: Array<BytecodeSourceData>, constantPool: Array<string>,
+              feedbackVector: string) {
     this.sourceId = sourceId;
+    this.inliningIds = inliningIds;
     this.functionName = functionName;
     this.data = data;
     this.constantPool = constantPool;
+    this.feedbackVector = feedbackVector;
   }
 }
 

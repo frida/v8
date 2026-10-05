@@ -7,13 +7,17 @@
 
 #include "src/base/compiler-specific.h"
 #include "src/codegen/tnode.h"
+#include "src/common/globals.h"
 #include "src/compiler/common-operator.h"
 #include "src/compiler/feedback-source.h"
 #include "src/compiler/globals.h"
 #include "src/compiler/node-properties.h"
 #include "src/compiler/node.h"
 #include "src/compiler/opcodes.h"
+#include "src/compiler/operator-properties.h"
+#include "src/objects/bytecode-array.h"
 #include "src/objects/feedback-cell.h"
+#include "src/objects/oddball.h"
 #include "src/runtime/runtime.h"
 
 namespace v8 {
@@ -37,37 +41,53 @@ class Operator;
 struct JSOperatorGlobalCache;
 
 // Macro lists.
-#define JS_UNOP_WITH_FEEDBACK(V) \
-  JS_BITWISE_UNOP_LIST(V)        \
+#define JS_UNOP_WITH_EMBEDDED_FEEDBACK(V) \
+  JS_BITWISE_UNOP_LIST(V)                 \
   JS_ARITH_UNOP_LIST(V)
 
 #define JS_BINOP_WITH_FEEDBACK(V) \
   JS_ARITH_BINOP_LIST(V)          \
   JS_BITWISE_BINOP_LIST(V)        \
-  JS_COMPARE_BINOP_LIST(V)        \
   V(JSInstanceOf, InstanceOf)
+
+#define JS_BINOP_WITH_EMBEDDED_FEEDBACK(V) \
+  JS_COMPARE_BINOP_COMMON_LIST(V)          \
+  JS_ARITH_BINOP_LIST(V)                   \
+  JS_BITWISE_BINOP_LIST(V)
 
 // Predicates.
 class JSOperator final : public AllStatic {
  public:
-  static constexpr bool IsUnaryWithFeedback(Operator::Opcode opcode) {
-#define CASE(Name, ...)   \
-  case IrOpcode::k##Name: \
-    return true;
-    switch (opcode) {
-      JS_UNOP_WITH_FEEDBACK(CASE);
-      default:
-        return false;
-    }
-#undef CASE
-  }
-
   static constexpr bool IsBinaryWithFeedback(Operator::Opcode opcode) {
 #define CASE(Name, ...)   \
   case IrOpcode::k##Name: \
     return true;
     switch (opcode) {
       JS_BINOP_WITH_FEEDBACK(CASE);
+      default:
+        return false;
+    }
+#undef CASE
+  }
+
+  static constexpr bool IsBinaryWithEmbeddedFeedback(Operator::Opcode opcode) {
+#define CASE(Name, ...)   \
+  case IrOpcode::k##Name: \
+    return true;
+    switch (opcode) {
+      JS_BINOP_WITH_EMBEDDED_FEEDBACK(CASE);
+      default:
+        return false;
+    }
+#undef CASE
+  }
+
+  static constexpr bool IsUnaryWithEmbeddedFeedback(Operator::Opcode opcode) {
+#define CASE(Name, ...)   \
+  case IrOpcode::k##Name: \
+    return true;
+    switch (opcode) {
+      JS_UNOP_WITH_EMBEDDED_FEEDBACK(CASE);
       default:
         return false;
     }
@@ -287,9 +307,9 @@ class CallParameters final {
                               feedback_hash(p.feedback_));
   }
 
-  using ArityField = base::BitField<size_t, 0, 27>;
-  using CallFeedbackRelationField = base::BitField<CallFeedbackRelation, 27, 2>;
-  using SpeculationModeField = base::BitField<SpeculationMode, 29, 1>;
+  using ArityField = base::BitField<size_t, 0, 26>;
+  using CallFeedbackRelationField = base::BitField<CallFeedbackRelation, 26, 2>;
+  using SpeculationModeField = base::BitField<SpeculationMode, 28, 2>;
   using ConvertReceiverModeField = base::BitField<ConvertReceiverMode, 30, 2>;
 
   uint32_t const bit_field_;
@@ -330,21 +350,26 @@ V8_EXPORT_PRIVATE const CallRuntimeParameters& CallRuntimeParametersOf(
     const Operator* op);
 
 // Defines the location of a context slot relative to a specific scope. This is
-// used as a parameter by JSLoadContext and JSStoreContext operators and allows
-// accessing a context-allocated variable without keeping track of the scope.
+// used as a parameter by JSLoadContextNoCell and JSStoreContextNoCell operators
+// and allows accessing a context-allocated variable without keeping track of
+// the scope.
 class ContextAccess final {
  public:
   ContextAccess(size_t depth, size_t index, bool immutable);
 
-  size_t depth() const { return depth_; }
+  size_t depth() const { return DepthField::decode(immutable_and_depth_); }
   size_t index() const { return index_; }
-  bool immutable() const { return immutable_; }
+  bool immutable() const {
+    return ImmutableField::decode(immutable_and_depth_);
+  }
 
  private:
+  using ImmutableField = base::BitField<bool, 0, 1>;
+  using DepthField = ImmutableField::Next<uint32_t, 31>;
+
   // For space reasons, we keep this tightly packed, otherwise we could just use
   // a simple int/int/bool POD.
-  const bool immutable_;
-  const uint16_t depth_;
+  uint32_t immutable_and_depth_;
   const uint32_t index_;
 };
 
@@ -361,20 +386,18 @@ V8_EXPORT_PRIVATE ContextAccess const& ContextAccessOf(Operator const*);
 // is used as a parameter by the JSCreateFunctionContext operator.
 class CreateFunctionContextParameters final {
  public:
-  CreateFunctionContextParameters(const ScopeInfoRef& scope_info,
-                                  int slot_count, ScopeType scope_type)
+  CreateFunctionContextParameters(ScopeInfoRef scope_info, int slot_count,
+                                  ScopeType scope_type)
       : scope_info_(scope_info),
         slot_count_(slot_count),
         scope_type_(scope_type) {}
 
-  ScopeInfoRef scope_info(JSHeapBroker* broker) const {
-    return scope_info_.AsRef(broker);
-  }
+  ScopeInfoRef scope_info() const { return scope_info_; }
   int slot_count() const { return slot_count_; }
   ScopeType scope_type() const { return scope_type_; }
 
  private:
-  const ScopeInfoTinyRef scope_info_;
+  const ScopeInfoRef scope_info_;
   int const slot_count_;
   ScopeType const scope_type_;
 
@@ -395,15 +418,17 @@ CreateFunctionContextParameters const& CreateFunctionContextParametersOf(
 // Defines parameters for JSDefineNamedOwnProperty operator.
 class DefineNamedOwnPropertyParameters final {
  public:
-  DefineNamedOwnPropertyParameters(const NameRef& name,
+  DefineNamedOwnPropertyParameters(bool in_literal, NameRef name,
                                    FeedbackSource const& feedback)
-      : name_(name), feedback_(feedback) {}
+      : in_literal_(in_literal), name_(name), feedback_(feedback) {}
 
-  NameRef name(JSHeapBroker* broker) const { return name_.AsRef(broker); }
+  NameRef name() const { return name_; }
   FeedbackSource const& feedback() const { return feedback_; }
+  bool in_literal() const { return in_literal_; }
 
  private:
-  const NameTinyRef name_;
+  bool in_literal_;
+  const NameRef name_;
   FeedbackSource const feedback_;
 
   friend bool operator==(DefineNamedOwnPropertyParameters const&,
@@ -441,20 +466,51 @@ std::ostream& operator<<(std::ostream&, FeedbackParameter const&);
 
 const FeedbackParameter& FeedbackParameterOf(const Operator* op);
 
+class EmbeddedHintParameter final {
+ public:
+  using EmbeddedHint =
+      std::variant<std::monostate, CompareOperationHint, BinaryOperationHint>;
+
+  EmbeddedHintParameter() : hint_(std::monostate()) {}
+  explicit EmbeddedHintParameter(const CompareOperationHint hint)
+      : hint_(hint) {}
+  explicit EmbeddedHintParameter(const BinaryOperationHint hint)
+      : hint_(hint) {}
+
+  static EmbeddedHintParameter Invalid() { return EmbeddedHintParameter(); }
+  bool IsInvalid() const {
+    return std::holds_alternative<std::monostate>(hint_);
+  }
+
+  const EmbeddedHint& hint() const { return hint_; }
+
+ private:
+  const EmbeddedHint hint_;
+};
+
+bool operator==(EmbeddedHintParameter const&, EmbeddedHintParameter const&);
+bool operator!=(EmbeddedHintParameter const&, EmbeddedHintParameter const&);
+
+size_t hash_value(EmbeddedHintParameter const&);
+
+std::ostream& operator<<(std::ostream&, EmbeddedHintParameter const&);
+
+const EmbeddedHintParameter& EmbeddedHintParameterOf(const Operator* op);
+
 // Defines the property of an object for a named access. This is
 // used as a parameter by the JSLoadNamed and JSSetNamedProperty operators.
 class NamedAccess final {
  public:
-  NamedAccess(LanguageMode language_mode, const NameRef& name,
+  NamedAccess(LanguageMode language_mode, NameRef name,
               FeedbackSource const& feedback)
       : name_(name), feedback_(feedback), language_mode_(language_mode) {}
 
-  NameRef name(JSHeapBroker* broker) const { return name_.AsRef(broker); }
+  NameRef name() const { return name_; }
   LanguageMode language_mode() const { return language_mode_; }
   FeedbackSource const& feedback() const { return feedback_; }
 
  private:
-  const NameTinyRef name_;
+  const NameRef name_;
   FeedbackSource const feedback_;
   LanguageMode const language_mode_;
 
@@ -468,22 +524,42 @@ class NamedAccess final {
 
 const NamedAccess& NamedAccessOf(const Operator* op);
 
+struct CreateGeneratorObjectParameters final {
+  IndirectHandle<BytecodeArray> bytecode_array;
+
+  explicit CreateGeneratorObjectParameters(
+      IndirectHandle<BytecodeArray> bytecode_array)
+      : bytecode_array(bytecode_array) {}
+
+  friend bool operator==(CreateGeneratorObjectParameters const&,
+                         CreateGeneratorObjectParameters const&);
+  friend bool operator!=(CreateGeneratorObjectParameters const&,
+                         CreateGeneratorObjectParameters const&);
+
+  friend size_t hash_value(CreateGeneratorObjectParameters const&);
+
+  friend std::ostream& operator<<(std::ostream&,
+                                  CreateGeneratorObjectParameters const&);
+};
+
+const CreateGeneratorObjectParameters& CreateGeneratorObjectParametersOf(
+    const Operator* op);
 
 // Defines the property being loaded from an object by a named load. This is
 // used as a parameter by JSLoadGlobal operator.
 class LoadGlobalParameters final {
  public:
-  LoadGlobalParameters(const NameRef& name, const FeedbackSource& feedback,
+  LoadGlobalParameters(NameRef name, const FeedbackSource& feedback,
                        TypeofMode typeof_mode)
       : name_(name), feedback_(feedback), typeof_mode_(typeof_mode) {}
 
-  NameRef name(JSHeapBroker* broker) const { return name_.AsRef(broker); }
+  NameRef name() const { return name_; }
   TypeofMode typeof_mode() const { return typeof_mode_; }
 
   const FeedbackSource& feedback() const { return feedback_; }
 
  private:
-  const NameTinyRef name_;
+  const NameRef name_;
   const FeedbackSource feedback_;
   const TypeofMode typeof_mode_;
 
@@ -505,16 +581,16 @@ const LoadGlobalParameters& LoadGlobalParametersOf(const Operator* op);
 class StoreGlobalParameters final {
  public:
   StoreGlobalParameters(LanguageMode language_mode,
-                        const FeedbackSource& feedback, const NameRef& name)
+                        const FeedbackSource& feedback, NameRef name)
       : language_mode_(language_mode), name_(name), feedback_(feedback) {}
 
   LanguageMode language_mode() const { return language_mode_; }
   FeedbackSource const& feedback() const { return feedback_; }
-  NameRef name(JSHeapBroker* broker) const { return name_.AsRef(broker); }
+  NameRef name() const { return name_; }
 
  private:
   LanguageMode const language_mode_;
-  const NameTinyRef name_;
+  const NameRef name_;
   FeedbackSource const feedback_;
 
   friend bool operator==(StoreGlobalParameters const&,
@@ -564,17 +640,18 @@ CreateArgumentsType const& CreateArgumentsTypeOf(const Operator* op);
 // used as parameter by JSCreateArray operators.
 class CreateArrayParameters final {
  public:
-  CreateArrayParameters(size_t arity, base::Optional<AllocationSiteRef> site)
-      : arity_(arity), site_(site) {}
+  CreateArrayParameters(size_t arity, OptionalAllocationSiteRef site,
+                        const FeedbackSource& feedback)
+      : arity_(arity), site_(site), feedback_(feedback) {}
 
   size_t arity() const { return arity_; }
-  base::Optional<AllocationSiteRef> site(JSHeapBroker* broker) const {
-    return AllocationSiteTinyRef::AsOptionalRef(broker, site_);
-  }
+  OptionalAllocationSiteRef site() const { return site_; }
+  const FeedbackSource& call_feedback() const { return feedback_; }
 
  private:
   size_t const arity_;
-  base::Optional<AllocationSiteTinyRef> const site_;
+  OptionalAllocationSiteRef const site_;
+  FeedbackSource const feedback_;
 
   friend bool operator==(CreateArrayParameters const&,
                          CreateArrayParameters const&);
@@ -646,15 +723,15 @@ const CreateCollectionIteratorParameters& CreateCollectionIteratorParametersOf(
 // This is used as parameter by JSCreateBoundFunction operators.
 class CreateBoundFunctionParameters final {
  public:
-  CreateBoundFunctionParameters(size_t arity, const MapRef& map)
+  CreateBoundFunctionParameters(size_t arity, MapRef map)
       : arity_(arity), map_(map) {}
 
   size_t arity() const { return arity_; }
-  MapRef map(JSHeapBroker* broker) const { return map_.AsRef(broker); }
+  MapRef map() const { return map_; }
 
  private:
   size_t const arity_;
-  const MapTinyRef map_;
+  const MapRef map_;
 
   friend bool operator==(CreateBoundFunctionParameters const&,
                          CreateBoundFunctionParameters const&);
@@ -674,19 +751,17 @@ const CreateBoundFunctionParameters& CreateBoundFunctionParametersOf(
 // used as a parameter by JSCreateClosure operators.
 class CreateClosureParameters final {
  public:
-  CreateClosureParameters(const SharedFunctionInfoRef& shared_info,
-                          const CodeTRef& code, AllocationType allocation)
+  CreateClosureParameters(SharedFunctionInfoRef shared_info, CodeRef code,
+                          AllocationType allocation)
       : shared_info_(shared_info), code_(code), allocation_(allocation) {}
 
-  SharedFunctionInfoRef shared_info(JSHeapBroker* broker) const {
-    return shared_info_.AsRef(broker);
-  }
-  CodeTRef code(JSHeapBroker* broker) const { return code_.AsRef(broker); }
+  SharedFunctionInfoRef shared_info() const { return shared_info_; }
+  CodeRef code() const { return code_; }
   AllocationType allocation() const { return allocation_; }
 
  private:
-  const SharedFunctionInfoTinyRef shared_info_;
-  const CodeTTinyRef code_;
+  const SharedFunctionInfoRef shared_info_;
+  const CodeRef code_;
   AllocationType const allocation_;
 
   friend bool operator==(CreateClosureParameters const&,
@@ -704,22 +779,18 @@ const CreateClosureParameters& CreateClosureParametersOf(const Operator* op);
 
 class GetTemplateObjectParameters final {
  public:
-  GetTemplateObjectParameters(const TemplateObjectDescriptionRef& description,
-                              const SharedFunctionInfoRef& shared,
+  GetTemplateObjectParameters(TemplateObjectDescriptionRef description,
+                              SharedFunctionInfoRef shared,
                               FeedbackSource const& feedback)
       : description_(description), shared_(shared), feedback_(feedback) {}
 
-  TemplateObjectDescriptionRef description(JSHeapBroker* broker) const {
-    return description_.AsRef(broker);
-  }
-  SharedFunctionInfoRef shared(JSHeapBroker* broker) const {
-    return shared_.AsRef(broker);
-  }
+  TemplateObjectDescriptionRef description() const { return description_; }
+  SharedFunctionInfoRef shared() const { return shared_; }
   FeedbackSource const& feedback() const { return feedback_; }
 
  private:
-  const TemplateObjectDescriptionTinyRef description_;
-  const SharedFunctionInfoTinyRef shared_;
+  const TemplateObjectDescriptionRef description_;
+  const SharedFunctionInfoRef shared_;
   FeedbackSource const feedback_;
 
   friend bool operator==(GetTemplateObjectParameters const&,
@@ -741,22 +812,20 @@ const GetTemplateObjectParameters& GetTemplateObjectParametersOf(
 // JSCreateLiteralRegExp operators.
 class CreateLiteralParameters final {
  public:
-  CreateLiteralParameters(const HeapObjectRef& constant,
+  CreateLiteralParameters(HeapObjectRef constant,
                           FeedbackSource const& feedback, int length, int flags)
       : constant_(constant),
         feedback_(feedback),
         length_(length),
         flags_(flags) {}
 
-  HeapObjectRef constant(JSHeapBroker* broker) const {
-    return constant_.AsRef(broker);
-  }
+  HeapObjectRef constant() const { return constant_; }
   FeedbackSource const& feedback() const { return feedback_; }
   int length() const { return length_; }
   int flags() const { return flags_; }
 
  private:
-  const HeapObjectTinyRef constant_;
+  const HeapObjectRef constant_;
   FeedbackSource const feedback_;
   int const length_;
   int const flags_;
@@ -773,6 +842,29 @@ class CreateLiteralParameters final {
 };
 
 const CreateLiteralParameters& CreateLiteralParametersOf(const Operator* op);
+
+class SetPrototypePropertiesParameters final {
+ public:
+  explicit SetPrototypePropertiesParameters(
+      ObjectBoilerplateDescriptionRef constant, FeedbackSource source)
+      : constant(constant), source(source) {}
+
+  friend bool operator==(SetPrototypePropertiesParameters const&,
+                         SetPrototypePropertiesParameters const&);
+  friend bool operator!=(SetPrototypePropertiesParameters const&,
+                         SetPrototypePropertiesParameters const&);
+
+  friend size_t hash_value(SetPrototypePropertiesParameters const&);
+
+  friend std::ostream& operator<<(std::ostream&,
+                                  SetPrototypePropertiesParameters const&);
+
+  const ObjectBoilerplateDescriptionRef constant;
+  FeedbackSource source;
+};
+
+SetPrototypePropertiesParameters SetPrototypePropertiesParametersOf(
+    const Operator* op);
 
 class CloneObjectParameters final {
  public:
@@ -821,6 +913,26 @@ std::ostream& operator<<(std::ostream&, GetIteratorParameters const&);
 
 const GetIteratorParameters& GetIteratorParametersOf(const Operator* op);
 
+class ForOfNextParameters final {
+ public:
+  explicit ForOfNextParameters(const FeedbackSource& call_feedback)
+      : call_feedback_(call_feedback) {}
+
+  FeedbackSource const& callFeedback() const { return call_feedback_; }
+
+ private:
+  FeedbackSource const call_feedback_;
+};
+
+bool operator==(ForOfNextParameters const&, ForOfNextParameters const&);
+bool operator!=(ForOfNextParameters const&, ForOfNextParameters const&);
+
+size_t hash_value(ForOfNextParameters const&);
+
+std::ostream& operator<<(std::ostream&, ForOfNextParameters const&);
+
+const ForOfNextParameters& ForOfNextParametersOf(const Operator* op);
+
 enum class ForInMode : uint8_t {
   kUseEnumCacheKeysAndIndices,
   kUseEnumCacheKeys,
@@ -849,25 +961,24 @@ std::ostream& operator<<(std::ostream&, ForInParameters const&);
 const ForInParameters& ForInParametersOf(const Operator* op);
 
 #if V8_ENABLE_WEBASSEMBLY
-class JSWasmCallParameters {
+class JSWasmCallParameters final {
  public:
-  explicit JSWasmCallParameters(const wasm::WasmModule* module,
-                                const wasm::FunctionSig* signature,
-                                FeedbackSource const& feedback)
-      : module_(module), signature_(signature), feedback_(feedback) {
-    DCHECK_NOT_NULL(module);
-    DCHECK_NOT_NULL(signature);
-  }
+  explicit JSWasmCallParameters(wasm::NativeModule* native_module,
+                                int function_index,
+                                SharedFunctionInfoRef shared_fct_info,
+                                FeedbackSource const& feedback);
 
-  const wasm::WasmModule* module() const { return module_; }
-  const wasm::FunctionSig* signature() const { return signature_; }
+  wasm::NativeModule* native_module() const { return native_module_; }
+  int function_index() const { return function_index_; }
+  SharedFunctionInfoRef shared_fct_info() const { return shared_fct_info_; }
   FeedbackSource const& feedback() const { return feedback_; }
   int input_count() const;
   int arity_without_implicit_args() const;
 
  private:
-  const wasm::WasmModule* const module_;
-  const wasm::FunctionSig* const signature_;
+  wasm::NativeModule* native_module_;
+  int function_index_;
+  SharedFunctionInfoRef shared_fct_info_;
   const FeedbackSource feedback_;
 };
 
@@ -884,16 +995,14 @@ int RegisterCountOf(Operator const* op) V8_WARN_UNUSED_RESULT;
 int GeneratorStoreValueCountOf(const Operator* op) V8_WARN_UNUSED_RESULT;
 int RestoreRegisterIndexOf(const Operator* op) V8_WARN_UNUSED_RESULT;
 
-ScopeInfoRef ScopeInfoOf(JSHeapBroker* broker,
-                         const Operator* op) V8_WARN_UNUSED_RESULT;
+ScopeInfoRef ScopeInfoOf(const Operator* op) V8_WARN_UNUSED_RESULT;
 
-bool operator==(ScopeInfoTinyRef const&, ScopeInfoTinyRef const&);
-bool operator!=(ScopeInfoTinyRef const&, ScopeInfoTinyRef const&);
+bool operator==(ScopeInfoRef, ScopeInfoRef);
+bool operator!=(ScopeInfoRef, ScopeInfoRef);
 
-size_t hash_value(ScopeInfoTinyRef const&);
+size_t hash_value(ScopeInfoRef);
 
-V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&,
-                                           ScopeInfoTinyRef const&);
+V8_EXPORT_PRIVATE std::ostream& operator<<(std::ostream&, ScopeInfoRef);
 
 // Interface for building JavaScript-level operators, e.g. directly from the
 // AST. Most operators have no parameters, thus can be globally shared for all
@@ -905,12 +1014,12 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   JSOperatorBuilder(const JSOperatorBuilder&) = delete;
   JSOperatorBuilder& operator=(const JSOperatorBuilder&) = delete;
 
-  const Operator* Equal(FeedbackSource const& feedback);
-  const Operator* StrictEqual(FeedbackSource const& feedback);
-  const Operator* LessThan(FeedbackSource const& feedback);
-  const Operator* GreaterThan(FeedbackSource const& feedback);
-  const Operator* LessThanOrEqual(FeedbackSource const& feedback);
-  const Operator* GreaterThanOrEqual(FeedbackSource const& feedback);
+  const Operator* Equal(const CompareOperationHint type_hint);
+  const Operator* StrictEqual(const CompareOperationHint type_hint);
+  const Operator* LessThan(const CompareOperationHint type_hint);
+  const Operator* GreaterThan(const CompareOperationHint type_hint);
+  const Operator* LessThanOrEqual(const CompareOperationHint type_hint);
+  const Operator* GreaterThanOrEqual(const CompareOperationHint type_hint);
 
   const Operator* BitwiseOr(FeedbackSource const& feedback);
   const Operator* BitwiseXor(FeedbackSource const& feedback);
@@ -925,56 +1034,73 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* Modulus(FeedbackSource const& feedback);
   const Operator* Exponentiate(FeedbackSource const& feedback);
 
-  const Operator* BitwiseNot(FeedbackSource const& feedback);
-  const Operator* Decrement(FeedbackSource const& feedback);
-  const Operator* Increment(FeedbackSource const& feedback);
-  const Operator* Negate(FeedbackSource const& feedback);
+  const Operator* Add(BinaryOperationHint hint);
+  const Operator* Subtract(BinaryOperationHint hint);
+  const Operator* Multiply(BinaryOperationHint hint);
+  const Operator* Divide(BinaryOperationHint hint);
+  const Operator* Modulus(BinaryOperationHint hint);
+  const Operator* Exponentiate(BinaryOperationHint hint);
+  const Operator* BitwiseOr(BinaryOperationHint hint);
+  const Operator* BitwiseXor(BinaryOperationHint hint);
+  const Operator* BitwiseAnd(BinaryOperationHint hint);
+  const Operator* ShiftLeft(BinaryOperationHint hint);
+  const Operator* ShiftRight(BinaryOperationHint hint);
+  const Operator* ShiftRightLogical(BinaryOperationHint hint);
+
+  const Operator* BitwiseNot(BinaryOperationHint hint);
+  const Operator* Decrement(BinaryOperationHint hint);
+  const Operator* Increment(BinaryOperationHint hint);
+  const Operator* Negate(BinaryOperationHint hint);
 
   const Operator* ToLength();
   const Operator* ToName();
   const Operator* ToNumber();
   const Operator* ToNumberConvertBigInt();
+  const Operator* ToBigInt();
+  const Operator* ToBigIntConvertNumber();
   const Operator* ToNumeric();
   const Operator* ToObject();
   const Operator* ToString();
 
   const Operator* Create();
   const Operator* CreateArguments(CreateArgumentsType type);
-  const Operator* CreateArray(size_t arity,
-                              base::Optional<AllocationSiteRef> site);
+  const Operator* CreateArray(size_t arity, OptionalAllocationSiteRef site,
+                              const FeedbackSource& feedback);
   const Operator* CreateArrayIterator(IterationKind);
   const Operator* CreateAsyncFunctionObject(int register_count);
   const Operator* CreateCollectionIterator(CollectionKind, IterationKind);
-  const Operator* CreateBoundFunction(size_t arity, const MapRef& map);
+  const Operator* CreateBoundFunction(size_t arity, MapRef map);
   const Operator* CreateClosure(
-      const SharedFunctionInfoRef& shared_info, const CodeTRef& code,
+      SharedFunctionInfoRef shared_info, CodeRef code,
       AllocationType allocation = AllocationType::kYoung);
   const Operator* CreateIterResultObject();
   const Operator* CreateStringIterator();
   const Operator* CreateKeyValueArray();
   const Operator* CreateObject();
+  const Operator* CreateStringWrapper();
   const Operator* CreatePromise();
   const Operator* CreateTypedArray();
-  const Operator* CreateLiteralArray(
-      const ArrayBoilerplateDescriptionRef& constant,
-      FeedbackSource const& feedback, int literal_flags,
-      int number_of_elements);
+  const Operator* CreateLiteralArray(ArrayBoilerplateDescriptionRef constant,
+                                     FeedbackSource const& feedback,
+                                     int literal_flags, int number_of_elements);
   const Operator* CreateEmptyLiteralArray(FeedbackSource const& feedback);
   const Operator* CreateArrayFromIterable();
   const Operator* CreateEmptyLiteralObject();
-  const Operator* CreateLiteralObject(
-      const ObjectBoilerplateDescriptionRef& constant,
-      FeedbackSource const& feedback, int literal_flags,
-      int number_of_properties);
+  const Operator* CreateLiteralObject(ObjectBoilerplateDescriptionRef constant,
+                                      FeedbackSource const& feedback,
+                                      int literal_flags,
+                                      int number_of_properties);
+  const Operator* SetPrototypeProperties(
+      ObjectBoilerplateDescriptionRef constant, FeedbackSource source);
   const Operator* CloneObject(FeedbackSource const& feedback,
                               int literal_flags);
-  const Operator* CreateLiteralRegExp(const StringRef& constant_pattern,
+  const Operator* CreateLiteralRegExp(StringRef constant_pattern,
                                       FeedbackSource const& feedback,
                                       int literal_flags);
 
-  const Operator* GetTemplateObject(
-      const TemplateObjectDescriptionRef& description,
-      const SharedFunctionInfoRef& shared, FeedbackSource const& feedback);
+  const Operator* GetTemplateObject(TemplateObjectDescriptionRef description,
+                                    SharedFunctionInfoRef shared,
+                                    FeedbackSource const& feedback);
 
   const Operator* CallForwardVarargs(size_t arity, uint32_t start_index);
   const Operator* Call(
@@ -995,12 +1121,17 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
       SpeculationMode speculation_mode = SpeculationMode::kDisallowSpeculation,
       CallFeedbackRelation feedback_relation = CallFeedbackRelation::kTarget);
   const Operator* CallRuntime(Runtime::FunctionId id);
-  const Operator* CallRuntime(Runtime::FunctionId id, size_t arity);
-  const Operator* CallRuntime(const Runtime::Function* function, size_t arity);
+  const Operator* CallRuntime(
+      Runtime::FunctionId id, size_t arity,
+      Operator::Properties properties = Operator::kNoProperties);
+  const Operator* CallRuntime(
+      const Runtime::Function* function, size_t arity,
+      Operator::Properties properties = Operator::kNoProperties);
 
 #if V8_ENABLE_WEBASSEMBLY
-  const Operator* CallWasm(const wasm::WasmModule* wasm_module,
-                           const wasm::FunctionSig* wasm_signature,
+  const Operator* CallWasm(wasm::NativeModule* native_module,
+                           int wasm_function_index,
+                           SharedFunctionInfoRef shared_fct_info,
                            FeedbackSource const& feedback);
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -1013,22 +1144,23 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* ConstructWithSpread(
       uint32_t arity, CallFrequency const& frequency = CallFrequency(),
       FeedbackSource const& feedback = FeedbackSource());
+  const Operator* ConstructForwardAllArgs(
+      CallFrequency const& frequency = CallFrequency(),
+      FeedbackSource const& feedback = FeedbackSource());
 
   const Operator* LoadProperty(FeedbackSource const& feedback);
-  const Operator* LoadNamed(const NameRef& name,
-                            FeedbackSource const& feedback);
-  const Operator* LoadNamedFromSuper(const NameRef& name,
+  const Operator* LoadNamed(NameRef name, FeedbackSource const& feedback);
+  const Operator* LoadNamedFromSuper(NameRef name,
                                      FeedbackSource const& feedback);
 
   const Operator* SetKeyedProperty(LanguageMode language_mode,
                                    FeedbackSource const& feedback);
   const Operator* DefineKeyedOwnProperty(LanguageMode language_mode,
                                          FeedbackSource const& feedback);
-  const Operator* SetNamedProperty(LanguageMode language_mode,
-                                   const NameRef& name,
+  const Operator* SetNamedProperty(LanguageMode language_mode, NameRef name,
                                    FeedbackSource const& feedback);
 
-  const Operator* DefineNamedOwnProperty(const NameRef& name,
+  const Operator* DefineNamedOwnProperty(bool in_literal, NameRef name,
                                          FeedbackSource const& feedback);
   const Operator* DefineKeyedOwnPropertyInLiteral(
       const FeedbackSource& feedback);
@@ -1042,16 +1174,18 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
 
   const Operator* FindNonDefaultConstructorOrConstruct();
 
-  const Operator* CreateGeneratorObject();
+  const Operator* CreateGeneratorObject(
+      IndirectHandle<BytecodeArray> bytecode_array);
 
-  const Operator* LoadGlobal(const NameRef& name,
-                             const FeedbackSource& feedback,
+  const Operator* LoadGlobal(NameRef name, const FeedbackSource& feedback,
                              TypeofMode typeof_mode = TypeofMode::kNotInside);
-  const Operator* StoreGlobal(LanguageMode language_mode, const NameRef& name,
+  const Operator* StoreGlobal(LanguageMode language_mode, NameRef name,
                               const FeedbackSource& feedback);
 
   const Operator* HasContextExtension(size_t depth);
-  const Operator* LoadContext(size_t depth, size_t index, bool immutable);
+  const Operator* LoadContextNoCell(size_t depth, size_t index, bool immutable);
+  const Operator* LoadContext(size_t depth, size_t index);
+  const Operator* StoreContextNoCell(size_t depth, size_t index);
   const Operator* StoreContext(size_t depth, size_t index);
 
   const Operator* LoadModule(int32_t cell_index);
@@ -1063,13 +1197,18 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* InstanceOf(const FeedbackSource& feedback);
   const Operator* OrdinaryHasInstance();
 
+  const Operator* AsyncFunctionAwait();
   const Operator* AsyncFunctionEnter();
   const Operator* AsyncFunctionReject();
   const Operator* AsyncFunctionResolve();
 
+  const Operator* DetachContextCell(int index);
+
   const Operator* ForInEnumerate();
   const Operator* ForInNext(ForInMode mode, const FeedbackSource& feedback);
   const Operator* ForInPrepare(ForInMode mode, const FeedbackSource& feedback);
+
+  const Operator* ForOfNext(FeedbackSource const& call_feedback);
 
   const Operator* LoadMessage();
   const Operator* StoreMessage();
@@ -1079,7 +1218,7 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
 
   // Used to implement Ignition's SwitchOnGeneratorState bytecode.
   const Operator* GeneratorRestoreContinuation();
-  const Operator* GeneratorRestoreContext();
+  const Operator* GeneratorRestoreContextNoCell();
 
   // Used to implement Ignition's ResumeGenerator bytecode.
   const Operator* GeneratorRestoreRegister(int index);
@@ -1094,11 +1233,11 @@ class V8_EXPORT_PRIVATE JSOperatorBuilder final
   const Operator* RejectPromise();
   const Operator* ResolvePromise();
 
-  const Operator* CreateFunctionContext(const ScopeInfoRef& scope_info,
-                                        int slot_count, ScopeType scope_type);
-  const Operator* CreateCatchContext(const ScopeInfoRef& scope_info);
-  const Operator* CreateWithContext(const ScopeInfoRef& scope_info);
-  const Operator* CreateBlockContext(const ScopeInfoRef& scpope_info);
+  const Operator* CreateFunctionContext(ScopeInfoRef scope_info, int slot_count,
+                                        ScopeType scope_type);
+  const Operator* CreateCatchContext(ScopeInfoRef scope_info);
+  const Operator* CreateWithContext(ScopeInfoRef scope_info);
+  const Operator* CreateBlockContext(ScopeInfoRef scpope_info);
 
   const Operator* ObjectIsArray();
   const Operator* ParseInt();
@@ -1152,23 +1291,6 @@ class JSNodeWrapperBase : public NodeWrapper {
         NodeProperties::GetValueInput(node(), TheIndex));  \
   }
 
-class JSUnaryOpNode final : public JSNodeWrapperBase {
- public:
-  explicit constexpr JSUnaryOpNode(Node* node) : JSNodeWrapperBase(node) {
-    DCHECK(JSOperator::IsUnaryWithFeedback(node->opcode()));
-  }
-
-#define INPUTS(V)            \
-  V(Value, value, 0, Object) \
-  V(FeedbackVector, feedback_vector, 1, HeapObject)
-  INPUTS(DEFINE_INPUT_ACCESSORS)
-#undef INPUTS
-};
-
-#define V(JSName, ...) using JSName##Node = JSUnaryOpNode;
-JS_UNOP_WITH_FEEDBACK(V)
-#undef V
-
 class JSBinaryOpNode final : public JSNodeWrapperBase {
  public:
   explicit constexpr JSBinaryOpNode(Node* node) : JSNodeWrapperBase(node) {
@@ -1187,8 +1309,30 @@ class JSBinaryOpNode final : public JSNodeWrapperBase {
 #undef INPUTS
 };
 
+class JSBinaryOpWithEmbeddedFeedbackNode final : JSNodeWrapperBase {
+ public:
+  explicit constexpr JSBinaryOpWithEmbeddedFeedbackNode(Node* node)
+      : JSNodeWrapperBase(node) {
+    DCHECK(JSOperator::IsBinaryWithEmbeddedFeedback(node->opcode()));
+  }
+
+  const EmbeddedHintParameter& Parameters() const {
+    return EmbeddedHintParameterOf(node()->op());
+  }
+
+#define INPUTS(V)          \
+  V(Left, left, 0, Object) \
+  V(Right, right, 1, Object)
+  INPUTS(DEFINE_INPUT_ACCESSORS)
+#undef INPUTS
+};
+
 #define V(JSName, ...) using JSName##Node = JSBinaryOpNode;
 JS_BINOP_WITH_FEEDBACK(V)
+#undef V
+
+#define V(JSName, ...) using JSName##Node = JSBinaryOpWithEmbeddedFeedbackNode;
+JS_COMPARE_BINOP_COMMON_LIST(V)
 #undef V
 
 class JSGetIteratorNode final : public JSNodeWrapperBase {
@@ -1204,6 +1348,25 @@ class JSGetIteratorNode final : public JSNodeWrapperBase {
 #define INPUTS(V)                  \
   V(Receiver, receiver, 0, Object) \
   V(FeedbackVector, feedback_vector, 1, HeapObject)
+  INPUTS(DEFINE_INPUT_ACCESSORS)
+#undef INPUTS
+};
+
+
+class JSForOfNextNode final : public JSNodeWrapperBase {
+ public:
+  explicit constexpr JSForOfNextNode(Node* node) : JSNodeWrapperBase(node) {
+    DCHECK_EQ(IrOpcode::kJSForOfNext, node->opcode());
+  }
+
+  const ForOfNextParameters& Parameters() const {
+    return ForOfNextParametersOf(node()->op());
+  }
+
+#define INPUTS(V)                       \
+  V(Iterator, iterator, 0, Object)      \
+  V(NextMethod, next_method, 1, Object) \
+  V(FeedbackVector, feedback_vector, 2, HeapObject)
   INPUTS(DEFINE_INPUT_ACCESSORS)
 #undef INPUTS
 };
@@ -1334,7 +1497,8 @@ class JSDefineKeyedOwnPropertyNode final : public JSNodeWrapperBase {
   V(Object, object, 0, Object) \
   V(Key, key, 1, Object)       \
   V(Value, value, 2, Object)   \
-  V(FeedbackVector, feedback_vector, 3, HeapObject)
+  V(Flags, flags, 3, Object)   \
+  V(FeedbackVector, feedback_vector, 4, HeapObject)
   INPUTS(DEFINE_INPUT_ACCESSORS)
 #undef INPUTS
 };
@@ -1402,9 +1566,8 @@ class JSCallOrConstructNode : public JSNodeWrapperBase {
     DCHECK_GT(ArgumentCount(), 0);
     return Argument(ArgumentCount() - 1);
   }
-  TNode<Object> ArgumentOr(int i, Node* default_value) const {
-    return i < ArgumentCount() ? Argument(i)
-                               : TNode<Object>::UncheckedCast(default_value);
+  TNode<Object> ArgumentOr(int i, TNode<Object> default_value) const {
+    return i < ArgumentCount() ? Argument(i) : default_value;
   }
   TNode<Object> ArgumentOrUndefined(int i, JSGraph* jsgraph) const {
     return ArgumentOr(i, js_node_wrapper_utils::UndefinedConstant(jsgraph));
@@ -1430,7 +1593,8 @@ class JSCallOrConstructNode : public JSNodeWrapperBase {
            node->opcode() == IrOpcode::kJSCallWithSpread ||
            node->opcode() == IrOpcode::kJSConstruct ||
            node->opcode() == IrOpcode::kJSConstructWithArrayLike ||
-           node->opcode() == IrOpcode::kJSConstructWithSpread
+           node->opcode() == IrOpcode::kJSConstructWithSpread ||
+           node->opcode() == IrOpcode::kJSConstructForwardAllArgs
 #if V8_ENABLE_WEBASSEMBLY
            || node->opcode() == IrOpcode::kJSWasmCall
 #endif     // V8_ENABLE_WEBASSEMBLY
@@ -1509,7 +1673,7 @@ class JSWasmCallNode final : public JSCallOrConstructNode {
     return Parameters().arity_without_implicit_args();
   }
 
-  static Type TypeForWasmReturnType(const wasm::ValueType& type);
+  static Type TypeForWasmReturnKind(wasm::ValueKind kind);
 };
 #endif  // V8_ENABLE_WEBASSEMBLY
 
@@ -1547,6 +1711,8 @@ using JSConstructWithSpreadNode =
     JSConstructNodeBase<IrOpcode::kJSConstructWithSpread>;
 using JSConstructWithArrayLikeNode =
     JSConstructNodeBase<IrOpcode::kJSConstructWithArrayLike>;
+using JSConstructForwardAllArgsNode =
+    JSConstructNodeBase<IrOpcode::kJSConstructForwardAllArgs>;
 
 class JSLoadNamedNode final : public JSNodeWrapperBase {
  public:

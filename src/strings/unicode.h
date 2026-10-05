@@ -10,7 +10,7 @@
 #include "src/base/bit-field.h"
 #include "src/base/vector.h"
 #include "src/common/globals.h"
-#include "src/third_party/utf8-decoder/utf8-decoder.h"
+#include "third_party/utf8-decoder/utf8-decoder.h"
 /**
  * \file
  * Definitions and convenience functions for working with unicode.
@@ -19,7 +19,6 @@
 namespace unibrow {
 
 using uchar = unsigned int;
-using byte = unsigned char;
 
 /**
  * The max length of the result of converting the case of a single
@@ -121,7 +120,7 @@ class Utf16 {
   // 4 bytes and the 3 bytes that were used to encode the lead surrogate
   // can be reclaimed.
   static const int kMaxExtraUtf8BytesForOneUtf16CodeUnit = 3;
-  // One UTF-16 surrogate is endoded (illegally) as 3 UTF-8 bytes.
+  // One UTF-16 surrogate is encoded (illegally) as 3 UTF-8 bytes.
   // The illegality stems from the surrogate not being part of a pair.
   static const int kUtf8BytesToCodeASurrogate = 3;
   static inline uint16_t LeadSurrogate(uint32_t char_code) {
@@ -132,33 +131,25 @@ class Utf16 {
   }
   static inline bool HasUnpairedSurrogate(const uint16_t* code_units,
                                           size_t length);
+
+  static void ReplaceUnpairedSurrogates(const uint16_t* source_code_units,
+                                        uint16_t* dest_code_units,
+                                        size_t length);
 };
 
 class Latin1 {
  public:
   static const uint16_t kMaxChar = 0xff;
-  // Convert the character to Latin-1 case equivalent if possible.
-  static inline uint16_t TryConvertToLatin1(uint16_t c) {
-    switch (c) {
-      // This are equivalent characters in unicode.
-      case 0x39c:
-      case 0x3bc:
-        return 0xb5;
-      // This is an uppercase of a Latin-1 character
-      // outside of Latin-1.
-      case 0x178:
-        return 0xff;
-    }
-    return c;
-  }
 };
 
 enum class Utf8Variant : uint8_t {
 #if V8_ENABLE_WEBASSEMBLY
-  kUtf8,  // UTF-8.  Decoding an invalid byte sequence or encoding a
-          // surrogate codepoint signals an error.
-  kWtf8,  // WTF-8: like UTF-8, but allows isolated (but not paired)
-          // surrogate codepoints to be encoded and decoded.
+  kUtf8,        // UTF-8.  Decoding an invalid byte sequence or encoding a
+                // surrogate codepoint signals an error.
+  kUtf8NoTrap,  // UTF-8.  Decoding an invalid byte sequence or encoding a
+                // surrogate codepoint returns null.
+  kWtf8,        // WTF-8: like UTF-8, but allows isolated (but not paired)
+                // surrogate codepoints to be encoded and decoded.
 #endif
   kLossyUtf8,  // Lossy UTF-8: Any byte sequence can be decoded without
                // error, replacing invalid UTF-8 with the replacement
@@ -171,11 +162,13 @@ class V8_EXPORT_PRIVATE Utf8 {
  public:
   using State = Utf8DfaDecoder::State;
 
-  static inline uchar Length(uchar chr, int previous);
+  static inline unsigned LengthOneByte(uint8_t chr);
+  static inline unsigned Length(uchar chr, int previous);
   static inline unsigned EncodeOneByte(char* out, uint8_t c);
   static inline unsigned Encode(char* out, uchar c, int previous,
                                 bool replace_invalid = false);
-  static uchar CalculateValue(const byte* str, size_t length, size_t* cursor);
+  static uchar CalculateValue(const uint8_t* str, size_t length,
+                              size_t* cursor);
 
   // The unicode replacement character, used to signal invalid unicode
   // sequences (e.g. an orphan surrogate) when converting to a UTF-8 encoding.
@@ -198,10 +191,11 @@ class V8_EXPORT_PRIVATE Utf8 {
   // The maximum size a single UTF-16 code unit known to be in the range
   // [0,0xff] may take up when encoded as UTF-8.
   static const unsigned kMax8BitCodeUnitSize = 2;
-  static inline uchar ValueOf(const byte* str, size_t length, size_t* cursor);
+  static inline uchar ValueOf(const uint8_t* str, size_t length,
+                              size_t* cursor);
 
   using Utf8IncrementalBuffer = uint32_t;
-  static inline uchar ValueOfIncremental(const byte** cursor, State* state,
+  static inline uchar ValueOfIncremental(const uint8_t** cursor, State* state,
                                          Utf8IncrementalBuffer* buffer);
   static uchar ValueOfIncrementalFinish(State* state);
 
@@ -216,8 +210,29 @@ class V8_EXPORT_PRIVATE Utf8 {
   // - valid utf-8 endcoding (e.g. no over-long encodings),
   // - absence of surrogates,
   // - valid code point range.
-  static bool ValidateEncoding(const byte* str, size_t length);
+  static bool ValidateEncoding(const uint8_t* str, size_t length);
+
+  template <typename Char>
+  static size_t WriteLeadingAscii(const Char* src, char* dest, size_t size);
+
+  // Encode the given characters as Utf8 into the provided output buffer.
+  struct EncodingResult {
+    size_t bytes_written;
+    size_t characters_processed;
+  };
+  template <typename Char>
+  static EncodingResult Encode(v8::base::Vector<const Char> string,
+                               char* buffer, size_t capacity, bool write_null,
+                               bool replace_invalid_utf8);
 };
+
+template <>
+size_t unibrow::Utf8::WriteLeadingAscii<uint8_t>(const uint8_t* src, char* dest,
+                                                 size_t size);
+
+template <>
+size_t unibrow::Utf8::WriteLeadingAscii<uint16_t>(const uint16_t* src,
+                                                  char* dest, size_t size);
 
 #if V8_ENABLE_WEBASSEMBLY
 class V8_EXPORT_PRIVATE Wtf8 {
@@ -232,9 +247,9 @@ class V8_EXPORT_PRIVATE Wtf8 {
   // In terms of the WTF-8 specification (https://simonsapin.github.io/wtf-8/),
   // this function checks for a valid "generalized UTF-8" sequence, with the
   // additional constraint that surrogate pairs are not allowed.
-  static bool ValidateEncoding(const byte* str, size_t length);
+  static bool ValidateEncoding(const uint8_t* str, size_t length);
 
-  static void ScanForSurrogates(const v8::base::Vector<const byte>& wtf8,
+  static void ScanForSurrogates(v8::base::Vector<const uint8_t> wtf8,
                                 std::vector<size_t>* surrogate_offsets);
 };
 #endif  // V8_ENABLE_WEBASSEMBLY
@@ -258,7 +273,7 @@ struct V8_EXPORT_PRIVATE WhiteSpace {
 #endif  // !V8_INTL_SUPPORT
 
 // LineTerminator:       'JS_Line_Terminator' in point.properties
-// ES#sec-line-terminators lists exactly 4 code points:
+// https://tc39.es/ecma262/#sec-line-terminators lists exactly 4 code points:
 // LF (U+000A), CR (U+000D), LS(U+2028), PS(U+2029)
 V8_INLINE bool IsLineTerminator(uchar c) {
   return c == 0x000A || c == 0x000D || c == 0x2028 || c == 0x2029;
@@ -268,7 +283,14 @@ V8_INLINE bool IsStringLiteralLineTerminator(uchar c) {
   return c == 0x000A || c == 0x000D;
 }
 
-#ifndef V8_INTL_SUPPORT
+#ifdef V8_INTL_SUPPORT
+struct V8_EXPORT_PRIVATE ToLowercase {
+  static const bool kIsToLower = true;
+};
+struct V8_EXPORT_PRIVATE ToUppercase {
+  static const bool kIsToLower = false;
+};
+#else
 struct V8_EXPORT_PRIVATE ToLowercase {
   static const int kMaxWidth = 3;
   static const bool kIsToLower = true;
@@ -294,5 +316,65 @@ struct V8_EXPORT_PRIVATE CanonicalizationRange {
 #endif  // !V8_INTL_SUPPORT
 
 }  // namespace unibrow
+
+namespace v8::internal {
+
+class UnicodeConfig {
+ public:
+  constexpr explicit UnicodeConfig(unibrow::Utf8Variant variant)
+      : UnicodeConfig(variant, SharedFlag{false}, SharedFlag{false}) {}
+
+  constexpr UnicodeConfig(unibrow::Utf8Variant variant,
+                          SharedFlag source_shared, SharedFlag dest_shared)
+      : flags_(VariantField::encode(variant) |
+               SourceSharedField::encode(source_shared.value()) |
+               DestSharedField::encode(dest_shared.value())) {}
+
+  constexpr UnicodeConfig(SharedFlag source_shared, SharedFlag dest_shared)
+      : flags_(SourceSharedField::encode(source_shared.value()) |
+               DestSharedField::encode(dest_shared.value())) {}
+
+  explicit constexpr UnicodeConfig(uint32_t raw_flags) : flags_(raw_flags) {}
+
+  // Predefined convenience constants.
+  static constexpr UnicodeConfig kLossyUtf8Unshared() {
+    return UnicodeConfig(unibrow::Utf8Variant::kLossyUtf8, SharedFlag{false},
+                         SharedFlag{false});
+  }
+  static constexpr UnicodeConfig kLossyUtf8Shared() {
+    return UnicodeConfig(unibrow::Utf8Variant::kLossyUtf8, SharedFlag{true},
+                         SharedFlag{true});
+  }
+  static constexpr UnicodeConfig kWtf16Unshared() {
+    return UnicodeConfig(SharedFlag{false}, SharedFlag{false});
+  }
+  static constexpr UnicodeConfig kWtf16Shared() {
+    return UnicodeConfig(SharedFlag{true}, SharedFlag{true});
+  }
+
+  constexpr unibrow::Utf8Variant variant() const {
+    return VariantField::decode(flags_);
+  }
+  constexpr bool source_shared() const {
+    return SourceSharedField::decode(flags_);
+  }
+  constexpr bool dest_shared() const { return DestSharedField::decode(flags_); }
+  constexpr int32_t raw_as_int() const { return static_cast<int32_t>(flags_); }
+
+ private:
+  // When used for WTF16 operations, this field is unused/ignored.
+  using VariantField = base::BitField<unibrow::Utf8Variant, 0, 3>;
+  // "source shared" indicates whether the source data/array can be concurrently
+  // modified and should hence be copied before multiple passes over it can
+  // rely on seeing the same bits.
+  using SourceSharedField = VariantField::Next<bool, 1>;
+  // "dest shared" controls whether the result of the operation should be
+  // allocated in shared space.
+  using DestSharedField = SourceSharedField::Next<bool, 1>;
+
+  uint32_t flags_ = 0;
+};
+
+}  // namespace v8::internal
 
 #endif  // V8_STRINGS_UNICODE_H_

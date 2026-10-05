@@ -28,20 +28,21 @@
 [
 ################################################################################
 [ALWAYS, {
-# TODO(ftang,jshin): The following test is flaky.
-  'overrides/caching': [PASS, FAIL],
+  # TODO(v8:13649): The following test is flaky and slow.
+  'overrides/caching': [SKIP],
 }],  # ALWAYS
 
 ################################################################################
 ['mode == debug', {
   # Skip slow tests in debug mode.
   'general/empty-handle': [SKIP],
+  'string-localecompare': [SKIP],
 }],  # mode == debug
 
 ##############################################################################
-['no_i18n', {
+['not i18n', {
   'string-localecompare': [SKIP],
-}],  # no_i18n
+}],  # not i18n
 
 ################################################################################
 ['gc_stress', {
@@ -81,6 +82,8 @@
   'regress-7770': [SKIP],
   # Bug(v8:11922)
   'localematcher/bestfit-supplemental-files': [SKIP],
+  # https://crbug.com/522092467
+  'regress-10960': [SKIP],
 }],  # 'system == android'
 
 ################################################################################
@@ -95,5 +98,27 @@
   # Re-enable this when maglev support all bytecodes.
   'string-localecompare': [SKIP],
 }],  # variant == maglev
+
+################################################################################
+['msan', {
+  # TODO(497880139): We need https://github.com/unicode-org/icu/commit/0cc965c49b9c8766a55b1bc3abd019f90edd9783 to resolve the failures.
+  'collator/de-sort': [FAIL],
+  'collator/check-co-option': [FAIL],
+  'default_locale': [FAIL],
+  'regress-9887': [FAIL],
+  'collator/options': [FAIL],
+  'collator/default-locale': [FAIL],
+}],  # msan
+
+['variant == google3', {
+  # Needs temporal:
+  'date-format/temporal-cjk-format': [SKIP],
+}],  # variant == google3
+
+################################################################################
+['not temporal', {
+  # Needs temporal:
+  'date-format/temporal-cjk-format': [SKIP],
+}],  # 'not temporal'
 
 ]

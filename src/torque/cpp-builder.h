@@ -100,11 +100,7 @@ class Function {
   }
 
   void SetFlag(FunctionFlag flag, bool value = true) {
-    if (value) {
-      flags_ = flags_ | flag;
-    } else {
-      flags_ = flags_.without(flag);
-    }
+    flags_.set(flag, value);
   }
   void SetFlags(base::Flags<FunctionFlag> flags, bool value = true) {
     if (value) {
@@ -160,6 +156,9 @@ class Function {
                              int indentation = 2) const;
   void PrintBeginDefinition(std::ostream& stream, int indentation = 0) const;
   void PrintEndDefinition(std::ostream& stream, int indentation = 0) const;
+  void SetKytheCallback(std::function<void(std::ostream&, size_t, size_t)> cb) {
+    kythe_cb_ = std::move(cb);
+  }
 
  protected:
   void PrintDeclarationHeader(std::ostream& stream, int indentation) const;
@@ -172,6 +171,7 @@ class Function {
   std::string return_type_;
   std::vector<Parameter> parameters_;
   base::Flags<FunctionFlag> flags_;
+  std::function<void(std::ostream&, size_t, size_t)> kythe_cb_;
 };
 
 DEFINE_OPERATORS_FOR_FLAGS(base::Flags<Function::FunctionFlag>)

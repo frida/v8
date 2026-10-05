@@ -18,12 +18,23 @@ Register JavaScriptFrame::context_register() { return rsi; }
 Register JavaScriptFrame::constant_pool_pointer_register() { UNREACHABLE(); }
 
 int UnoptimizedFrameConstants::RegisterStackSlotCount(int register_count) {
-  return register_count;
+  return V8_X64_16BYTE_STACK_ALIGNMENT_BOOL ? RoundUp(register_count, 2)
+                                            : register_count;
 }
 
 int BuiltinContinuationFrameConstants::PaddingSlotCount(int register_count) {
-  USE(register_count);
-  return 0;
+  return V8_X64_16BYTE_STACK_ALIGNMENT_BOOL
+             ? (RoundUp(kFixedSlotCount + register_count, 2) -
+                (kFixedSlotCount + register_count))
+             : 0;
+}
+
+// static
+intptr_t MaglevFrame::StackGuardFrameSize(int register_input_count) {
+  // Include one extra slot for the single argument into StackGuardWithGap +
+  // register input count.
+  return StandardFrameConstants::kFixedFrameSizeFromFp +
+         (1 + register_input_count) * kSystemPointerSize;
 }
 
 }  // namespace internal

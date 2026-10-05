@@ -1,4 +1,4 @@
-﻿// Copyright 2019 the V8 project authors. All rights reserved.
+// Copyright 2019 the V8 project authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -222,7 +222,7 @@ function bitwise_and(l, r) {
 // In debug builds v8 code is compiled into v8.dll, and in release builds
 // the code is compiled directly into the executable. If you are debugging some
 // other embedder, run !set_module and provide the module name to use.
-const known_exes = ["d8", "unittests", "mksnapshot", "chrome", "chromium"];
+const known_exes = ["d8", "v8_unittests", "mksnapshot", "chrome", "chromium"];
 let module_name_cache;
 function module_name(use_this_module) {
   if (use_this_module) {
@@ -687,7 +687,7 @@ function print_handles_data(print_handles = false) {
 
   let iso = cast(isolate_address, "v8::internal::Isolate");
   let hsd = iso.handle_scope_data_;
-  let hsimpl = iso.handle_scope_implementer_;
+  let hsimpl = iso.isolate_data_.handle_scope_implementer_;
 
   // depth level
   print(`Nested depth level: ${hsd.level}`);

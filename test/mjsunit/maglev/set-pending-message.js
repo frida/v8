@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 
 function foo() {
   try {
@@ -19,4 +19,4 @@ assertEquals(foo(), 1);
 assertEquals(foo(), 1)
 // Maglev will not compile this function now because it has handler table.
 // After exceptions are supported in Maglev, we could enable the assert below.
-// assertTrue(isMaglevved(foo));
+// assertMaglevved(foo);

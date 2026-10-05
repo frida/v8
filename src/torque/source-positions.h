@@ -7,7 +7,7 @@
 
 #include <iostream>
 
-#include "src/torque/contextual.h"
+#include "src/base/contextual.h"
 
 namespace v8 {
 namespace internal {
@@ -65,6 +65,10 @@ struct SourcePosition {
     return pos;
   }
 
+  bool IsValid() const {
+    return source.IsValid() && start.offset >= 0 && end.offset >= 0;
+  }
+
   bool CompareStartIgnoreColumn(const SourcePosition& pos) const {
     return start.line == pos.start.line && source == pos.source;
   }
@@ -86,7 +90,8 @@ struct SourcePosition {
 DECLARE_CONTEXTUAL_VARIABLE(CurrentSourceFile, SourceId);
 DECLARE_CONTEXTUAL_VARIABLE(CurrentSourcePosition, SourcePosition);
 
-class V8_EXPORT_PRIVATE SourceFileMap : public ContextualClass<SourceFileMap> {
+class V8_EXPORT_PRIVATE SourceFileMap
+    : public base::ContextualClass<SourceFileMap> {
  public:
   explicit SourceFileMap(std::string v8_root) : v8_root_(std::move(v8_root)) {}
   static const std::string& PathFromV8Root(SourceId file);
@@ -109,7 +114,7 @@ inline std::string PositionAsString(SourcePosition pos) {
 }
 
 inline std::ostream& operator<<(std::ostream& out, SourcePosition pos) {
-  return out << "https://source.chromium.org/chromium/chromium/src/+/main:v8/"
+  return out << "https://crsrc.org/c/v8/"
              << SourceFileMap::PathFromV8Root(pos.source)
              << "?l=" << (pos.start.line + 1)
              << "&c=" << (pos.start.column + 1);

@@ -5,10 +5,12 @@
 #ifndef V8_CODEGEN_SHARED_IA32_X64_MACRO_ASSEMBLER_SHARED_IA32_X64_H_
 #define V8_CODEGEN_SHARED_IA32_X64_MACRO_ASSEMBLER_SHARED_IA32_X64_H_
 
+#include <optional>
+
 #include "src/base/macros.h"
 #include "src/codegen/cpu-features.h"
 #include "src/codegen/external-reference.h"
-#include "src/codegen/turbo-assembler.h"
+#include "src/codegen/macro-assembler-base.h"
 
 #if V8_TARGET_ARCH_IA32
 #include "src/codegen/ia32/register-ia32.h"
@@ -17,6 +19,70 @@
 #else
 #error Unsupported target architecture.
 #endif
+
+// Helper macro to define qfma macro-assembler. This takes care of every
+// possible case of register aliasing to minimize the number of instructions.
+// Note: For determinism across compilers, we need all cases *for the same CPU
+// feature set* to produce the same result in the presence of NaNs.
+#define QFMA(ps_or_pd)                                      \
+  if (CpuFeatures::IsSupported(FMA3)) {                     \
+    CpuFeatureScope fma3_scope(this, FMA3);                 \
+    if (dst == src1) {                                      \
+      vfmadd132##ps_or_pd(dst, src3, src2);                 \
+    } else if (dst == src2) {                               \
+      vfmadd213##ps_or_pd(dst, src1, src3);                 \
+    } else if (dst == src3) {                               \
+      vfmadd231##ps_or_pd(dst, src1, src2);                 \
+    } else {                                                \
+      CpuFeatureScope avx_scope(this, AVX);                 \
+      vmovups(dst, src2);                                   \
+      vfmadd213##ps_or_pd(dst, src1, src3);                 \
+    }                                                       \
+  } else if (CpuFeatures::IsSupported(AVX)) {               \
+    CpuFeatureScope avx_scope(this, AVX);                   \
+    vmul##ps_or_pd(tmp, src1, src2);                        \
+    vadd##ps_or_pd(dst, tmp, src3);                         \
+  } else {                                                  \
+    /* Legacy hardware; performance doesn't matter much. */ \
+    movaps(tmp, src1);                                      \
+    mul##ps_or_pd(tmp, src2);                               \
+    if (dst != src3) {                                      \
+      movaps(dst, src3);                                    \
+    }                                                       \
+    add##ps_or_pd(dst, tmp);                                \
+  }
+
+// Helper macro to define qfms macro-assembler. This takes care of every
+// possible case of register aliasing to minimize the number of instructions.
+// Note: For determinism across compilers, we need all cases *for the same CPU
+// feature set* to produce the same result in the presence of NaNs.
+#define QFMS(ps_or_pd)                                      \
+  if (CpuFeatures::IsSupported(FMA3)) {                     \
+    CpuFeatureScope fma3_scope(this, FMA3);                 \
+    if (dst == src1) {                                      \
+      vfnmadd132##ps_or_pd(dst, src3, src2);                \
+    } else if (dst == src2) {                               \
+      vfnmadd213##ps_or_pd(dst, src1, src3);                \
+    } else if (dst == src3) {                               \
+      vfnmadd231##ps_or_pd(dst, src1, src2);                \
+    } else {                                                \
+      CpuFeatureScope avx_scope(this, AVX);                 \
+      vmovups(dst, src2);                                   \
+      vfnmadd213##ps_or_pd(dst, src1, src3);                \
+    }                                                       \
+  } else if (CpuFeatures::IsSupported(AVX)) {               \
+    CpuFeatureScope avx_scope(this, AVX);                   \
+    vmul##ps_or_pd(tmp, src1, src2);                        \
+    vsub##ps_or_pd(dst, src3, tmp);                         \
+  } else {                                                  \
+    /* Legacy hardware; performance doesn't matter much. */ \
+    movaps(tmp, src1);                                      \
+    mul##ps_or_pd(tmp, src2);                               \
+    if (dst != src3) {                                      \
+      movaps(dst, src3);                                    \
+    }                                                       \
+    sub##ps_or_pd(dst, tmp);                                \
+  }
 
 namespace v8 {
 namespace internal {
@@ -30,15 +96,15 @@ constexpr int kStackSavedSavedFPSize = 2 * kDoubleSize;
 constexpr int kStackSavedSavedFPSize = kDoubleSize;
 #endif  // V8_ENABLE_WEBASSEMBLY
 
-// Base class for SharedTurboAssemblerBase. This class contains macro-assembler
+// Base class for SharedMacroAssembler. This class contains macro-assembler
 // functions that can be shared across ia32 and x64 without any template
 // machinery, i.e. does not require the CRTP pattern that
-// SharedTurboAssemblerBase exposes. This allows us to keep the bulk of
+// SharedMacroAssembler exposes. This allows us to keep the bulk of
 // definition inside a separate source file, rather than putting everything
 // inside this header.
-class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
+class V8_EXPORT_PRIVATE SharedMacroAssemblerBase : public MacroAssemblerBase {
  public:
-  using TurboAssemblerBase::TurboAssemblerBase;
+  using MacroAssemblerBase::MacroAssemblerBase;
 
   void Move(Register dst, uint32_t src);
   // Move if registers are not identical.
@@ -50,6 +116,10 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void Movhps(XMMRegister dst, XMMRegister src1, Operand src2);
   void Movlps(XMMRegister dst, XMMRegister src1, Operand src2);
 
+  void Blendvps(XMMRegister dst, XMMRegister src1, XMMRegister src2,
+                XMMRegister mask);
+  void Blendvpd(XMMRegister dst, XMMRegister src1, XMMRegister src2,
+                XMMRegister mask);
   void Pblendvb(XMMRegister dst, XMMRegister src1, XMMRegister src2,
                 XMMRegister mask);
 
@@ -93,12 +163,15 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void Shufps(XMMRegister dst, XMMRegister src1, XMMRegister src2,
               uint8_t imm8);
 
+  void Pshufd(XMMRegister dst, XMMRegister src, uint8_t shuffle);
+  void Pshufd(XMMRegister dst, Operand src, uint8_t shuffle);
+
   // Helper struct to implement functions that check for AVX support and
   // dispatch to the appropriate AVX/SSE instruction.
   template <typename Dst, typename Arg, typename... Args>
   struct AvxHelper {
     Assembler* assm;
-    base::Optional<CpuFeature> feature = base::nullopt;
+    std::optional<CpuFeature> feature = std::nullopt;
     // Call a method where the AVX version expects the dst argument to be
     // duplicated.
     // E.g. Andps(x, y) -> vandps(x, x, y)
@@ -185,36 +258,36 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
             dst, arg, args...);                                        \
   }
 
-#define AVX_OP_SSE3(macro_name, name)                                    \
+#define AVX_OP_SSE3(macro_name, name)                                   \
+  template <typename Dst, typename Arg, typename... Args>               \
+  void macro_name(Dst dst, Arg arg, Args... args) {                     \
+    AvxHelper<Dst, Arg, Args...>{this, std::optional<CpuFeature>(SSE3)} \
+        .template emit<&Assembler::v##name, &Assembler::name>(dst, arg, \
+                                                              args...); \
+  }
+
+#define AVX_OP_SSSE3(macro_name, name)                                   \
   template <typename Dst, typename Arg, typename... Args>                \
   void macro_name(Dst dst, Arg arg, Args... args) {                      \
-    AvxHelper<Dst, Arg, Args...>{this, base::Optional<CpuFeature>(SSE3)} \
+    AvxHelper<Dst, Arg, Args...>{this, std::optional<CpuFeature>(SSSE3)} \
         .template emit<&Assembler::v##name, &Assembler::name>(dst, arg,  \
                                                               args...);  \
   }
 
-#define AVX_OP_SSSE3(macro_name, name)                                    \
+#define AVX_OP_SSE4_1(macro_name, name)                                   \
   template <typename Dst, typename Arg, typename... Args>                 \
   void macro_name(Dst dst, Arg arg, Args... args) {                       \
-    AvxHelper<Dst, Arg, Args...>{this, base::Optional<CpuFeature>(SSSE3)} \
+    AvxHelper<Dst, Arg, Args...>{this, std::optional<CpuFeature>(SSE4_1)} \
         .template emit<&Assembler::v##name, &Assembler::name>(dst, arg,   \
                                                               args...);   \
   }
 
-#define AVX_OP_SSE4_1(macro_name, name)                                    \
-  template <typename Dst, typename Arg, typename... Args>                  \
-  void macro_name(Dst dst, Arg arg, Args... args) {                        \
-    AvxHelper<Dst, Arg, Args...>{this, base::Optional<CpuFeature>(SSE4_1)} \
-        .template emit<&Assembler::v##name, &Assembler::name>(dst, arg,    \
-                                                              args...);    \
-  }
-
-#define AVX_OP_SSE4_2(macro_name, name)                                    \
-  template <typename Dst, typename Arg, typename... Args>                  \
-  void macro_name(Dst dst, Arg arg, Args... args) {                        \
-    AvxHelper<Dst, Arg, Args...>{this, base::Optional<CpuFeature>(SSE4_2)} \
-        .template emit<&Assembler::v##name, &Assembler::name>(dst, arg,    \
-                                                              args...);    \
+#define AVX_OP_SSE4_2(macro_name, name)                                   \
+  template <typename Dst, typename Arg, typename... Args>                 \
+  void macro_name(Dst dst, Arg arg, Args... args) {                       \
+    AvxHelper<Dst, Arg, Args...>{this, std::optional<CpuFeature>(SSE4_2)} \
+        .template emit<&Assembler::v##name, &Assembler::name>(dst, arg,   \
+                                                              args...);   \
   }
 
   // Keep this list sorted by required extension, then instruction name.
@@ -298,7 +371,6 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   AVX_OP(Pmovmskb, pmovmskb)
   AVX_OP(Pmullw, pmullw)
   AVX_OP(Pmuludq, pmuludq)
-  AVX_OP(Pshufd, pshufd)
   AVX_OP(Pshufhw, pshufhw)
   AVX_OP(Pshuflw, pshuflw)
   AVX_OP(Pslld, pslld)
@@ -443,6 +515,9 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void I16x8Q15MulRSatS(XMMRegister dst, XMMRegister src1, XMMRegister src2,
                         XMMRegister scratch);
   void I16x8DotI8x16I7x16S(XMMRegister dst, XMMRegister src1, XMMRegister src2);
+  void I32x4DotI8x16I7x16AddS(XMMRegister dst, XMMRegister src1,
+                              XMMRegister src2, XMMRegister src3,
+                              XMMRegister scratch, XMMRegister splat_reg);
   void I32x4ExtAddPairwiseI16x8U(XMMRegister dst, XMMRegister src,
                                  XMMRegister tmp);
   // Requires that dst == src1 if AVX is not supported.
@@ -452,27 +527,27 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void I32x4UConvertI16x8High(XMMRegister dst, XMMRegister src,
                               XMMRegister scratch);
   void I64x2Neg(XMMRegister dst, XMMRegister src, XMMRegister scratch);
-  void I64x2Abs(XMMRegister dst, XMMRegister src, XMMRegister scratch);
+  void I64x2AbsPreAvx10(XMMRegister dst, XMMRegister src, XMMRegister scratch);
   void I64x2GtS(XMMRegister dst, XMMRegister src0, XMMRegister src1,
                 XMMRegister scratch);
   void I64x2GeS(XMMRegister dst, XMMRegister src0, XMMRegister src1,
                 XMMRegister scratch);
-  void I64x2ShrS(XMMRegister dst, XMMRegister src, uint8_t shift,
-                 XMMRegister xmm_tmp);
-  void I64x2ShrS(XMMRegister dst, XMMRegister src, Register shift,
-                 XMMRegister xmm_tmp, XMMRegister xmm_shift,
-                 Register tmp_shift);
-  void I64x2Mul(XMMRegister dst, XMMRegister lhs, XMMRegister rhs,
-                XMMRegister tmp1, XMMRegister tmp2);
+  void I64x2ShrSPreAvx10(XMMRegister dst, XMMRegister src, uint8_t shift,
+                         XMMRegister xmm_tmp);
+  void I64x2ShrSPreAvx10(XMMRegister dst, XMMRegister src, Register shift,
+                         XMMRegister xmm_tmp, XMMRegister xmm_shift,
+                         Register tmp_shift);
+  void I64x2MulPreAvx10(XMMRegister dst, XMMRegister lhs, XMMRegister rhs,
+                        XMMRegister tmp1, XMMRegister tmp2);
   void I64x2ExtMul(XMMRegister dst, XMMRegister src1, XMMRegister src2,
                    XMMRegister scratch, bool low, bool is_signed);
   void I64x2SConvertI32x4High(XMMRegister dst, XMMRegister src);
   void I64x2UConvertI32x4High(XMMRegister dst, XMMRegister src,
                               XMMRegister scratch);
-  void S128Not(XMMRegister dst, XMMRegister src, XMMRegister scratch);
+  void S128NotPreAvx10(XMMRegister dst, XMMRegister src, XMMRegister scratch);
   // Requires dst == mask when AVX is not supported.
-  void S128Select(XMMRegister dst, XMMRegister mask, XMMRegister src1,
-                  XMMRegister src2, XMMRegister scratch);
+  void S128SelectPreAvx10(XMMRegister dst, XMMRegister mask, XMMRegister src1,
+                          XMMRegister src2, XMMRegister scratch);
   void S128Load8Splat(XMMRegister dst, Operand src, XMMRegister scratch);
   void S128Load16Splat(XMMRegister dst, Operand src, XMMRegister scratch);
   void S128Load32Splat(XMMRegister dst, Operand src);
@@ -497,7 +572,7 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void PinsrHelper(Assembler* assm, AvxFn<Op> avx, NoAvxFn<Op> noavx,
                    XMMRegister dst, XMMRegister src1, Op src2, uint8_t imm8,
                    uint32_t* load_pc_offset = nullptr,
-                   base::Optional<CpuFeature> feature = base::nullopt) {
+                   std::optional<CpuFeature> feature = std::nullopt) {
     if (CpuFeatures::IsSupported(AVX)) {
       CpuFeatureScope scope(assm, AVX);
       if (load_pc_offset) *load_pc_offset = assm->pc_offset();
@@ -523,42 +598,52 @@ class V8_EXPORT_PRIVATE SharedTurboAssembler : public TurboAssemblerBase {
   void I16x8SplatPreAvx2(XMMRegister dst, Op src);
 };
 
-// Common base class template shared by ia32 and x64 TurboAssembler. This uses
+// Common base class template shared by ia32 and x64 MacroAssembler. This uses
 // the Curiously Recurring Template Pattern (CRTP), where Impl is the actual
-// class (subclass of SharedTurboAssemblerBase instantiated with the actual
+// class (subclass of SharedMacroAssembler instantiated with the actual
 // class). This allows static polymorphism, where member functions can be move
-// into SharedTurboAssembler, and we can also call into member functions
-// defined in ia32 or x64 specific TurboAssembler from within this template
+// into SharedMacroAssemblerBase, and we can also call into member functions
+// defined in ia32 or x64 specific MacroAssembler from within this template
 // class, via Impl.
 //
 // Note: all member functions must be defined in this header file so that the
 // compiler can generate code for the function definitions. See
 // https://isocpp.org/wiki/faq/templates#templates-defn-vs-decl for rationale.
-// If a function does not need polymorphism, move it into SharedTurboAssembler,
-// and define it outside of this header.
+// If a function does not need polymorphism, move it into
+// SharedMacroAssemblerBase, and define it outside of this header.
 template <typename Impl>
-class V8_EXPORT_PRIVATE SharedTurboAssemblerBase : public SharedTurboAssembler {
-  using SharedTurboAssembler::SharedTurboAssembler;
+class V8_EXPORT_PRIVATE SharedMacroAssembler : public SharedMacroAssemblerBase {
+  using SharedMacroAssemblerBase::SharedMacroAssemblerBase;
 
  public:
   void Abspd(XMMRegister dst, XMMRegister src, Register tmp) {
-    FloatUnop(dst, src, tmp, &SharedTurboAssembler::Andps,
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Andps,
               ExternalReference::address_of_double_abs_constant());
   }
 
   void Absps(XMMRegister dst, XMMRegister src, Register tmp) {
-    FloatUnop(dst, src, tmp, &SharedTurboAssembler::Andps,
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Andps,
               ExternalReference::address_of_float_abs_constant());
   }
 
+  void Absph(XMMRegister dst, XMMRegister src, Register tmp) {
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Andps,
+              ExternalReference::address_of_fp16_abs_constant());
+  }
+
   void Negpd(XMMRegister dst, XMMRegister src, Register tmp) {
-    FloatUnop(dst, src, tmp, &SharedTurboAssembler::Xorps,
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Xorps,
               ExternalReference::address_of_double_neg_constant());
   }
 
   void Negps(XMMRegister dst, XMMRegister src, Register tmp) {
-    FloatUnop(dst, src, tmp, &SharedTurboAssembler::Xorps,
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Xorps,
               ExternalReference::address_of_float_neg_constant());
+  }
+
+  void Negph(XMMRegister dst, XMMRegister src, Register tmp) {
+    FloatUnop(dst, src, tmp, &SharedMacroAssemblerBase::Xorps,
+              ExternalReference::address_of_fp16_neg_constant());
   }
 #undef FLOAT_UNOP
 
@@ -586,7 +671,7 @@ class V8_EXPORT_PRIVATE SharedTurboAssemblerBase : public SharedTurboAssembler {
     if (CpuFeatures::IsSupported(SSE4_1)) {
       PinsrHelper(this, &Assembler::vpinsrd, &Assembler::pinsrd, dst, src1,
                   src2, imm8, load_pc_offset,
-                  base::Optional<CpuFeature>(SSE4_1));
+                  std::optional<CpuFeature>(SSE4_1));
     } else {
       if (dst != src1) {
         movaps(dst, src1);
@@ -740,66 +825,40 @@ class V8_EXPORT_PRIVATE SharedTurboAssemblerBase : public SharedTurboAssembler {
     }
   }
 
-  void I32x4TruncF64x2UZero(XMMRegister dst, XMMRegister src, Register tmp,
-                            XMMRegister scratch) {
-    // TODO(zhin): call this from I32x4TruncSatF64x2UZero.
-    ASM_CODE_COMMENT(this);
-    if (dst != src && !CpuFeatures::IsSupported(AVX)) {
-      movaps(dst, src);
-      src = dst;
-    }
-    // Same as I32x4TruncSatF64x2UZero but without the saturation.
-    Roundpd(dst, src, kRoundToZero);
-    // Add to special double where significant bits == uint32.
-    Addpd(dst, dst,
-          ExternalReferenceAsOperand(
-              ExternalReference::address_of_wasm_double_2_power_52(), tmp));
-    // Extract low 32 bits of each double's significand, zero top lanes.
-    // dst = [dst[0], dst[2], 0, 0]
-    Shufps(dst, dst, scratch, 0x88);
-  }
-
-  void I32x4TruncF32x4U(XMMRegister dst, XMMRegister src, Register scratch,
-                        XMMRegister tmp) {
-    ASM_CODE_COMMENT(this);
-    Operand int32_overflow_op = ExternalReferenceAsOperand(
-        ExternalReference::address_of_wasm_int32_overflow_as_float(), scratch);
+  void I32x4TruncF32x4U(XMMRegister dst, XMMRegister src, XMMRegister scratch1,
+                        XMMRegister scratch2) {
+    // NAN->0, negative->0.
+    Pxor(scratch1, scratch1);
     if (CpuFeatures::IsSupported(AVX)) {
-      CpuFeatureScope avx_scope(this, AVX);
-      vcmpltps(tmp, src, int32_overflow_op);
+      CpuFeatureScope scope(this, AVX);
+      vmaxps(dst, src, scratch1);
     } else {
-      movaps(tmp, src);
-      cmpltps(tmp, int32_overflow_op);
+      if (dst != src) movaps(dst, src);
+      maxps(dst, scratch1);
     }
-    // In tmp, lanes < INT32_MAX are left alone, other lanes are zeroed.
-    Pand(tmp, src);
-    // tmp = src with all the valid conversions
-    if (dst != src) {
-      Movaps(dst, src);
+    // scratch: float representation of max_signed.
+    Pcmpeqd(scratch1, scratch1);
+    Psrld(scratch1, uint8_t{1});   // 0x7fffffff
+    Cvtdq2ps(scratch1, scratch1);  // 0x4f000000
+    // scratch2: convert (src-max_signed).
+    // Set positive overflow lanes to 0x7FFFFFFF.
+    // Set negative lanes to 0.
+    if (CpuFeatures::IsSupported(AVX)) {
+      CpuFeatureScope scope(this, AVX);
+      vsubps(scratch2, dst, scratch1);
+    } else {
+      movaps(scratch2, dst);
+      subps(scratch2, scratch1);
     }
-    // In dst, lanes < INT32_MAX are zeroed, other lanes left alone.
-    Pxor(dst, tmp);
-    // tmp contains only lanes which can be converted correctly (<INT32_MAX)
-    Cvttps2dq(tmp, tmp);
-    // Bit-trick follows:
-    // All integers from INT32_MAX to UINT32_MAX that are representable as
-    // floats lie between [0x4f00'0000,0x4f80'0000).
-    // The bit representation of the integers is actually shifted right by 8.
-    // For example given 2147483904.0f (which fits in UINT32_MAX):
-    //
-    // 01001111 000000000 000000000 000000001 (float 0x4f00'0001)
-    //          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-    //          these are exactly the top 24 bits of the int representation
-    //          but needs the top bit to be flipped
-    // 10000000 000000000 000000001 000000000 (int 0x8000'0100)
-    //
-    // So what needs to be done is to flip bit 23, which is the lowest bit of
-    // the exponent, which means multiply by 2 (or addps to itself).
-    Addps(dst, dst, dst);
-    // Then shift to get the bit representation of the int.
-    Pslld(dst, byte{8});
-    // Merge the converted lanes and bit shifted lanes.
-    Paddd(dst, tmp);
+    Cmpleps(scratch1, scratch2);
+    Cvttps2dq(scratch2, scratch2);
+    Pxor(scratch2, scratch1);
+    Pxor(scratch1, scratch1);
+    Pmaxsd(scratch2, scratch1);
+    // Convert to int. Overflow lanes above max_signed will be 0x80000000.
+    Cvttps2dq(dst, dst);
+    // Add (src-max_signed) for overflow lanes.
+    Paddd(dst, scratch2);
   }
 
   void I32x4ExtAddPairwiseI16x8S(XMMRegister dst, XMMRegister src,
@@ -890,8 +949,8 @@ class V8_EXPORT_PRIVATE SharedTurboAssemblerBase : public SharedTurboAssembler {
     }
   }
 
-  void I8x16Popcnt(XMMRegister dst, XMMRegister src, XMMRegister tmp1,
-                   XMMRegister tmp2, Register scratch) {
+  void I8x16PopcntPreAvx10(XMMRegister dst, XMMRegister src, XMMRegister tmp1,
+                           XMMRegister tmp2, Register scratch) {
     ASM_CODE_COMMENT(this);
     DCHECK_NE(dst, tmp1);
     DCHECK_NE(src, tmp1);
@@ -968,15 +1027,16 @@ class V8_EXPORT_PRIVATE SharedTurboAssemblerBase : public SharedTurboAssembler {
     return impl()->ExternalReferenceAsOperand(reference, scratch);
   }
 
-  using FloatInstruction = void (SharedTurboAssembler::*)(XMMRegister,
-                                                          XMMRegister, Operand);
+  using FloatInstruction = void (SharedMacroAssemblerBase::*)(XMMRegister,
+                                                              XMMRegister,
+                                                              Operand);
   void FloatUnop(XMMRegister dst, XMMRegister src, Register tmp,
                  FloatInstruction op, ExternalReference ext) {
     if (!CpuFeatures::IsSupported(AVX) && (dst != src)) {
       movaps(dst, src);
       src = dst;
     }
-    SharedTurboAssembler* assm = this;
+    SharedMacroAssemblerBase* assm = this;
     (assm->*op)(dst, src, ExternalReferenceAsOperand(ext, tmp));
   }
 };

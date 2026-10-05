@@ -122,6 +122,13 @@ var assertNotNull;
 // compared to the message of the thrown exception.
 var assertThrows;
 
+// Asserts that the found value is an exception of specific type with a specific
+// error message. The optional second argument is an exception constructor that
+// the thrown exception is checked against with "instanceof". The optional third
+// argument is a message type string or RegExp object that is compared to the
+// message of the thrown exception.
+var assertException;
+
 // Assert that the passed function throws an exception.
 // The exception is checked against the second argument using assertEquals.
 var assertThrowsEquals;
@@ -155,6 +162,8 @@ var assertUnreachable;
 // Only works with --allow-natives-syntax.
 var assertOptimized;
 var assertUnoptimized;
+var assertMaglevved;
+var assertNotMaglevved;
 
 // Assert that a string contains another expected substring.
 var assertContains;
@@ -174,29 +183,32 @@ var assertMatches;
 var assertPromiseResult;
 
 var promiseTestChain;
-var promiseTestCount = 0;
 
 // These bits must be in sync with bits defined in Runtime_GetOptimizationStatus
 var V8OptimizationStatus = {
   kIsFunction: 1 << 0,
   kNeverOptimize: 1 << 1,
-  kAlwaysOptimize: 1 << 2,
-  kMaybeDeopted: 1 << 3,
-  kOptimized: 1 << 4,
-  kMaglevved: 1 << 5,
-  kTurboFanned: 1 << 6,
-  kInterpreted: 1 << 7,
-  kMarkedForOptimization: 1 << 8,
-  kMarkedForConcurrentOptimization: 1 << 9,
-  kOptimizingConcurrently: 1 << 10,
-  kIsExecuting: 1 << 11,
-  kTopmostFrameIsTurboFanned: 1 << 12,
-  kLiteMode: 1 << 13,
-  kMarkedForDeoptimization: 1 << 14,
-  kBaseline: 1 << 15,
-  kTopmostFrameIsInterpreted: 1 << 16,
-  kTopmostFrameIsBaseline: 1 << 17,
-  kIsLazy: 1 << 18,
+  kMaybeDeopted: 1 << 2,
+  kOptimized: 1 << 3,
+  kMaglevved: 1 << 4,
+  kTurboFanned: 1 << 5,
+  kInterpreted: 1 << 6,
+  kMarkedForOptimization: 1 << 7,
+  kMarkedForConcurrentOptimization: 1 << 8,
+  kOptimizingConcurrently: 1 << 9,
+  kIsExecuting: 1 << 10,
+  kTopmostFrameIsTurboFanned: 1 << 11,
+  kLiteMode: 1 << 12,
+  kMarkedForDeoptimization: 1 << 13,
+  kBaseline: 1 << 14,
+  kTopmostFrameIsInterpreted: 1 << 15,
+  kTopmostFrameIsBaseline: 1 << 16,
+  kIsLazy: 1 << 17,
+  kTopmostFrameIsMaglev: 1 << 18,
+  kOptimizeOnNextCallOptimizesToMaglev: 1 << 19,
+  kOptimizeMaglevOptimizesToTurbofan: 1 << 20,
+  kMarkedForMaglevOptimization: 1 << 21,
+  kMarkedForConcurrentMaglevOptimization: 1 << 22,
 };
 
 // Returns true if --lite-mode is on and we can't ever turn on optimization.
@@ -204,9 +216,6 @@ var isNeverOptimizeLiteMode;
 
 // Returns true if --no-turbofan mode is on.
 var isNeverOptimize;
-
-// Returns true if --always-turbofan mode is on.
-var isAlwaysOptimize;
 
 // Returns true if given function in lazily compiled.
 var isLazy;
@@ -223,11 +232,36 @@ var isUnoptimized;
 // Returns true if given function is optimized.
 var isOptimized;
 
+// Returns true if given function will be compiled by Maglev.
+var willBeMaglevved;
+
+// Returns true if given function will be compiled by TurboFan.
+var willBeTurbofanned;
+
 // Returns true if given function is compiled by Maglev.
 var isMaglevved;
 
 // Returns true if given function is compiled by TurboFan.
 var isTurboFanned;
+
+// Returns true if the top frame in interpreted according to the status
+// passed as a parameter.
+var topFrameIsInterpreted;
+
+// Returns true if the top frame in baseline according to the status
+// passed as a parameter.
+var topFrameIsBaseline;
+
+// Returns true if the top frame in compiled by Maglev according to the
+// status passed as a parameter.
+var topFrameIsMaglevved;
+
+// Returns true if the top frame in compiled by Turbofan according to the
+// status passed as a parameter.
+var topFrameIsTurboFanned;
+
+// Monkey-patchable all-purpose failure handler.
+var fail;
 
 // Monkey-patchable all-purpose failure handler.
 var failWithMessage;
@@ -324,14 +358,17 @@ var prettyPrinted;
                     });
                 var joined = ArrayPrototypeJoin.call(mapped, ",");
                 return "[" + joined + "]";
-              case "Uint8Array":
               case "Int8Array":
+              case "Uint8Array":
+              case "Uint8ClampedArray":
               case "Int16Array":
               case "Uint16Array":
-              case "Uint32Array":
               case "Int32Array":
+              case "Uint32Array":
               case "Float32Array":
               case "Float64Array":
+              case "BigInt64Array":
+              case "BigUint64Array":
                 var joined = ArrayPrototypeJoin.call(value, ",");
                 return objectClass + "([" + joined + "])";
               case "Object":
@@ -379,7 +416,7 @@ var prettyPrinted;
     return message;
   }
 
-  function fail(expectedText, found, name_opt) {
+  fail = function fail(expectedText, found, name_opt) {
     throw new MjsUnitAssertionError(
         ()=>formatFailureText(expectedText, found, name_opt));
   }
@@ -405,7 +442,6 @@ var prettyPrinted;
     return true;
   }
 
-
   deepEquals = function deepEquals(a, b) {
     if (a === b) {
       // Check for -0.
@@ -413,32 +449,53 @@ var prettyPrinted;
       return true;
     }
     if (typeof a !== typeof b) return false;
-    if (typeof a === "number") return isNaN(a) && isNaN(b);
-    if (typeof a !== "object" && typeof a !== "function") return false;
+    if (typeof a === 'number') return isNaN(a) && isNaN(b);
+    if (typeof a !== 'object' && typeof a !== 'function') return false;
     // Neither a nor b is primitive.
     var objectClass = classOf(a);
     if (objectClass !== classOf(b)) return false;
-    if (objectClass === "RegExp") {
-      // For RegExp, just compare pattern and flags using its toString.
-      return RegExpPrototypeToString.call(a) ===
-             RegExpPrototypeToString.call(b);
-    }
-    // Functions are only identical to themselves.
-    if (objectClass === "Function") return false;
-    if (objectClass === "Array") {
-      var elementCount = 0;
-      if (a.length !== b.length) {
+    switch (objectClass) {
+      case 'RegExp':
+        // For RegExp, just compare pattern and flags using its toString.
+        return RegExpPrototypeToString.call(a) ===
+            RegExpPrototypeToString.call(b);
+      case 'Function':
+        // Functions are only identical to themselves.
         return false;
-      }
-      for (var i = 0; i < a.length; i++) {
-        if (!deepEquals(a[i], b[i])) return false;
-      }
-      return true;
-    }
-    if (objectClass === "String" || objectClass === "Number" ||
-      objectClass === "BigInt" || objectClass === "Boolean" ||
-      objectClass === "Date") {
-      if (ValueOf(a) !== ValueOf(b)) return false;
+      case 'Array':
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) {
+          if ((i in a) !== (i in b)) return false;
+          if (!deepEquals(a[i], b[i])) return false;
+        }
+        return true;
+      case 'Int8Array':
+      case 'Uint8Array':
+      case 'Uint8ClampedArray':
+      case 'Int16Array':
+      case 'Uint16Array':
+      case 'Int32Array':
+      case 'Uint32Array':
+      case 'BigInt64Array':
+      case 'BigUint64Array':
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          if (a[i] !== b[i]) return false;
+        }
+        return true;
+      case 'Float32Array':
+      case 'Float64Array':
+        if (a.length !== b.length) return false;
+        for (let i = 0; i < a.length; i++) {
+          if (!deepEquals(a[i], b[i])) return false;
+        }
+        return true;
+      case 'String':
+      case 'Number':
+      case 'BigInt':
+      case 'Boolean':
+      case 'Date':
+        return ValueOf(a) === ValueOf(b);
     }
     return deepObjectEquals(a, b);
   }
@@ -537,7 +594,7 @@ var prettyPrinted;
         ': <' + prettyPrinted(code) + '>');
   }
 
-  function checkException(e, type_opt, cause_opt) {
+  assertException = function assertException(e, type_opt, cause_opt) {
     if (type_opt !== undefined) {
       assertEquals('function', typeof type_opt);
       assertInstanceof(e, type_opt);
@@ -560,7 +617,7 @@ var prettyPrinted;
     try {
       executeCode(code);
     } catch (e) {
-      checkException(e, type_opt, cause_opt);
+      assertException(e, type_opt, cause_opt);
       return;
     }
     let msg = 'Did not throw exception';
@@ -595,14 +652,14 @@ var prettyPrinted;
         // Use setTimeout to throw the error again to get out of the promise
         // chain.
         res => setTimeout(_ => fail('<throw>', res, msg), 0),
-        e => checkException(e, type_opt, cause_opt));
+        e => assertException(e, type_opt, cause_opt));
   };
 
   assertEarlyError = function assertEarlyError(code) {
     try {
       new Function(code);
     } catch (e) {
-      checkException(e, SyntaxError);
+      assertException(e, SyntaxError);
       return;
     }
     failWithMessage('Did not throw exception while parsing');
@@ -686,7 +743,6 @@ var prettyPrinted;
     var test_promise = promise.then(
         result => {
           try {
-            if (--promiseTestCount == 0) testRunner.notifyDone();
             if (success !== undefined) success(result);
           } catch (e) {
             // Use setTimeout to throw the error again to get out of the promise
@@ -698,7 +754,6 @@ var prettyPrinted;
         },
         result => {
           try {
-            if (--promiseTestCount == 0) testRunner.notifyDone();
             if (fail === undefined) throw result;
             fail(result);
           } catch (e) {
@@ -711,9 +766,6 @@ var prettyPrinted;
         });
 
     if (!promiseTestChain) promiseTestChain = Promise.resolve();
-    // waitUntilDone is idempotent.
-    testRunner.waitUntilDone();
-    ++promiseTestCount;
     return promiseTestChain.then(test_promise);
   };
 
@@ -734,48 +786,140 @@ var prettyPrinted;
   assertUnoptimized = function assertUnoptimized(
       fun, name_opt, skip_if_maybe_deopted = true) {
     var opt_status = OptimizationStatus(fun);
-    // Tests that use assertUnoptimized() do not make sense if --always-turbofan
-    // option is provided. Such tests must add --no-always-turbofan to flags comment.
-    assertFalse((opt_status & V8OptimizationStatus.kAlwaysOptimize) !== 0,
-                "test does not make sense with --always-turbofan");
+    name_opt = name_opt ?? fun.name;
     assertTrue((opt_status & V8OptimizationStatus.kIsFunction) !== 0, name_opt);
     if (skip_if_maybe_deopted &&
         (opt_status & V8OptimizationStatus.kMaybeDeopted) !== 0) {
-      // When --deopt-every-n-times flag is specified it's no longer guaranteed
-      // that particular function is still deoptimized, so keep running the test
-      // to stress test the deoptimizer.
+      // When --deopt-every-n-times flag, GC stress flags, or similar are
+      // specified, it's no longer guaranteed that a particular function is
+      // still deoptimized, so keep running the test to stress test the
+      // deoptimizer.
       return;
     }
     var is_optimized = (opt_status & V8OptimizationStatus.kOptimized) !== 0;
-    assertFalse(is_optimized, name_opt);
+    if (is_optimized && (opt_status & V8OptimizationStatus.kMaglevved) &&
+        (opt_status &
+         V8OptimizationStatus.kOptimizeOnNextCallOptimizesToMaglev)) {
+      // When --optimize-on-next-call-optimizes-to-maglev is used, we might emit
+      // more generic code than optimization tests expect. In such cases,
+      // assertUnoptimized may see optimized code, but we still want it to
+      // succeed and continue the test.
+      return;
+    }
+    if (is_optimized && (opt_status & V8OptimizationStatus.kTurboFanned) &&
+        (opt_status &
+         V8OptimizationStatus.kOptimizeMaglevOptimizesToTurbofan)) {
+      // In some cases, Turbofan actually emits more generic code than Maglev
+      // (for instance, allowing Oddballs where Maglev only allows HeapNumbers),
+      // and assertUnoptimized with --optimize-maglev-optimizes-to-turbofan will
+      // fail. In those cases, we still want this assert to succeed and the test
+      // to continue.
+      return;
+    }
+    assertFalse(is_optimized, 'should not be optimized: ' + name_opt);
+  }
+
+  assertNotMaglevved = function assertNotMaglevved(
+      fun, name_opt, skip_if_maybe_deopted = true) {
+    let opt_status = OptimizationStatus(fun);
+    name_opt = name_opt ?? fun.name;
+    assertTrue((opt_status & V8OptimizationStatus.kIsFunction) !== 0, name_opt);
+    if (skip_if_maybe_deopted &&
+        (opt_status & V8OptimizationStatus.kMaybeDeopted) !== 0) {
+      // When --deopt-every-n-times flag, GC stress flags, or similar are
+      // specified, it's no longer guaranteed that a particular function is
+      // still deoptimized, so keep running the test to stress test the
+      // deoptimizer.
+      return;
+    }
+    if (opt_status &
+         V8OptimizationStatus.kOptimizeMaglevOptimizesToTurbofan) {
+      // In some cases, Turbofan actually emits more generic code than Maglev
+      // (for instance, allowing Oddballs where Maglev only allows HeapNumbers),
+      // and assertNotMaglevved with --optimize-maglev-optimizes-to-turbofan
+      // will fail. In those cases, we still want this assert to succeed and the
+      // test to continue.
+      return;
+    }
+    let is_maglevved = (opt_status & V8OptimizationStatus.kOptimized) !== 0
+        && (opt_status & V8OptimizationStatus.kMaglevved) !== 0;
+    assertFalse(is_maglevved, 'should not be maglevved: ' + name_opt);
   }
 
   assertOptimized = function assertOptimized(
       fun, name_opt, skip_if_maybe_deopted = true) {
     var opt_status = OptimizationStatus(fun);
+    name_opt = name_opt ?? fun.name;
     // Tests that use assertOptimized() do not make sense for Lite mode where
     // optimization is always disabled, explicitly exit the test with a warning.
     if (opt_status & V8OptimizationStatus.kLiteMode) {
       print("Warning: Test uses assertOptimized in Lite mode, skipping test.");
-      testRunner.quit(0);
+      quit(0);
     }
-    // Tests that use assertOptimized() do not make sense if --no-turbofan
-    // option is provided. Such tests must add --turbofan to flags comment.
+    // Tests that use assertOptimized() do not make sense if no optimizing
+    // compilers are enabled. Such tests must add --turbofan / --maglev to flags
+    // comment.
     assertFalse((opt_status & V8OptimizationStatus.kNeverOptimize) !== 0,
-                "test does not make sense with --no-turbofan");
+                "test does not make sense with --no-turbofan --no-maglev");
     assertTrue(
         (opt_status & V8OptimizationStatus.kIsFunction) !== 0,
         'should be a function: ' + name_opt);
     if (skip_if_maybe_deopted &&
         (opt_status & V8OptimizationStatus.kMaybeDeopted) !== 0) {
-      // When --deopt-every-n-times flag is specified it's no longer guaranteed
-      // that particular function is still optimized, so keep running the test
-      // to stress test the deoptimizer.
+      // When --deopt-every-n-times flag, GC stress flags, or similar are
+      // specified, it's no longer guaranteed that a particular function is
+      // still optimized, so keep running the test to stress test the
+      // deoptimizer.
+      return;
+    }
+    if ((opt_status &
+         V8OptimizationStatus.kOptimizeMaglevOptimizesToTurbofan) !== 0) {
+      // When --optimize-maglev-optimizes-to-turbofan is used it's no longer
+      // guaranteed that a particular function stays optimized the same way
+      // as with Maglev.
       return;
     }
     assertTrue(
         (opt_status & V8OptimizationStatus.kOptimized) !== 0,
         'should be optimized: ' + name_opt);
+  }
+
+  assertMaglevved = function assertMaglevved(
+      fun, name_opt, skip_if_maybe_deopted = true) {
+    let opt_status = OptimizationStatus(fun);
+    name_opt = name_opt ?? fun.name;
+    // Tests that use assertMaglevved() do not make sense for Lite mode where
+    // optimization is always disabled, explicitly exit the test with a warning.
+    if (opt_status & V8OptimizationStatus.kLiteMode) {
+      print("Warning: Test uses assertMaglevved in Lite mode, skipping test.");
+      quit(0);
+    }
+    // Tests that use assertMaglevved() do not make sense if no optimizing
+    // compilers are enabled. Such tests must add --turbofan / --maglev to flags
+    // comment.
+    assertFalse((opt_status & V8OptimizationStatus.kNeverOptimize) !== 0,
+                "test does not make sense with --no-turbofan --no-maglev");
+    assertTrue(
+        (opt_status & V8OptimizationStatus.kIsFunction) !== 0,
+        'should be a function: ' + name_opt);
+    if (skip_if_maybe_deopted &&
+        (opt_status & V8OptimizationStatus.kMaybeDeopted) !== 0) {
+      // When --deopt-every-n-times flag, GC stress flags, or similar are
+      // specified, it's no longer guaranteed that a particular function is
+      // still optimized, so keep running the test to stress test the
+      // deoptimizer.
+      return;
+    }
+    if ((opt_status &
+         V8OptimizationStatus.kOptimizeMaglevOptimizesToTurbofan) !== 0) {
+      // When --optimize-maglev-optimizes-to-turbofan is used it's no longer
+      // guaranteed that a particular function stays optimized the same way
+      // as with Maglev.
+      return;
+    }
+    let is_maglevved = (opt_status & V8OptimizationStatus.kOptimized) !== 0
+        && (opt_status & V8OptimizationStatus.kMaglevved) !== 0;
+    assertTrue(is_maglevved, 'should be maglevved: ' + name_opt);
   }
 
   isNeverOptimizeLiteMode = function isNeverOptimizeLiteMode() {
@@ -786,11 +930,6 @@ var prettyPrinted;
   isNeverOptimize = function isNeverOptimize() {
     var opt_status = OptimizationStatus(undefined, "");
     return (opt_status & V8OptimizationStatus.kNeverOptimize) !== 0;
-  }
-
-  isAlwaysOptimize = function isAlwaysOptimize() {
-    var opt_status = OptimizationStatus(undefined, "");
-    return (opt_status & V8OptimizationStatus.kAlwaysOptimize) !== 0;
   }
 
   isLazy = function isLazy(fun) {
@@ -831,8 +970,30 @@ var prettyPrinted;
     var opt_status = OptimizationStatus(fun, "");
     assertTrue((opt_status & V8OptimizationStatus.kIsFunction) !== 0,
                "not a function");
-    return (opt_status & V8OptimizationStatus.kOptimized) !== 0 &&
-           (opt_status & V8OptimizationStatus.kMaglevved) !== 0;
+
+    const is_optimized = (opt_status & V8OptimizationStatus.kOptimized) !== 0;
+    const is_maglevved = (opt_status & V8OptimizationStatus.kMaglevved) !== 0;
+    // When --optimize-maglev-optimizes-to-turbofan is used, in many tests this
+    // method is synonym with isTurboFanned. Tests where this doesn't hold
+    // might need to negate that flag.
+    const is_turbofanned_by_flag = (
+        (opt_status & V8OptimizationStatus.kTurboFanned) !== 0 &&
+        (opt_status & V8OptimizationStatus.kOptimizeMaglevOptimizesToTurbofan) !== 0);
+    return is_optimized && (is_maglevved || is_turbofanned_by_flag);
+  }
+
+  willBeMaglevved = function willBeMaglevved(fun) {
+    var opt_status = OptimizationStatus(fun, "");
+    assertTrue((opt_status & V8OptimizationStatus.kIsFunction) !== 0,
+               "not a function");
+    return (opt_status & V8OptimizationStatus.kOptimizeOnNextCallOptimizesToMaglev) !== 0;
+  }
+
+  willBeTurbofanned = function willBeTurbofanned(fun) {
+    var opt_status = OptimizationStatus(fun, "");
+    assertTrue((opt_status & V8OptimizationStatus.kIsFunction) !== 0,
+               "not a function");
+    return (opt_status & V8OptimizationStatus.kOptimizeOnNextCallOptimizesToMaglev) === 0;
   }
 
   isTurboFanned = function isTurboFanned(fun) {
@@ -841,6 +1002,26 @@ var prettyPrinted;
                "not a function");
     return (opt_status & V8OptimizationStatus.kOptimized) !== 0 &&
            (opt_status & V8OptimizationStatus.kTurboFanned) !== 0;
+  }
+
+  topFrameIsInterpreted = function topFrameIsInterpreted(opt_status) {
+    assertNotEquals(opt_status, undefined);
+    return (opt_status & V8OptimizationStatus.kTopmostFrameIsInterpreted) !== 0;
+  }
+
+  topFrameIsBaseline = function topFrameIsBaseline(opt_status) {
+    assertNotEquals(opt_status, undefined);
+    return (opt_status & V8OptimizationStatus.kTopmostFrameIsBaseline) !== 0;
+  }
+
+  topFrameIsMaglevved = function topFrameIsMaglevved(opt_status) {
+    assertNotEquals(opt_status, undefined);
+    return (opt_status & V8OptimizationStatus.kTopmostFrameIsMaglev) !== 0;
+  }
+
+  topFrameIsTurboFanned = function topFrameIsTurboFanned(opt_status) {
+    assertNotEquals(opt_status, undefined);
+    return (opt_status & V8OptimizationStatus.kTopmostFrameIsTurboFanned) !== 0;
   }
 
   // Custom V8-specific stack trace formatter that is temporarily installed on

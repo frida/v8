@@ -13,6 +13,9 @@ let S = new SharedStructType(['field']);
   // proposal explainer which says accessing the prototype throws.
   assertNull(S.prototype);
   assertNull(Object.getPrototypeOf(new S()));
+  assertThrows(() => {
+    S.prototype = {};
+  });
 })();
 
 (function TestPrimitives() {
@@ -49,11 +52,13 @@ let S = new SharedStructType(['field']);
 })();
 
 (function TestTooManyFields() {
-  let field_names = [];
+  let fieldNames = [];
   for (let i = 0; i < 1000; i++) {
-    field_names.push('field' + i);
+    fieldNames.push('field' + i);
   }
-  assertThrows(() => { new SharedStructType(field_names); });
+  assertThrows(() => {
+    new SharedStructType(fieldNames);
+  });
 })();
 
 (function TestOwnPropertyEnumeration() {
@@ -75,4 +80,93 @@ let S = new SharedStructType(['field']);
   let entries = Object.entries(s);
   assertEquals(1, entries.length);
   assertArrayEquals(['field', 42], entries[0]);
+})();
+
+(function TestForIn() {
+  let fieldNames = [];
+  for (let i = 0; i < 512; i++) {
+    fieldNames.push('field' + i);
+  }
+  let S2 = new SharedStructType(fieldNames);
+  let s = new S2();
+  let propNames = [];
+  for (let prop in s) propNames.push(prop);
+  assertArrayEquals(propNames, fieldNames);
+})();
+
+(function TestDuplicateFieldNames() {
+  assertThrows(() => new SharedStructType(['same', 'same']));
+})();
+
+(function TestNoFields() {
+  const EmptyStruct = new SharedStructType([]);
+  let s = new EmptyStruct();
+})();
+
+(function TestSymbolsDisallowed() {
+  // This may be relaxed in the future.
+  assertThrows(() => new SharedStructType([Symbol()]));
+})();
+
+(function TestUsedAsPrototype() {
+  const OnPrototypeStruct = new SharedStructType(['prop']);
+  let ps = new OnPrototypeStruct();
+  ps.prop = "on proto";
+
+  function assertProtoIsStruct(obj, proto) {
+    // __proto__ is on Object.prototype, and obj here no longer has
+    // Object.prototype as its [[Prototype]].
+    assertSame(undefined, obj.__proto__);
+    assertSame(proto, Object.getPrototypeOf(obj));
+    assertEquals("on proto", obj.prop);
+  }
+
+  {
+    let pojo = { __proto__: ps };
+    assertProtoIsStruct(pojo, ps);
+  }
+
+  {
+    let pojo = {};
+    Object.setPrototypeOf(pojo, ps);
+    assertProtoIsStruct(pojo, ps);
+  }
+
+  {
+    let pojo = {};
+    pojo.__proto__ = ps;
+    assertProtoIsStruct(pojo, ps);
+  }
+
+  {
+    const old = globalThis.__proto__;
+    globalThis.__proto__ = ps;
+    globalThis.__proto__ = old;
+  }
+
+  {
+    Object.create(ps);
+  }
+
+  {
+    function Ctor() {}
+    Ctor.prototype = ps;
+  }
+})();
+
+(function TestElements() {
+  const largeIndex = 2 ** 32;
+  const anotherLargeIndex = 2 ** 31;
+  const StructWithElements =
+      new SharedStructType([1, 42, largeIndex, anotherLargeIndex]);
+  let s = new StructWithElements();
+  s[1] = 0.1;
+  s[42] = 42;
+  s[largeIndex] = 'whatever';
+  s[anotherLargeIndex] = 'whatever2';
+  assertEquals(0.1, s[1]);
+  assertEquals(42, s[42]);
+  assertEquals('whatever', s[largeIndex]);
+  assertEquals('whatever2', s[anotherLargeIndex]);
+  assertThrows(() => s[80] = 0.2);
 })();

@@ -95,9 +95,9 @@ export class GraphMultiView extends View {
   }
 
   public displayPhaseByName(phaseName: string, selection?: SelectionStorage): void {
-    this.currentPhaseView.hide();
     const phaseId = this.sourceResolver.getPhaseIdByName(phaseName);
     this.selectMenu.selectedIndex = phaseId;
+    this.currentPhaseView.hide();
     this.displayPhase(this.sourceResolver.getDynamicPhase(phaseId), selection);
   }
 
@@ -110,7 +110,7 @@ export class GraphMultiView extends View {
     this.sourceResolver.instructionsPhase = phase.instructionsPhase;
     if (phase.type == PhaseType.Graph) {
       this.displayPhaseView(this.graph, phase, selection);
-    } else if (phase.type == PhaseType.TurboshaftGraph) {
+    } else if (phase.type == PhaseType.TurboshaftGraph || phase.type == PhaseType.MaglevGraph) {
       this.displayPhaseView(this.turboshaftGraph, phase, selection);
     } else if (phase.type == PhaseType.Schedule) {
       this.displayPhaseView(this.schedule, phase, selection);

@@ -5,3 +5,16 @@ include_rules = [
   "-src",
   "+src/base",
 ]
+
+specific_include_rules = {
+  "ieee754.cc": [
+    "+third_party/llvm-libc/src/shared/math.h"
+  ],
+  "float16.h": [
+    "+third_party/fp16/src/include/fp16.h"
+  ],
+  "hashing.h": [
+    "+third_party/rapidhash-v8/rapidhash.h",
+    "+third_party/rapidhash-v8/secret.h",
+  ],
+}

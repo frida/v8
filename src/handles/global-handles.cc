@@ -10,23 +10,25 @@
 #include <cstdint>
 #include <map>
 
-#include "include/v8-traced-handle.h"
 #include "src/api/api-inl.h"
 #include "src/base/compiler-specific.h"
 #include "src/base/logging.h"
 #include "src/base/sanitizer/asan.h"
+#include "src/common/assert-scope.h"
 #include "src/common/globals.h"
 #include "src/execution/vm-state-inl.h"
 #include "src/heap/base/stack.h"
-#include "src/heap/embedder-tracing.h"
+#include "src/heap/gc-tracer-inl.h"
+#include "src/heap/gc-tracer.h"
 #include "src/heap/heap-inl.h"
-#include "src/heap/heap-write-barrier-inl.h"
-#include "src/heap/heap-write-barrier.h"
+#include "src/heap/heap-layout-inl.h"
+#include "src/heap/local-heap.h"
 #include "src/init/v8.h"
 #include "src/logging/counters.h"
 #include "src/objects/objects-inl.h"
 #include "src/objects/slots.h"
 #include "src/objects/visitors.h"
+#include "src/sandbox/isolate.h"
 #include "src/tasks/cancelable-task.h"
 #include "src/tasks/task-utils.h"
 #include "src/utils/utils.h"
@@ -196,7 +198,6 @@ class GlobalHandles::NodeSpace final {
  public:
   using BlockType = NodeBlock<NodeType>;
   using iterator = NodeIterator<BlockType>;
-  using NodeBounds = GlobalHandles::NodeBounds;
 
   static NodeSpace* From(NodeType* node);
   static void Release(NodeType* node);
@@ -212,8 +213,6 @@ class GlobalHandles::NodeSpace final {
 
   size_t TotalSize() const { return blocks_ * sizeof(NodeType) * kBlockSize; }
   size_t handles_count() const { return handles_count_; }
-
-  NodeBounds GetNodeBlockBounds() const;
 
  private:
   void PutNodesOnFreeList(BlockType* block);
@@ -255,21 +254,6 @@ NodeType* GlobalHandles::NodeSpace<NodeType>::Allocate() {
   handles_count_++;
   node->CheckNodeIsFreeNode();
   return node;
-}
-
-template <class NodeType>
-typename GlobalHandles::NodeSpace<NodeType>::NodeBounds
-GlobalHandles::NodeSpace<NodeType>::GetNodeBlockBounds() const {
-  NodeBounds block_bounds;
-  for (BlockType* current = first_used_block_; current;
-       current = current->next_used()) {
-    block_bounds.push_back({current->begin_address(), current->end_address()});
-  }
-  std::sort(block_bounds.begin(), block_bounds.end(),
-            [](const auto& pair1, const auto& pair2) {
-              return pair1.first < pair2.first;
-            });
-  return block_bounds;
 }
 
 template <class NodeType>
@@ -320,7 +304,7 @@ class NodeBase {
     DCHECK_EQ(offsetof(NodeBase, flags_), Internals::kNodeFlagsOffset);
   }
 
-#ifdef ENABLE_HANDLE_ZAPPING
+#ifdef ENABLE_GLOBAL_HANDLE_ZAPPING
   ~NodeBase() {
     ClearFields();
     data_.next_free = nullptr;
@@ -335,7 +319,7 @@ class NodeBase {
   }
 
   // Publishes all internal state to be consumed by other threads.
-  Handle<Object> Publish(Object object) {
+  IndirectHandle<Object> Publish(Tagged<Object> object) {
     DCHECK(!AsChild()->IsInUse());
     data_.parameter = nullptr;
     AsChild()->MarkAsUsed();
@@ -351,9 +335,9 @@ class NodeBase {
     DCHECK(!AsChild()->IsInUse());
   }
 
-  Object object() const { return Object(object_); }
+  Tagged<Object> object() const { return Tagged<Object>(object_); }
   FullObjectSlot location() { return FullObjectSlot(&object_); }
-  Handle<Object> handle() { return Handle<Object>(&object_); }
+  IndirectHandle<Object> handle() { return IndirectHandle<Object>(&object_); }
   Address raw_object() const { return object_; }
 
   uint8_t index() const { return index_; }
@@ -423,13 +407,14 @@ class NodeBase {
 
 namespace {
 
-void ExtractInternalFields(JSObject jsobject, void** embedder_fields, int len) {
-  int field_count = jsobject.GetEmbedderFieldCount();
-  Isolate* isolate = GetIsolateForSandbox(jsobject);
+void ExtractInternalFields(Tagged<JSObject> jsobject, void** embedder_fields,
+                           int len) {
+  int field_count = jsobject->GetEmbedderFieldCount();
   for (int i = 0; i < len; ++i) {
     if (field_count == i) break;
     void* pointer;
-    if (EmbedderDataSlot(jsobject, i).ToAlignedPointer(isolate, &pointer)) {
+    if (EmbedderDataSlot(jsobject, i)
+            .DeprecatedToAlignedPointer(Isolate::Current(), &pointer)) {
       embedder_fields[i] = pointer;
     }
   }
@@ -557,13 +542,13 @@ class GlobalHandles::Node final : public NodeBase<GlobalHandles::Node> {
     void* embedder_fields[v8::kEmbedderFieldsInWeakCallback] = {nullptr,
                                                                 nullptr};
     if (weakness_type() == WeaknessType::kCallbackWithTwoEmbedderFields &&
-        object().IsJSObject()) {
-      ExtractInternalFields(JSObject::cast(object()), embedder_fields,
+        IsJSObject(object())) {
+      ExtractInternalFields(Cast<JSObject>(object()), embedder_fields,
                             v8::kEmbedderFieldsInWeakCallback);
     }
 
     // Zap with something dangerous.
-    location().store(Object(0xCA11));
+    location().store(Tagged<Object>(0xCA11));
 
     pending_phantom_callbacks->push_back(std::make_pair(
         this,
@@ -611,187 +596,32 @@ class GlobalHandles::Node final : public NodeBase<GlobalHandles::Node> {
   friend class NodeBase<Node>;
 };
 
-class GlobalHandles::TracedNode final
-    : public NodeBase<GlobalHandles::TracedNode> {
- public:
-  TracedNode() {
-    DCHECK(!is_in_young_list());
-    DCHECK(!markbit());
-  }
-
-  // Copy and move ctors are used when constructing a TracedNode when recording
-  // a node for on-stack data structures. (Older compilers may refer to copy
-  // instead of move ctor.)
-  TracedNode(TracedNode&& other) V8_NOEXCEPT = default;
-  TracedNode(const TracedNode& other) V8_NOEXCEPT = default;
-
-  enum State { FREE = 0, NORMAL, NEAR_DEATH };
-
-  State state() const { return NodeState::decode(flags_); }
-  void set_state(State state) { flags_ = NodeState::update(flags_, state); }
-
-  void MarkAsFree() { set_state(FREE); }
-  void MarkAsUsed() { set_state(NORMAL); }
-
-  template <AccessMode access_mode = AccessMode::NON_ATOMIC>
-  bool IsInUse() const {
-    if constexpr (access_mode == AccessMode::NON_ATOMIC) {
-      return NodeState::decode(flags_) != FREE;
-    }
-    const auto flags =
-        reinterpret_cast<const std::atomic<uint8_t>&>(flags_).load(
-            std::memory_order_relaxed);
-    return NodeState::decode(flags);
-  }
-
-  bool IsRetainer() const { return state() == NORMAL; }
-
-  bool is_in_young_list() const { return IsInYoungList::decode(flags_); }
-  void set_in_young_list(bool v) { flags_ = IsInYoungList::update(flags_, v); }
-
-  bool is_root() const { return IsRoot::decode(flags_); }
-  void set_root(bool v) { flags_ = IsRoot::update(flags_, v); }
-
-  template <AccessMode access_mode = AccessMode::NON_ATOMIC>
-  void set_markbit() {
-    if constexpr (access_mode == AccessMode::NON_ATOMIC) {
-      flags_ = Markbit::update(flags_, true);
-      return;
-    }
-    std::atomic<uint8_t>& atomic_flags =
-        reinterpret_cast<std::atomic<uint8_t>&>(flags_);
-    const uint8_t new_value =
-        Markbit::update(atomic_flags.load(std::memory_order_relaxed), true);
-    atomic_flags.fetch_or(new_value, std::memory_order_relaxed);
-  }
-
-  template <AccessMode access_mode = AccessMode::NON_ATOMIC>
-  bool markbit() const {
-    if constexpr (access_mode == AccessMode::NON_ATOMIC) {
-      return Markbit::decode(flags_);
-    }
-    const auto flags =
-        reinterpret_cast<const std::atomic<uint8_t>&>(flags_).load(
-            std::memory_order_relaxed);
-    return Markbit::decode(flags);
-  }
-
-  void clear_markbit() { flags_ = Markbit::update(flags_, false); }
-
-  void clear_object() {
-    reinterpret_cast<std::atomic<Address>*>(&object_)->store(
-        kNullAddress, std::memory_order_relaxed);
-  }
-
-  void CopyObjectReference(const TracedNode& other) {
-    reinterpret_cast<std::atomic<Address>*>(&object_)->store(
-        other.object_, std::memory_order_relaxed);
-  }
-
-  void ResetPhantomHandle() {
-    DCHECK(IsInUse());
-    NodeSpace<TracedNode>::Release(this);
-    DCHECK(!IsInUse());
-  }
-
-  static void Verify(const Address* const* slot);
-
- protected:
-  // Various state is managed in a bit field where some of the state is managed
-  // concurrently, whereas other state is managed only on the main thread when
-  // no concurrent thread has access to flags, e.g., in the atomic pause of the
-  // garbage collector. All state is made available to other threads using
-  // `Publish()`.
-  //
-  // The following state is modified only on the main thread.
-  using NodeState = base::BitField8<State, 0, 2>;
-  using IsInYoungList = NodeState::Next<bool, 1>;
-  using IsRoot = IsInYoungList::Next<bool, 1>;
-  // The markbit is the exception as it can be set from the main and marker
-  // threads at the same time.
-  using Markbit = IsRoot::Next<bool, 1>;
-
-  void ClearImplFields() { set_root(true); }
-
-  void CheckNodeIsFreeNodeImpl() const {
-    DCHECK(is_root());
-    DCHECK(!markbit());
-    DCHECK(!IsInUse());
-  }
-
-  friend class NodeBase<GlobalHandles::TracedNode>;
-};
-
-// static
-void GlobalHandles::EnableMarkingBarrier(Isolate* isolate) {
-  auto* global_handles = isolate->global_handles();
-  DCHECK(!global_handles->is_marking_);
-  global_handles->is_marking_ = true;
-}
-
-// static
-void GlobalHandles::DisableMarkingBarrier(Isolate* isolate) {
-  auto* global_handles = isolate->global_handles();
-  DCHECK(global_handles->is_marking_);
-  global_handles->is_marking_ = false;
-}
-
-// static
-void GlobalHandles::TracedNode::Verify(const Address* const* slot) {
-#ifdef DEBUG
-  const TracedNode* node = FromLocation(*slot);
-  auto* global_handles = GlobalHandles::From(node);
-  DCHECK(node->IsInUse());
-  Heap* heap = global_handles->isolate()->heap();
-  auto* incremental_marking = heap->incremental_marking();
-  if (incremental_marking && incremental_marking->IsMarking()) {
-    Object object = node->object();
-    if (object.IsHeapObject()) {
-      DCHECK_IMPLIES(node->markbit<AccessMode::ATOMIC>(),
-                     !heap->marking_state()->IsWhite(HeapObject::cast(object)));
-    }
-  }
-  DCHECK_IMPLIES(ObjectInYoungGeneration(node->object()),
-                 node->is_in_young_list());
-  const bool in_young_list =
-      std::find(global_handles->traced_young_nodes_.begin(),
-                global_handles->traced_young_nodes_.end(),
-                node) != global_handles->traced_young_nodes_.end();
-  DCHECK_EQ(in_young_list, node->is_in_young_list());
-#endif  // DEBUG
-}
-
-size_t GlobalHandles::TotalSize() const {
-  return regular_nodes_->TotalSize() + traced_nodes_->TotalSize();
-}
+size_t GlobalHandles::TotalSize() const { return regular_nodes_->TotalSize(); }
 
 size_t GlobalHandles::UsedSize() const {
-  return regular_nodes_->handles_count() * sizeof(Node) +
-         traced_nodes_->handles_count() * sizeof(TracedNode);
+  return regular_nodes_->handles_count() * sizeof(Node);
 }
 
 size_t GlobalHandles::handles_count() const {
-  return regular_nodes_->handles_count() + traced_nodes_->handles_count();
+  return regular_nodes_->handles_count();
 }
 
 GlobalHandles::GlobalHandles(Isolate* isolate)
     : isolate_(isolate),
-      regular_nodes_(std::make_unique<NodeSpace<GlobalHandles::Node>>(this)),
-      traced_nodes_(
-          std::make_unique<NodeSpace<GlobalHandles::TracedNode>>(this)) {}
+      regular_nodes_(std::make_unique<NodeSpace<GlobalHandles::Node>>(this)) {}
 
 GlobalHandles::~GlobalHandles() = default;
 
 namespace {
 
 template <typename NodeType>
-bool NeedsTrackingInYoungNodes(Object value, NodeType* node) {
-  return ObjectInYoungGeneration(value) && !node->is_in_young_list();
+bool NeedsTrackingInYoungNodes(Tagged<Object> value, NodeType* node) {
+  return HeapLayout::InYoungGeneration(value) && !node->is_in_young_list();
 }
 
 }  // namespace
 
-Handle<Object> GlobalHandles::Create(Object value) {
+IndirectHandle<Object> GlobalHandles::Create(Tagged<Object> value) {
   GlobalHandles::Node* node = regular_nodes_->Allocate();
   if (NeedsTrackingInYoungNodes(value, node)) {
     young_nodes_.push_back(node);
@@ -800,68 +630,20 @@ Handle<Object> GlobalHandles::Create(Object value) {
   return node->Publish(value);
 }
 
-Handle<Object> GlobalHandles::Create(Address value) {
-  return Create(Object(value));
+IndirectHandle<Object> GlobalHandles::Create(Address value) {
+  return Create(Tagged<Object>(value));
 }
 
-Handle<Object> GlobalHandles::CreateTraced(Object value, Address* slot,
-                                           GlobalHandleStoreMode store_mode) {
-  GlobalHandles::TracedNode* node = traced_nodes_->Allocate();
-  if (NeedsTrackingInYoungNodes(value, node)) {
-    traced_young_nodes_.push_back(node);
-    node->set_in_young_list(true);
-  }
-  if (is_marking_ && store_mode != GlobalHandleStoreMode::kInitializingStore) {
-    node->set_markbit();
-    WriteBarrier::MarkingFromGlobalHandle(value);
-  }
-  return node->Publish(value);
-}
-
-Handle<Object> GlobalHandles::CreateTraced(Address value, Address* slot,
-                                           GlobalHandleStoreMode store_mode) {
-  return CreateTraced(Object(value), slot, store_mode);
-}
-
-Handle<Object> GlobalHandles::CopyGlobal(Address* location) {
+IndirectHandle<Object> GlobalHandles::CopyGlobal(Address* location) {
   DCHECK_NOT_NULL(location);
   GlobalHandles* global_handles =
       Node::FromLocation(location)->global_handles();
 #ifdef VERIFY_HEAP
   if (v8_flags.verify_heap) {
-    Object(*location).ObjectVerify(global_handles->isolate());
+    Object::ObjectVerify(Tagged<Object>(*location), global_handles->isolate());
   }
 #endif  // VERIFY_HEAP
   return global_handles->Create(*location);
-}
-
-namespace {
-void SetSlotThreadSafe(Address** slot, Address* val) {
-  reinterpret_cast<std::atomic<Address*>*>(slot)->store(
-      val, std::memory_order_relaxed);
-}
-}  // namespace
-
-// static
-void GlobalHandles::CopyTracedReference(const Address* const* from,
-                                        Address** to) {
-  DCHECK_NOT_NULL(*from);
-  DCHECK_NULL(*to);
-  const TracedNode* from_node = TracedNode::FromLocation(*from);
-  DCHECK_NE(kGlobalHandleZapValue, from_node->raw_object());
-  GlobalHandles* global_handles =
-      GlobalHandles::From(const_cast<TracedNode*>(from_node));
-  Handle<Object> o = global_handles->CreateTraced(
-      from_node->object(), reinterpret_cast<Address*>(to),
-      GlobalHandleStoreMode::kAssigningStore);
-  SetSlotThreadSafe(to, o.location());
-  TracedNode::Verify(from);
-  TracedNode::Verify(to);
-#ifdef VERIFY_HEAP
-  if (v8_flags.verify_heap) {
-    Object(**to).ObjectVerify(global_handles->isolate());
-  }
-#endif  // VERIFY_HEAP
 }
 
 // static
@@ -876,109 +658,10 @@ void GlobalHandles::MoveGlobal(Address** from, Address** to) {
   // Strong handles do not require fixups.
 }
 
-// static
-void GlobalHandles::MoveTracedReference(Address** from, Address** to) {
-  // Fast path for moving from an empty reference.
-  if (!*from) {
-    DestroyTracedReference(*to);
-    SetSlotThreadSafe(to, nullptr);
-    return;
-  }
-
-  // Determining whether from or to are on stack.
-  TracedNode* from_node = TracedNode::FromLocation(*from);
-  DCHECK(from_node->IsInUse());
-  TracedNode* to_node = TracedNode::FromLocation(*to);
-  // Pure heap move.
-  DCHECK_IMPLIES(*to, to_node->IsInUse());
-  DCHECK_IMPLIES(*to, kGlobalHandleZapValue != to_node->raw_object());
-  DCHECK_NE(kGlobalHandleZapValue, from_node->raw_object());
-  DestroyTracedReference(*to);
-  SetSlotThreadSafe(to, *from);
-  to_node = from_node;
-  DCHECK_NOT_NULL(*from);
-  DCHECK_NOT_NULL(*to);
-  DCHECK_EQ(*from, *to);
-  if (GlobalHandles::From(to_node)->is_marking_) {
-    // Write barrier needs to cover node as well as object.
-    to_node->set_markbit<AccessMode::ATOMIC>();
-    WriteBarrier::MarkingFromGlobalHandle(to_node->object());
-  }
-  SetSlotThreadSafe(from, nullptr);
-  TracedNode::Verify(to);
-}
-
-// static
-GlobalHandles* GlobalHandles::From(const TracedNode* node) {
-  return NodeBlock<TracedNode>::From(node)->global_handles();
-}
-
-// static
-void GlobalHandles::MarkTraced(Address* location) {
-  TracedNode* node = TracedNode::FromLocation(location);
-  DCHECK(node->IsInUse());
-  node->set_markbit<AccessMode::ATOMIC>();
-}
-
-// static
-Object GlobalHandles::MarkTracedConservatively(
-    Address* inner_location, Address* traced_node_block_base) {
-  // Compute the `TracedNode` address based on its inner pointer.
-  const ptrdiff_t delta = reinterpret_cast<uintptr_t>(inner_location) -
-                          reinterpret_cast<uintptr_t>(traced_node_block_base);
-  const auto index = delta / sizeof(TracedNode);
-  TracedNode& node =
-      reinterpret_cast<TracedNode*>(traced_node_block_base)[index];
-  // `MarkTracedConservatively()` runs concurrently with marking code. Reading
-  // state concurrently to setting the markbit is safe.
-  if (!node.IsInUse<AccessMode::ATOMIC>()) return Smi::zero();
-  node.set_markbit<AccessMode::ATOMIC>();
-  return node.object();
-}
-
 void GlobalHandles::Destroy(Address* location) {
   if (location != nullptr) {
     NodeSpace<Node>::Release(Node::FromLocation(location));
   }
-}
-
-// static
-void GlobalHandles::DestroyTracedReference(Address* location) {
-  if (!location) return;
-
-  TracedNode* node = TracedNode::FromLocation(location);
-  auto* global_handles = GlobalHandles::From(node);
-  DCHECK_IMPLIES(global_handles->is_marking_,
-                 !global_handles->is_sweeping_on_mutator_thread_);
-  DCHECK_IMPLIES(global_handles->is_sweeping_on_mutator_thread_,
-                 !global_handles->is_marking_);
-
-  // If sweeping on the mutator thread is running then the handle destruction
-  // may be a result of a Reset() call from a destructor. The node will be
-  // reclaimed on the next cycle.
-  //
-  // This allows v8::TracedReference::Reset() calls from destructors on
-  // objects that may be used from stack and heap.
-  if (global_handles->is_sweeping_on_mutator_thread_) {
-    return;
-  }
-
-  if (global_handles->is_marking_) {
-    // Incremental marking is on. This also covers the scavenge case which
-    // prohibits eagerly reclaiming nodes when marking is on during a scavenge.
-    //
-    // On-heap traced nodes are released in the atomic pause in
-    // `IterateWeakRootsForPhantomHandles()` when they are discovered as not
-    // marked. Eagerly clear out the object here to avoid needlessly marking it
-    // from this point on. The node will be reclaimed on the next cycle.
-    node->clear_object();
-    return;
-  }
-
-  // In case marking and sweeping are off, the handle may be freed immediately.
-  // Note that this includes also the case when invoking the first pass
-  // callbacks during the atomic pause which requires releasing a node fully.
-  NodeSpace<TracedNode>::Release(node);
 }
 
 using GenericCallback = v8::WeakCallbackInfo<void>::Callback;
@@ -1017,9 +700,9 @@ V8_INLINE bool GlobalHandles::ResetWeakNodeIfDead(
       node->ResetPhantomHandle();
       break;
     case WeaknessType::kCallback:
-      V8_FALLTHROUGH;
+      [[fallthrough]];
     case WeaknessType::kCallbackWithTwoEmbedderFields:
-      node->CollectPhantomCallbackData(&regular_pending_phantom_callbacks_);
+      node->CollectPhantomCallbackData(&pending_phantom_callbacks_);
       break;
   }
   return true;
@@ -1031,42 +714,6 @@ void GlobalHandles::IterateWeakRootsForPhantomHandles(
   for (Node* node : *regular_nodes_) {
     if (node->IsWeakRetainer()) ResetWeakNodeIfDead(node, should_reset_handle);
   }
-  for (TracedNode* node : *traced_nodes_) {
-    if (!node->IsInUse()) continue;
-    // Detect unreachable nodes first.
-    if (!node->markbit()) {
-      // The handle itself is unreachable. We can clear it even if the target V8
-      // object is alive.
-      node->ResetPhantomHandle();
-      continue;
-    }
-    // Clear the markbit for the next GC.
-    node->clear_markbit();
-    DCHECK(node->IsInUse());
-    // TODO(v8:13141): Turn into a DCHECK after some time.
-    CHECK(!should_reset_handle(isolate()->heap(), node->location()));
-  }
-}
-
-void GlobalHandles::ComputeWeaknessForYoungObjects(
-    WeakSlotCallback is_unmodified) {
-  if (!v8_flags.reclaim_unmodified_wrappers) return;
-
-  // Treat all objects as roots during incremental marking to avoid corrupting
-  // marking worklists.
-  if (isolate()->heap()->incremental_marking()->IsMarking()) return;
-
-  auto* const handler = isolate()->heap()->GetEmbedderRootsHandler();
-  for (TracedNode* node : traced_young_nodes_) {
-    if (node->IsInUse()) {
-      DCHECK(node->is_root());
-      if (is_unmodified(node->location())) {
-        v8::Value* value = ToApi<v8::Value>(node->handle());
-        node->set_root(handler->IsRoot(
-            *reinterpret_cast<v8::TracedReference<v8::Value>*>(&value)));
-      }
-    }
-  }
 }
 
 void GlobalHandles::IterateYoungStrongAndDependentRoots(RootVisitor* v) {
@@ -1074,11 +721,6 @@ void GlobalHandles::IterateYoungStrongAndDependentRoots(RootVisitor* v) {
     if (node->IsStrongRetainer()) {
       v->VisitRootPointer(Root::kGlobalHandles, node->label(),
                           node->location());
-    }
-  }
-  for (TracedNode* node : traced_young_nodes_) {
-    if (node->IsInUse() && node->is_root()) {
-      v->VisitRootPointer(Root::kGlobalHandles, nullptr, node->location());
     }
   }
 }
@@ -1090,50 +732,35 @@ void GlobalHandles::ProcessWeakYoungObjects(
 
     if (node->IsWeakRetainer() &&
         !ResetWeakNodeIfDead(node, should_reset_handle)) {
-      // Node is weak and alive, so it should be passed onto the visitor.
-      v->VisitRootPointer(Root::kGlobalHandles, node->label(),
-                          node->location());
-    }
-  }
-
-  if (!v8_flags.reclaim_unmodified_wrappers) return;
-
-  auto* const handler = isolate()->heap()->GetEmbedderRootsHandler();
-  for (TracedNode* node : traced_young_nodes_) {
-    if (!node->IsInUse()) continue;
-
-    DCHECK_IMPLIES(node->is_root(),
-                   !should_reset_handle(isolate_->heap(), node->location()));
-    if (should_reset_handle(isolate_->heap(), node->location())) {
-      v8::Value* value = ToApi<v8::Value>(node->handle());
-      handler->ResetRoot(
-          *reinterpret_cast<v8::TracedReference<v8::Value>*>(&value));
-      // We cannot check whether a node is in use here as the reset behavior
-      // depends on whether incremental marking is running when reclaiming
-      // young objects.
-    } else {
-      if (!node->is_root()) {
-        node->set_root(true);
-        v->VisitRootPointer(Root::kGlobalHandles, nullptr, node->location());
+      // Node is weak and alive, so it should be passed onto the visitor if
+      // present.
+      if (v) {
+        v->VisitRootPointer(Root::kGlobalHandles, node->label(),
+                            node->location());
       }
     }
   }
 }
 
 void GlobalHandles::InvokeSecondPassPhantomCallbacks() {
+  DCHECK(!AllowJavascriptExecution::IsAllowed(isolate()));
+  DCHECK(AllowGarbageCollection::IsAllowed());
+
   if (second_pass_callbacks_.empty()) return;
 
-  GCCallbacksScope scope(isolate()->heap());
-  // The callbacks may execute JS, which in turn may lead to another GC run.
-  // If we are already processing the callbacks, we do not want to start over
-  // from within the inner GC. Newly added callbacks will always be run by the
+  // The callbacks may allocate, which in turn may lead to another GC run. If we
+  // are already processing the callbacks, we do not want to start over from
+  // within the inner GC. Newly added callbacks will always be run by the
   // outermost GC run only.
+  GCCallbacksScope scope(isolate()->heap());
   if (scope.CheckReenter()) {
-    TRACE_EVENT0("v8", "V8.GCPhantomHandleProcessingCallback");
+    TRACE_EVENT("v8", "V8.GCPhantomHandleProcessingCallback");
     isolate()->heap()->CallGCPrologueCallbacks(
-        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags,
+        GCTracer::Scope::HEAP_EXTERNAL_PROLOGUE);
     {
-      AllowJavascriptExecution allow_js(isolate());
+      TRACE_GC(isolate_->heap()->tracer(),
+               GCTracer::Scope::HEAP_EXTERNAL_SECOND_PASS_CALLBACKS);
       while (!second_pass_callbacks_.empty()) {
         auto callback = second_pass_callbacks_.back();
         second_pass_callbacks_.pop_back();
@@ -1141,7 +768,8 @@ void GlobalHandles::InvokeSecondPassPhantomCallbacks() {
       }
     }
     isolate()->heap()->CallGCEpilogueCallbacks(
-        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags);
+        GCType::kGCTypeProcessWeakCallbacks, kNoGCCallbackFlags,
+        GCTracer::Scope::HEAP_EXTERNAL_EPILOGUE);
   }
 }
 
@@ -1153,7 +781,7 @@ void UpdateListOfYoungNodesImpl(Isolate* isolate, std::vector<T*>* node_list) {
   for (T* node : *node_list) {
     DCHECK(node->is_in_young_list());
     if (node->IsInUse() && node->state() != T::NEAR_DEATH) {
-      if (ObjectInYoungGeneration(node->object())) {
+      if (HeapLayout::InYoungGeneration(node->object())) {
         (*node_list)[last++] = node;
         isolate->heap()->IncrementNodesCopiedInNewSpace();
       } else {
@@ -1176,7 +804,7 @@ void ClearListOfYoungNodesImpl(Isolate* isolate, std::vector<T*>* node_list) {
     DCHECK(node->is_in_young_list());
     node->set_in_young_list(false);
     DCHECK_IMPLIES(node->IsInUse() && node->state() != T::NEAR_DEATH,
-                   !ObjectInYoungGeneration(node->object()));
+                   !HeapLayout::InYoungGeneration(node->object()));
   }
   isolate->heap()->IncrementNodesDiedInNewSpace(
       static_cast<int>(node_list->size()));
@@ -1188,43 +816,41 @@ void ClearListOfYoungNodesImpl(Isolate* isolate, std::vector<T*>* node_list) {
 
 void GlobalHandles::UpdateListOfYoungNodes() {
   UpdateListOfYoungNodesImpl(isolate_, &young_nodes_);
-  UpdateListOfYoungNodesImpl(isolate_, &traced_young_nodes_);
 }
 
 void GlobalHandles::ClearListOfYoungNodes() {
   ClearListOfYoungNodesImpl(isolate_, &young_nodes_);
-  ClearListOfYoungNodesImpl(isolate_, &traced_young_nodes_);
-}
-
-template <typename T>
-size_t GlobalHandles::InvokeFirstPassWeakCallbacks(
-    std::vector<std::pair<T*, PendingPhantomCallback>>* pending) {
-  size_t freed_nodes = 0;
-  std::vector<std::pair<T*, PendingPhantomCallback>> pending_phantom_callbacks;
-  pending_phantom_callbacks.swap(*pending);
-  {
-    // The initial pass callbacks must simply clear the nodes.
-    for (auto& pair : pending_phantom_callbacks) {
-      T* node = pair.first;
-      DCHECK_EQ(T::NEAR_DEATH, node->state());
-      pair.second.Invoke(isolate(), PendingPhantomCallback::kFirstPass);
-
-      // Transition to second pass. It is required that the first pass callback
-      // resets the handle using |v8::PersistentBase::Reset|. Also see comments
-      // on |v8::WeakCallbackInfo|.
-      CHECK_WITH_MSG(T::FREE == node->state(),
-                     "Handle not reset in first callback. See comments on "
-                     "|v8::WeakCallbackInfo|.");
-
-      if (pair.second.callback()) second_pass_callbacks_.push_back(pair.second);
-      freed_nodes++;
-    }
-  }
-  return freed_nodes;
 }
 
 size_t GlobalHandles::InvokeFirstPassWeakCallbacks() {
-  return InvokeFirstPassWeakCallbacks(&regular_pending_phantom_callbacks_);
+  last_gc_custom_callbacks_ = 0;
+  if (pending_phantom_callbacks_.empty()) return 0;
+
+  TRACE_GC(isolate()->heap()->tracer(),
+           GCTracer::Scope::HEAP_EXTERNAL_WEAK_GLOBAL_HANDLES);
+
+  size_t freed_nodes = 0;
+  std::vector<std::pair<Node*, PendingPhantomCallback>>
+      pending_phantom_callbacks;
+  pending_phantom_callbacks.swap(pending_phantom_callbacks_);
+  // The initial pass callbacks must simply clear the nodes.
+  for (auto& pair : pending_phantom_callbacks) {
+    Node* node = pair.first;
+    DCHECK_EQ(Node::NEAR_DEATH, node->state());
+    pair.second.Invoke(isolate(), PendingPhantomCallback::kFirstPass);
+
+    // Transition to second pass. It is required that the first pass callback
+    // resets the handle using |v8::PersistentBase::Reset|. Also see comments
+    // on |v8::WeakCallbackInfo|.
+    CHECK_WITH_MSG(Node::FREE == node->state(),
+                   "Handle not reset in first callback. See comments on "
+                   "|v8::WeakCallbackInfo|.");
+
+    if (pair.second.callback()) second_pass_callbacks_.push_back(pair.second);
+    freed_nodes++;
+  }
+  last_gc_custom_callbacks_ = freed_nodes;
+  return 0;
 }
 
 void GlobalHandles::PendingPhantomCallback::Invoke(Isolate* isolate,
@@ -1241,35 +867,36 @@ void GlobalHandles::PendingPhantomCallback::Invoke(Isolate* isolate,
 }
 
 void GlobalHandles::PostGarbageCollectionProcessing(
-    GarbageCollector collector, const v8::GCCallbackFlags gc_callback_flags) {
+    v8::GCCallbackFlags gc_callback_flags) {
   // Process weak global handle callbacks. This must be done after the
   // GC is completely done, because the callbacks may invoke arbitrary
   // API functions.
   DCHECK_EQ(Heap::NOT_IN_GC, isolate_->heap()->gc_state());
 
+  if (second_pass_callbacks_.empty()) return;
+
   const bool synchronous_second_pass =
-      v8_flags.optimize_for_size || v8_flags.predictable ||
+      isolate_->MemorySaverModeEnabled() || v8_flags.predictable ||
       isolate_->heap()->IsTearingDown() ||
       (gc_callback_flags &
        (kGCCallbackFlagForced | kGCCallbackFlagCollectAllAvailableGarbage |
         kGCCallbackFlagSynchronousPhantomCallbackProcessing)) != 0;
-
   if (synchronous_second_pass) {
     InvokeSecondPassPhantomCallbacks();
     return;
   }
 
-  if (second_pass_callbacks_.empty() || second_pass_callbacks_task_posted_)
-    return;
-
-  second_pass_callbacks_task_posted_ = true;
-  V8::GetCurrentPlatform()
-      ->GetForegroundTaskRunner(reinterpret_cast<v8::Isolate*>(isolate()))
-      ->PostTask(MakeCancelableTask(isolate(), [this] {
-        DCHECK(second_pass_callbacks_task_posted_);
-        second_pass_callbacks_task_posted_ = false;
-        InvokeSecondPassPhantomCallbacks();
-      }));
+  if (!second_pass_callbacks_task_posted_) {
+    second_pass_callbacks_task_posted_ = true;
+    V8::GetCurrentPlatform()
+        ->GetForegroundTaskRunner(reinterpret_cast<v8::Isolate*>(isolate()))
+        ->PostTask(MakeCancelableTask(isolate(), [this] {
+          DCHECK(second_pass_callbacks_task_posted_);
+          second_pass_callbacks_task_posted_ = false;
+          DisallowJavascriptExecution no_js(isolate());
+          InvokeSecondPassPhantomCallbacks();
+        }));
+  }
 }
 
 void GlobalHandles::IterateStrongRoots(RootVisitor* v) {
@@ -1288,11 +915,6 @@ void GlobalHandles::IterateWeakRoots(RootVisitor* v) {
                           node->location());
     }
   }
-  for (TracedNode* node : *traced_nodes_) {
-    if (node->IsInUse()) {
-      v->VisitRootPointer(Root::kGlobalHandles, nullptr, node->location());
-    }
-  }
 }
 
 DISABLE_CFI_PERF
@@ -1301,11 +923,6 @@ void GlobalHandles::IterateAllRoots(RootVisitor* v) {
     if (node->IsWeakOrStrongRetainer()) {
       v->VisitRootPointer(Root::kGlobalHandles, node->label(),
                           node->location());
-    }
-  }
-  for (TracedNode* node : *traced_nodes_) {
-    if (node->IsRetainer()) {
-      v->VisitRootPointer(Root::kGlobalHandles, nullptr, node->location());
     }
   }
 }
@@ -1318,17 +935,12 @@ void GlobalHandles::IterateAllYoungRoots(RootVisitor* v) {
                           node->location());
     }
   }
-  for (TracedNode* node : traced_young_nodes_) {
-    if (node->IsRetainer()) {
-      v->VisitRootPointer(Root::kGlobalHandles, nullptr, node->location());
-    }
-  }
 }
 
 DISABLE_CFI_PERF
 void GlobalHandles::ApplyPersistentHandleVisitor(
     v8::PersistentHandleVisitor* visitor, GlobalHandles::Node* node) {
-  v8::Value* value = ToApi<v8::Value>(node->handle());
+  Address* value = node->handle().location();
   visitor->VisitPersistentHandle(
       reinterpret_cast<v8::Persistent<v8::Value>*>(&value),
       node->wrapper_class_id());
@@ -1343,39 +955,20 @@ void GlobalHandles::IterateAllRootsForTesting(
   }
 }
 
-GlobalHandles::NodeBounds GlobalHandles::GetTracedNodeBounds() const {
-  return traced_nodes_->GetNodeBlockBounds();
-}
-
-START_ALLOW_USE_DEPRECATED()
-
-DISABLE_CFI_PERF void GlobalHandles::IterateTracedNodes(
-    v8::EmbedderHeapTracer::TracedGlobalHandleVisitor* visitor) {
-  for (TracedNode* node : *traced_nodes_) {
-    if (node->IsInUse()) {
-      v8::Value* value = ToApi<v8::Value>(node->handle());
-      visitor->VisitTracedReference(
-          *reinterpret_cast<v8::TracedReference<v8::Value>*>(&value));
-    }
-  }
-}
-
-END_ALLOW_USE_DEPRECATED()
-
 void GlobalHandles::RecordStats(HeapStats* stats) {
-  *stats->global_handle_count = 0;
-  *stats->weak_global_handle_count = 0;
-  *stats->pending_global_handle_count = 0;
-  *stats->near_death_global_handle_count = 0;
-  *stats->free_global_handle_count = 0;
+  stats->global_handle_count = 0;
+  stats->weak_global_handle_count = 0;
+  stats->pending_global_handle_count = 0;
+  stats->near_death_global_handle_count = 0;
+  stats->free_global_handle_count = 0;
   for (Node* node : *regular_nodes_) {
-    *stats->global_handle_count += 1;
+    stats->global_handle_count += 1;
     if (node->state() == Node::WEAK) {
-      *stats->weak_global_handle_count += 1;
+      stats->weak_global_handle_count += 1;
     } else if (node->state() == Node::NEAR_DEATH) {
-      *stats->near_death_global_handle_count += 1;
+      stats->near_death_global_handle_count += 1;
     } else if (node->state() == Node::FREE) {
-      *stats->free_global_handle_count += 1;
+      stats->free_global_handle_count += 1;
     }
   }
 }
@@ -1439,7 +1032,7 @@ void EternalHandles::IterateYoungRoots(RootVisitor* visitor) {
 void EternalHandles::PostGarbageCollectionProcessing() {
   size_t last = 0;
   for (int index : young_node_indices_) {
-    if (ObjectInYoungGeneration(Object(*GetLocation(index)))) {
+    if (HeapLayout::InYoungGeneration(Tagged<Object>(*GetLocation(index)))) {
       young_node_indices_[last++] = index;
     }
   }
@@ -1447,10 +1040,11 @@ void EternalHandles::PostGarbageCollectionProcessing() {
   young_node_indices_.resize(last);
 }
 
-void EternalHandles::Create(Isolate* isolate, Object object, int* index) {
+void EternalHandles::Create(Isolate* isolate, Tagged<Object> object,
+                            int* index) {
   DCHECK_EQ(kInvalidIndex, *index);
-  if (object == Object()) return;
-  Object the_hole = ReadOnlyRoots(isolate).the_hole_value();
+  if (object == Tagged<Object>()) return;
+  Tagged<Object> the_hole = ReadOnlyRoots(isolate).the_hole_value();
   DCHECK_NE(the_hole, object);
   int block = size_ >> kShift;
   int offset = size_ & kMask;
@@ -1462,7 +1056,7 @@ void EternalHandles::Create(Isolate* isolate, Object object, int* index) {
   }
   DCHECK_EQ(the_hole.ptr(), blocks_[block][offset]);
   blocks_[block][offset] = object.ptr();
-  if (ObjectInYoungGeneration(object)) {
+  if (HeapLayout::InYoungGeneration(object)) {
     young_node_indices_.push_back(size_);
   }
   *index = size_++;

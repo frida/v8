@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --turbofan --no-always-turbofan
+// Flags: --allow-natives-syntax --turbofan
 
 var buffer = new ArrayBuffer(64);
 var dataview = new DataView(buffer, 8, 24);
@@ -53,6 +53,22 @@ function readFloat64(offset, little_endian) {
   return dataview.getFloat64(offset, little_endian);
 }
 
+function readBigInt64Handled(offset, little_endian) {
+  try {
+    return dataview.getBigInt64(offset, little_endian);
+  } catch (e) {
+    return e;
+  }
+}
+
+function readBigUint64Handled(offset, little_endian) {
+  try {
+    return dataview.getBigUint64(offset, little_endian);
+  } catch(e) {
+    return e;
+  }
+}
+
 function warmup(f) {
   %PrepareFunctionForOptimization(f);
   f(0);
@@ -88,6 +104,12 @@ warmup(readUint16);
 assertOptimized(readUint16);
 assertEquals(0xabcd, readUint16(8));
 assertEquals(0xcdab, readUint16(8, true));
+dataview.setUint16(8, 0x1234);
+assertEquals(0x1234, readUint16(8));
+assertEquals(0x3412, readUint16(8, true));
+dataview.setUint16(8, 0x8000);
+assertEquals(0x8000, readUint16(8));
+assertEquals(0x0080, readUint16(8, true));
 
 // TurboFan valid getInt16.
 let b1 = -0x1234;
@@ -131,6 +153,24 @@ assertOptimized(readFloat64);
 assertEquals(b4, readFloat64(16));
 dataview.setFloat64(16, b4, true);
 assertEquals(b4, readFloat64(16, true));
+
+// TurboFan valid getBigInt64.
+let b5 = -0x12345678912345n;
+dataview.setBigInt64(16, b5);
+warmup(readBigInt64Handled);
+assertOptimized(readBigInt64Handled);
+assertEquals(b5, readBigInt64Handled(16));
+dataview.setBigInt64(16, b5, true);
+assertEquals(b5, readBigInt64Handled(16, true));
+
+// TurboFan valid getBigUint64.
+let b6 = 0x12345678912345n;
+dataview.setBigUint64(16, b6);
+warmup(readBigUint64Handled);
+assertOptimized(readBigUint64Handled);
+assertEquals(b6, readBigUint64Handled(16));
+dataview.setBigUint64(16, b6, true);
+assertEquals(b6, readBigUint64Handled(16, true));
 
 // TurboFan out of bounds reads deopt.
 assertOptimized(readInt8Handled);
@@ -182,6 +222,6 @@ assertUnoptimized(readFloat64);
   warmup(readInt8Handled);
   assertOptimized(readInt8Handled);
   %ArrayBufferDetach(buffer);
-  assertInstanceof(readInt8Handled(0), TypeError);
   assertUnoptimized(readInt8Handled);
+  assertInstanceof(readInt8Handled(0), TypeError);
 })();

@@ -5,6 +5,8 @@
 #ifndef V8_COMPILER_BACKEND_REGISTER_ALLOCATOR_VERIFIER_H_
 #define V8_COMPILER_BACKEND_REGISTER_ALLOCATOR_VERIFIER_H_
 
+#include <optional>
+
 #include "src/compiler/backend/instruction.h"
 #include "src/zone/zone-containers.h"
 
@@ -135,12 +137,14 @@ class BlockAssessments : public ZoneObject {
  public:
   using OperandMap = ZoneMap<InstructionOperand, Assessment*, OperandAsKeyLess>;
   using OperandSet = ZoneSet<InstructionOperand, OperandAsKeyLess>;
-  explicit BlockAssessments(Zone* zone, int spill_slot_delta)
+  explicit BlockAssessments(Zone* zone, int spill_slot_delta,
+                            const InstructionSequence* sequence)
       : map_(zone),
         map_for_moves_(zone),
         stale_ref_stack_slots_(zone),
         spill_slot_delta_(spill_slot_delta),
-        zone_(zone) {}
+        zone_(zone),
+        sequence_(sequence) {}
   BlockAssessments(const BlockAssessments&) = delete;
   BlockAssessments& operator=(const BlockAssessments&) = delete;
 
@@ -172,7 +176,8 @@ class BlockAssessments : public ZoneObject {
                                   other->stale_ref_stack_slots_.end());
   }
   void CheckReferenceMap(const ReferenceMap* reference_map);
-  bool IsStaleReferenceStackSlot(InstructionOperand op);
+  bool IsStaleReferenceStackSlot(InstructionOperand op,
+                                 std::optional<int> vreg = std::nullopt);
 
   OperandMap& map() { return map_; }
   const OperandMap& map() const { return map_; }
@@ -189,15 +194,17 @@ class BlockAssessments : public ZoneObject {
  private:
   OperandMap map_;
   OperandMap map_for_moves_;
+  // TODOC(dmercadier): how do stack slots become stale exactly? What are the
+  // implications of a stack slot being stale?
   OperandSet stale_ref_stack_slots_;
   int spill_slot_delta_;
   Zone* zone_;
+  const InstructionSequence* sequence_;
 };
 
 class RegisterAllocatorVerifier final : public ZoneObject {
  public:
-  RegisterAllocatorVerifier(Zone* zone, const RegisterConfiguration* config,
-                            const InstructionSequence* sequence,
+  RegisterAllocatorVerifier(Zone* zone, const InstructionSequence* sequence,
                             const Frame* frame);
   RegisterAllocatorVerifier(const RegisterAllocatorVerifier&) = delete;
   RegisterAllocatorVerifier& operator=(const RegisterAllocatorVerifier&) =
@@ -262,7 +269,6 @@ class RegisterAllocatorVerifier final : public ZoneObject {
   };
 
   Zone* zone() const { return zone_; }
-  const RegisterConfiguration* config() { return config_; }
   const InstructionSequence* sequence() const { return sequence_; }
   Constraints* constraints() { return &constraints_; }
   int spill_slot_delta() const { return spill_slot_delta_; }
@@ -279,15 +285,13 @@ class RegisterAllocatorVerifier final : public ZoneObject {
 
   // Prove that this operand is an alias of this virtual register in the given
   // block. Update the assessment if that's the case.
-  void ValidatePendingAssessment(RpoNumber block_id, InstructionOperand op,
-                                 const BlockAssessments* current_assessments,
+  void ValidatePendingAssessment(RpoNumber block_id,
                                  PendingAssessment* const assessment,
                                  int virtual_register);
   void ValidateUse(RpoNumber block_id, BlockAssessments* current_assessments,
                    InstructionOperand op, int virtual_register);
 
   Zone* const zone_;
-  const RegisterConfiguration* config_;
   const InstructionSequence* const sequence_;
   Constraints constraints_;
   ZoneMap<RpoNumber, BlockAssessments*> assessments_;

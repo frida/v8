@@ -4,6 +4,7 @@
 
 #include "src/snapshot/snapshot-compression.h"
 
+#include "src/base/numerics/safe_conversions.h"
 #include "src/base/platform/elapsed-timer.h"
 #include "src/utils/memcopy.h"
 #include "src/utils/utils.h"
@@ -28,15 +29,16 @@ SnapshotData SnapshotCompression::Compress(
   const uLongf input_size =
       static_cast<uLongf>(uncompressed_data->RawData().size());
   uint32_t payload_length =
-      static_cast<uint32_t>(uncompressed_data->RawData().size());
+      base::checked_cast<uint32_t>(uncompressed_data->RawData().size());
 
   uLongf compressed_data_size = compressBound(input_size);
 
   // Allocating >= the final amount we will need.
-  snapshot_data.AllocateData(
-      static_cast<uint32_t>(sizeof(payload_length) + compressed_data_size));
+  snapshot_data.AllocateData(base::checked_cast<uint32_t>(
+      sizeof(payload_length) + compressed_data_size));
 
-  byte* compressed_data = const_cast<byte*>(snapshot_data.RawData().begin());
+  uint8_t* compressed_data =
+      const_cast<uint8_t*>(snapshot_data.RawData().begin());
   // Since we are doing raw compression (no zlib or gzip headers), we need to
   // manually store the uncompressed size.
   MemCopy(compressed_data, &payload_length, sizeof(payload_length));
@@ -45,13 +47,13 @@ SnapshotData SnapshotCompression::Compress(
       zlib_internal::CompressHelper(
           zlib_internal::ZRAW, compressed_data + sizeof(payload_length),
           &compressed_data_size,
-          base::bit_cast<const Bytef*>(uncompressed_data->RawData().begin()),
+          reinterpret_cast<const Bytef*>(uncompressed_data->RawData().begin()),
           input_size, Z_DEFAULT_COMPRESSION, nullptr, nullptr),
       Z_OK);
 
   // Reallocating to exactly the size we need.
-  snapshot_data.Resize(static_cast<uint32_t>(compressed_data_size) +
-                       sizeof(payload_length));
+  snapshot_data.Resize(base::checked_cast<uint32_t>(sizeof(payload_length) +
+                                                    compressed_data_size));
   DCHECK_EQ(payload_length,
             GetUncompressedSize(snapshot_data.RawData().begin()));
 
@@ -63,13 +65,13 @@ SnapshotData SnapshotCompression::Compress(
 }
 
 SnapshotData SnapshotCompression::Decompress(
-    base::Vector<const byte> compressed_data) {
+    base::Vector<const uint8_t> compressed_data) {
   SnapshotData snapshot_data;
   base::ElapsedTimer timer;
   if (v8_flags.profile_deserialization) timer.Start();
 
   const Bytef* input_bytef =
-      base::bit_cast<const Bytef*>(compressed_data.begin());
+      reinterpret_cast<const Bytef*>(compressed_data.begin());
 
   // Since we are doing raw compression (no zlib or gzip headers), we need to
   // manually retrieve the uncompressed size.
@@ -81,7 +83,7 @@ SnapshotData SnapshotCompression::Decompress(
   uLongf uncompressed_size = uncompressed_payload_length;
   CHECK_EQ(zlib_internal::UncompressHelper(
                zlib_internal::ZRAW,
-               base::bit_cast<Bytef*>(snapshot_data.RawData().begin()),
+               const_cast<Bytef*>(snapshot_data.RawData().begin()),
                &uncompressed_size, input_bytef,
                static_cast<uLong>(compressed_data.size() -
                                   sizeof(uncompressed_payload_length))),

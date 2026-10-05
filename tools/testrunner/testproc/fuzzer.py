@@ -2,64 +2,124 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+from itertools import chain
 
 from . import base
 
 
 # Extra flags randomly added to all fuzz tests with numfuzz. List of tuples
-# (probability, flag).
+# (probability, flag) or lists of mutually exclusive tuples [(probability, flag), ...].
+# You can space-separate multiple flags in the flag string.
 EXTRA_FLAGS = [
-    (0.1, '--always-turbofan'),
+    (0.05, '--always-osr'),
+    (0.05, '--osr-from-maglev=4'),
+    (0.05, '--always-sparkplug'),
     (0.1, '--assert-types'),
-    (0.1, '--interrupt-budget-for-feedback-allocation=0'),
     (0.1, '--cache=code'),
     (0.1, '--force-slow-path'),
     (0.2, '--future'),
-    (0.1, '--interrupt-budget=100'),
-    (0.1, '--interrupt-budget-for-maglev=100'),
+    (0.5, '--harmony'),
+    (0.1, '--hashes-collide'),
+    (0.5, '--experimental-fuzzing'),
+    # TODO(v8:13524): Enable when issue is fixed
+    # TODO(v8:13528): Enable when issue is fixed
+    # (0.1, '--harmony-struct'),
+    (0.1, '--jit-fuzzing'),
+    (0.5, '--js-staging'),
     (0.1, '--liftoff'),
-    (0.1, '--maglev'),
-    (0.1, '--minor-mc'),
+    (0.1, '--maglev-future'),
+    (0.1, '--minor-ms'),
     (0.2, '--no-analyze-environment-liveness'),
     # TODO(machenbach): Enable when it doesn't collide with crashing on missing
     # simd features.
     #(0.1, '--no-enable-sse3'),
     #(0.1, '--no-enable-ssse3'),
     #(0.1, '--no-enable-sse4_1'),
-    (0.1, '--no-enable-sse4_2'),
-    (0.1, '--no-enable-sahf'),
-    (0.1, '--no-enable-avx'),
-    (0.1, '--no-enable-fma3'),
-    (0.1, '--no-enable-bmi1'),
-    (0.1, '--no-enable-bmi2'),
-    (0.1, '--no-enable-lzcnt'),
-    (0.1, '--no-enable-popcnt'),
-    (0.3, '--no-lazy-feedback-allocation'),
+    (0.05, '--no-enable-sse4_2'),
+    (0.05, '--no-enable-sahf'),
+    (0.05, '--no-enable-avx'),
+    (0.05, '--no-enable-fma3'),
+    (0.05, '--no-enable-bmi1'),
+    (0.05, '--no-enable-bmi2'),
+    (0.05, '--no-enable-lzcnt'),
+    (0.05, '--no-enable-popcnt'),
+    (0.05, '--no-flush-bytecode'),
+    (0.05, '--no-lazy'),
+    (0.8, '--no-baseline-batch-compilation'),
+    (0.8, '--no-lazy-feedback-allocation'),
     (0.1, '--no-liftoff'),
-    (0.1, '--no-turbofan'),
-    (0.2, '--no-regexp-tier-up'),
+    (0.05, '--no-maglev'),
+    (0.05, '--no-sparkplug'),
+    (0.05, '--no-turbofan'),
     (0.1, '--no-wasm-tier-up'),
+    (0.2, '--optimize-maglev-optimizes-to-turbofan'),
+    (0.5, '--optimize-on-next-call-optimizes-to-maglev'),
     (0.1, '--regexp-interpret-all'),
+    (0.1, '--regexp-tier-up-ticks=0'),
     (0.1, '--regexp-tier-up-ticks=10'),
     (0.1, '--regexp-tier-up-ticks=100'),
+    (0.1, '--no-regexp-quick-check'),
+    (0.1, '--no-regexp-unroll'),
+    (0.1, '--shared-string-table'),
+    (0.1, '--shared-heap'),
     (0.1, '--stress-background-compile'),
-    (0.1, '--stress-flush-code'),
-    (0.1, '--stress-lazy-source-positions'),
+    (0.2, '--stress-flush-code'),
+    (0.9, '--stress-lazy'),
+    (0.5, '--stress-lazy-source-positions'),
+    (0.1, '--stress-maglev'),
     (0.1, '--stress-wasm-code-gc'),
+    (0.7, '--turbolev'),
     (0.1, '--turbo-instruction-scheduling'),
     (0.1, '--turbo-stress-instruction-scheduling'),
-    (0.1, '--turbo-force-mid-tier-regalloc'),
+    (0.2, '--turboshaft-verify-load-elimination'),
+    (0.2, '--turboshaft-verify-load-store-taggedness'),
+    (0.1, '--turboshaft-verify-reductions'),
+    (0.1, '--maglev-assert-types'),
+    (0.5, '--maglev-untagged-phis'),
+    (0.1, '--disable-loop-stack-checks'),
+    (0.1, '--no-maglev-loop-peeling'),
+    (0.1, '--maglev-disable-builtin-reducers'),
+    (0.1, '--stress-wasm-memory-moving'),
+    (0.1, '--stress-scavenger-conservative-object-pinning-random'),
+    (0.1, '--conservative-stack-scanning'),
+    (0.1, '--precise-object-pinning'),
+    (0.25, '--wasm-staging'),
+    (0.1, '--ephemeron-fixpoint-iterations=0'),
+    (0.25, '--wasm-revectorize'),
+    (0.1, '--no-memory-pool'),
+    (0.1, '--wasm-assert-types'),
+    (0.1, '--wasm-random-rescheduling'),
+    (0.5, '--private-field-bytecodes'),
+    (0.5, '--proto-assign-seq-lazy-func-opt --proto-assign-seq-opt-count=1'),
+    (0.1, '--stress-branch-hinting'),
+    [0.1, '--stress-descriptor-array-trimming'],
+    [
+        (0.33, '--verify-bytecode-full'),
+        (0.33, '--verify-bytecode-light'),
+    ],
 ]
 
 MIN_DEOPT = 1
 MAX_DEOPT = 10**9
+ANALYSIS_SUFFIX = 'analysis'
 
 
-def random_extra_flags(rng):
+def random_extra_flags(rng, extra_flags=EXTRA_FLAGS):
   """Returns a random list of flags chosen from the configurations in
   EXTRA_FLAGS.
   """
-  return [flag for prob, flag in EXTRA_FLAGS if rng.random() < prob]
+  result = []
+  for item in extra_flags:
+    r = rng.random()
+    acc = 0
+    choices = item if isinstance(item[0], (list, tuple)) else [item]
+    for prob, flags in choices:
+      acc += prob
+      assert acc <= 1.0
+      if r < acc:
+        result.extend(flags.split())
+        break
+  return result
 
 
 def _flag_prefix(flag):
@@ -99,6 +159,8 @@ def _drop_contradictory_flags(new_flags, existing_flags):
 
   def contradictory_flag(flag):
     flag_prefix = _flag_prefix(flag)
+    if not flag_prefix.startswith('--'):
+      return False
     return (flag_prefix in existing_flag_prefixes or
             _invert_flag(flag_prefix) in existing_flag_prefixes)
 
@@ -167,6 +229,9 @@ class FuzzerProc(base.TestProcProducer):
     self._disable_analysis = disable_analysis
     self._gens = {}
 
+  def test_suffix(self, test):
+    return test.subtest_id
+
   def _next_test(self, test):
     if self.is_stopped:
       return False
@@ -189,12 +254,13 @@ class FuzzerProc(base.TestProcProducer):
 
     if analysis_flags:
       analysis_flags = list(set(analysis_flags))
-      return self._create_subtest(test, 'analysis', flags=analysis_flags,
-                                  keep_output=True)
+      return test.create_subtest(
+          self, ANALYSIS_SUFFIX, flags=analysis_flags, keep_output=True)
 
   def _result_for(self, test, subtest, result):
     if not self._disable_analysis:
-      if result is not None and subtest.procid.endswith('Fuzzer-analysis'):
+      if result is not None and subtest.procid.endswith(
+          f'{self.name}-{ANALYSIS_SUFFIX}'):
         # Analysis phase, for fuzzing we drop the result.
         if result.has_unexpected_output:
           self._send_result(test, None)
@@ -241,7 +307,7 @@ class FuzzerProc(base.TestProcProducer):
       flags.append('--fuzzer-random-seed=%s' % self._next_seed())
 
       flags = _drop_contradictory_flags(flags, test.get_flags())
-      yield self._create_subtest(test, str(i), flags=flags)
+      yield test.create_subtest(self, str(i), flags=flags)
 
       i += 1
 
@@ -276,6 +342,13 @@ class ScavengeFuzzer(Fuzzer):
   def create_flags_generator(self, rng, test, analysis_value):
     while True:
       yield ['--stress-scavenge=%d' % (analysis_value or 100)]
+
+
+class ScavengerChaosFuzzer(Fuzzer):
+  def create_flags_generator(self, rng, test, analysis_value):
+    while True:
+      threshold = f'--scavenger-chaos-mode-threshold={rng.randint(0, 100)}'
+      yield ['--scavenger-chaos-mode', threshold]
 
 
 class MarkingAnalyzer(Analyzer):
@@ -327,15 +400,57 @@ class InterruptBudgetFuzzer(Fuzzer):
       # overwrites potential flag negations from the extra flags list.
       flag1 = rng.choice(
           ['--lazy-feedback-allocation', '--no-lazy-feedback-allocation'])
-      flag2 = '--interrupt-budget=%d' % rng.randint(0, 135168)
-      flag3 = '--interrupt-budget-for-maglev=%d' % rng.randint(0, 40960)
-      flag4 = '--interrupt-budget-for-feedback-allocation=%d' % rng.randint(
-          0, 940)
-      flag5 = '--interrupt-budget-factor-for-feedback-allocation=%d' % rng.randint(
-          1, 8)
+      flag2 = '--invocation-count-for-turbofan=%d' % rng.randint(0, 240)
+      flag3 = '--invocation-count-for-maglev=%d' % rng.randint(0, 120)
+      flag4 = '--invocation-count-for-feedback-allocation=%d' % rng.randint(
+          0, 8)
 
+      yield [flag1, flag2, flag3, flag4]
+
+
+class BytecodeBudgetFuzzer(Fuzzer):
+  def create_flags_generator(self, rng, test, analysis_value):
+    while True:
+      max_bytecode = rng.randint(0, 920)
+      flag1 = f'--max-inlined-bytecode-size={max_bytecode}'
+      flag2 = ('--max-inlined-bytecode-size-cumulative='
+               f'{max_bytecode + rng.randint(0, 920)}')
+      flag3 = ('--max-turbolev-inlined-bytecode-size-cumulative='
+               f'{rng.randint(0, 3680)}')
+      flag4 = f'--max-inlined-bytecode-size-small={rng.randint(0, 54)}'
+      flag5 = ('--max-inlined-bytecode-size-small-with-heapnum-in-out='
+               f'{rng.randint(0, 150)}')
       yield [flag1, flag2, flag3, flag4, flag5]
 
+
+class AllocationOffsetFuzzer(Fuzzer):
+  """Creates a random number of fake allocations before the actual test."""
+
+  def create_flags_generator(self, rng, test, analysis_value):
+    while True:
+      n_objects = rng.randint(0, 20)
+      n_vars = rng.randint(0, 10)
+      n_proxies = rng.randint(0, 4)
+      array_size = rng.choice([0, rng.randint(1, 100000)])
+
+      flags = []
+
+      def add(content):
+        # Pad with one space so that shell deterministically adds quotations.
+        flags.extend(['-e', f' {content}'])
+
+      if n_objects:
+        add('[];' * n_objects)
+      if n_vars:
+        add(' '.join([f'var __pv_{i};' for i in range(n_vars)]))
+      if n_proxies:
+        add(' '.join([
+            f'var __pp_{i} = new Proxy({{}}, {{}});' for i in range(n_proxies)
+        ]))
+      if array_size:
+        add(f'var __pa = new Array({array_size});')
+
+      yield flags
 
 class StackSizeFuzzer(Fuzzer):
   def create_flags_generator(self, rng, test, analysis_value):
@@ -383,6 +498,8 @@ class DeoptFuzzer(Fuzzer):
 
 
 FUZZERS = {
+    'allocation': (None, AllocationOffsetFuzzer),
+    'bytecode': (None, BytecodeBudgetFuzzer),
     'compaction': (None, CompactionFuzzer),
     'delay': (None, TaskDelayFuzzer),
     'deopt': (DeoptAnalyzer, DeoptFuzzer),
@@ -390,6 +507,7 @@ FUZZERS = {
     'interrupt': (None, InterruptBudgetFuzzer),
     'marking': (MarkingAnalyzer, MarkingFuzzer),
     'scavenge': (ScavengeAnalyzer, ScavengeFuzzer),
+    'scavenge_chaos': (None, ScavengerChaosFuzzer),
     'stack': (None, StackSizeFuzzer),
     'threads': (None, ThreadPoolSizeFuzzer),
 }

@@ -4,20 +4,16 @@
 
 import json
 import logging
-import pprint
 import os
+import re
+import tempfile
 
 from . import base
 from .indicators import (
     formatted_result_output,
     ProgressIndicator,
 )
-from .util import (
-    base_test_record,
-    extract_tags,
-    strip_ascii_control_characters,
-)
-
+from .util import base_test_record
 
 class ResultDBIndicator(ProgressIndicator):
 
@@ -34,26 +30,70 @@ class ResultDBIndicator(ProgressIndicator):
     # We need to recalculate the observed (but lost) test behaviour.
     # `result.has_unexpected_output` indicates that the run behaviour of the
     # test matches the expected behaviour irrespective of passing or failing.
+    if test.skip_rdb(result):
+      return
     result_expected = not result.has_unexpected_output
     test_should_pass = not test.is_fail
     run_passed = (result_expected == test_should_pass)
     rdb_result = {
-        'testId': strip_ascii_control_characters(test.full_name),
+        'testId': strip_ascii_control_characters(test.rdb_test_id),
         'status': 'PASS' if run_passed else 'FAIL',
         'expected': result_expected,
     }
-
     if result.output and result.output.duration:
-      rdb_result.update(duration=f'{result.output.duration}ms')
+      rdb_result.update(duration=f'{result.output.duration:f}s')
+
     if result.has_unexpected_output:
       formated_output = formatted_result_output(result)
-      sanitized = strip_ascii_control_characters(formated_output)
-      # TODO(liviurau): do we have a better presentation data for this?
-      # Protobuf strings can have len == 2**32.
-      rdb_result.update(summaryHtml=f'<pre>{sanitized}</pre>')
+      cmd = result.cmd.to_string()
+      artifacts = {
+          'output': write_artifact(formated_output),
+          'cmd': write_artifact(cmd)
+      }
+      rdb_result.update(artifacts=artifacts)
+      summary = '<p><text-artifact artifact-id="output"></p>'
+      summary += '<p><text-artifact artifact-id="cmd"></p>'
+      rdb_result.update(summary_html=summary)
+
     record = base_test_record(test, result, run)
+    record.update(
+        processor=test.processor_name,
+        subtest_id=test.subtest_id,
+        path=test.path)
+
     rdb_result.update(tags=extract_tags(record))
+
     self.rpc.send(rdb_result)
+
+
+def write_artifact(value):
+  with tempfile.NamedTemporaryFile(
+      mode='w', delete=False, encoding='utf-8') as tmp:
+    tmp.write(value)
+    return { 'filePath': tmp.name }
+
+
+def extract_tags(record):
+  tags = []
+  for k, v in record.items():
+    if not v:
+      continue
+    if type(v) == list:
+      tags += [sanitized_kv_dict(k, e) for e in v]
+    else:
+      tags.append(sanitized_kv_dict(k, v))
+  return tags
+
+
+def sanitized_kv_dict(k, v):
+  return dict(key=k, value=strip_ascii_control_characters(v))
+
+
+def strip_ascii_control_characters(unicode_string):
+  return re.sub(r'[^\x20-\x7E]', '?', str(unicode_string))
+
+
+TESTING_SINK = None
 
 
 def rdb_sink():
@@ -62,6 +102,8 @@ def rdb_sink():
   except:
     log_instantiation_failure('Failed to import requests module.')
     return None
+  if TESTING_SINK:
+    return TESTING_SINK
   luci_context = os.environ.get('LUCI_CONTEXT')
   if not luci_context:
     log_instantiation_failure('No LUCI_CONTEXT found.')

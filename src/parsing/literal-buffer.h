@@ -5,9 +5,11 @@
 #ifndef V8_PARSING_LITERAL_BUFFER_H_
 #define V8_PARSING_LITERAL_BUFFER_H_
 
+#include "include/v8config.h"
 #include "src/base/strings.h"
 #include "src/base/vector.h"
 #include "src/strings/unicode-decoder.h"
+#include "src/utils/memcopy.h"
 
 namespace v8 {
 namespace internal {
@@ -15,8 +17,7 @@ namespace internal {
 // LiteralBuffer -  Collector of chars of literals.
 class LiteralBuffer final {
  public:
-  LiteralBuffer() : backing_store_(), position_(0), is_one_byte_(true) {}
-
+  LiteralBuffer() = default;
   ~LiteralBuffer() { backing_store_.Dispose(); }
 
   LiteralBuffer(const LiteralBuffer&) = delete;
@@ -24,13 +25,13 @@ class LiteralBuffer final {
 
   V8_INLINE void AddChar(char code_unit) {
     DCHECK(IsValidAscii(code_unit));
-    AddOneByteChar(static_cast<byte>(code_unit));
+    AddOneByteChar(static_cast<uint8_t>(code_unit));
   }
 
   V8_INLINE void AddChar(base::uc32 code_unit) {
     if (is_one_byte()) {
       if (code_unit <= static_cast<base::uc32>(unibrow::Latin1::kMaxChar)) {
-        AddOneByteChar(static_cast<byte>(code_unit));
+        AddOneByteChar(static_cast<uint8_t>(code_unit));
         return;
       }
       ConvertToTwoByte();
@@ -38,10 +39,36 @@ class LiteralBuffer final {
     AddTwoByteChar(code_unit);
   }
 
+  // Adds a range of UTF-16 code units. In one-byte mode all code units in
+  // the range must fit into one byte (callers batch only ASCII ranges); the
+  // narrowing copy below vectorizes well. In two-byte mode the range is
+  // copied as-is.
+  V8_INLINE void AddRangeFromUtf16(const uint16_t* begin, const uint16_t* end) {
+    size_t length = static_cast<size_t>(end - begin);
+    if (V8_LIKELY(is_one_byte())) {
+      if (V8_UNLIKELY(position_ + length > backing_store_.size())) {
+        ExpandBufferTo(position_ + length);
+      }
+      uint8_t* dst = backing_store_.begin() + position_;
+      for (size_t i = 0; i < length; i++) {
+        DCHECK_LE(begin[i], unibrow::Latin1::kMaxChar);
+        dst[i] = static_cast<uint8_t>(begin[i]);
+      }
+      position_ += length;
+    } else {
+      size_t size = length * base::kUC16Size;
+      if (V8_UNLIKELY(position_ + size > backing_store_.size())) {
+        ExpandBufferTo(position_ + size);
+      }
+      MemCopy(backing_store_.begin() + position_, begin, size);
+      position_ += size;
+    }
+  }
+
   bool is_one_byte() const { return is_one_byte_; }
 
   bool Equals(base::Vector<const char> keyword) const {
-    return is_one_byte() && keyword.length() == position_ &&
+    return is_one_byte() && keyword.size() == position_ &&
            (memcmp(keyword.begin(), backing_store_.begin(), position_) == 0);
   }
 
@@ -62,7 +89,9 @@ class LiteralBuffer final {
         position_ >> (sizeof(Char) - 1));
   }
 
-  int length() const { return is_one_byte() ? position_ : (position_ >> 1); }
+  int length() const {
+    return static_cast<int>(is_one_byte() ? position_ : (position_ >> 1));
+  }
 
   void Start() {
     position_ = 0;
@@ -70,12 +99,12 @@ class LiteralBuffer final {
   }
 
   template <typename IsolateT>
-  Handle<String> Internalize(IsolateT* isolate) const;
+  DirectHandle<String> Internalize(IsolateT* isolate) const;
 
  private:
-  static const int kInitialCapacity = 16;
-  static const int kGrowthFactor = 4;
-  static const int kMaxGrowth = 1 * MB;
+  static constexpr size_t kInitialCapacity = 256;
+  static constexpr size_t kGrowthFactor = 4;
+  static constexpr size_t kMaxGrowth = 1 * MB;
 
   inline bool IsValidAscii(char code_unit) {
     // Control characters and printable characters span the range of
@@ -85,22 +114,30 @@ class LiteralBuffer final {
     return iscntrl(code_unit) || isprint(code_unit);
   }
 
-  V8_INLINE void AddOneByteChar(byte one_byte_char) {
-    DCHECK(is_one_byte());
-    if (position_ >= backing_store_.length()) ExpandBuffer();
+  V8_INLINE void AddOneByteCharUnchecked(uint8_t one_byte_char) {
     backing_store_[position_] = one_byte_char;
     position_ += kOneByteSize;
   }
 
+  V8_INLINE void AddOneByteChar(uint8_t one_byte_char) {
+    DCHECK(is_one_byte());
+    if (V8_UNLIKELY(position_ >= backing_store_.size())) {
+      return ExpandBufferAndAddOneByteChar(one_byte_char);
+    }
+    AddOneByteCharUnchecked(one_byte_char);
+  }
+
   void AddTwoByteChar(base::uc32 code_unit);
-  int NewCapacity(int min_capacity);
-  void ExpandBuffer();
+  size_t NewCapacity(size_t min_capacity);
+  V8_NOINLINE V8_PRESERVE_MOST void ExpandBuffer();
+  V8_NOINLINE V8_PRESERVE_MOST void ExpandBufferTo(size_t min_size);
+  V8_NOINLINE V8_PRESERVE_MOST void ExpandBufferAndAddOneByteChar(
+      uint8_t one_byte_char);
   void ConvertToTwoByte();
 
-  base::Vector<byte> backing_store_;
-  int position_;
-
-  bool is_one_byte_;
+  base::Vector<uint8_t> backing_store_;
+  size_t position_ = 0;
+  bool is_one_byte_ = true;
 };
 
 }  // namespace internal

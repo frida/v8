@@ -3,6 +3,8 @@
 // found in the LICENSE file.
 
 #include "include/v8-platform.h"
+#include "src/init/v8.h"
+#include "test/unittests/heap/heap-utils.h"
 #include "test/unittests/test-utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -14,7 +16,7 @@ class WithSingleThreadedDefaultPlatformMixin : public TMixin {
   WithSingleThreadedDefaultPlatformMixin() {
     platform_ = v8::platform::NewSingleThreadedDefaultPlatform();
     CHECK_NOT_NULL(platform_.get());
-    v8::V8::InitializePlatform(platform_.get());
+    i::V8::InitializePlatformForTesting(platform_.get());
     v8::V8::Initialize();
   }
 
@@ -62,8 +64,8 @@ TEST_F(SingleThreadedDefaultPlatformTest, SingleThreadedDefaultPlatform) {
         "f();");
   }
 
-  CollectGarbage(i::NEW_SPACE);
-  CollectAllAvailableGarbage();
+  InvokeMinorGC(i_isolate());
+  InvokeMemoryReducingMajorGCs(i_isolate());
 }
 
 }  // namespace v8

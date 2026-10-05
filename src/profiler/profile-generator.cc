@@ -5,12 +5,17 @@
 #include "src/profiler/profile-generator.h"
 
 #include <algorithm>
+#include <atomic>
+#include <vector>
 
 #include "include/v8-profiler.h"
+#include "src/base/hashing.h"
+#include "src/base/iterator.h"
 #include "src/base/lazy-instance.h"
 #include "src/codegen/source-position.h"
 #include "src/objects/shared-function-info-inl.h"
 #include "src/profiler/cpu-profiler.h"
+#include "src/profiler/output-stream-writer.h"
 #include "src/profiler/profile-generator-inl.h"
 #include "src/profiler/profiler-stats.h"
 #include "src/tracing/trace-event.h"
@@ -19,10 +24,10 @@
 namespace v8 {
 namespace internal {
 
-void SourcePositionTable::SetPosition(int pc_offset, int line,
+void SourcePositionTable::SetPosition(int pc_offset, LineAndColumn pos,
                                       int inlining_id) {
   DCHECK_GE(pc_offset, 0);
-  DCHECK_GT(line, 0);  // The 1-based number of the source line.
+  DCHECK_GT(pos.line, 0);  // The 1-based number of the source line.
   // It's possible that we map multiple source positions to a pc_offset in
   // optimized code. Usually these map to the same line, so there is no
   // difference here as we only store line number and not line/col in the form
@@ -36,32 +41,44 @@ void SourcePositionTable::SetPosition(int pc_offset, int line,
   DCHECK(pc_offsets_to_lines_.empty() ||
          pc_offsets_to_lines_.back().pc_offset < pc_offset);
   if (pc_offsets_to_lines_.empty() ||
-      pc_offsets_to_lines_.back().line_number != line ||
+      pc_offsets_to_lines_.back().line_number != pos.line ||
+      pc_offsets_to_lines_.back().column_number != pos.column ||
       pc_offsets_to_lines_.back().inlining_id != inlining_id) {
-    pc_offsets_to_lines_.push_back({pc_offset, line, inlining_id});
+    pc_offsets_to_lines_.push_back(
+        {pc_offset, pos.line, pos.column, inlining_id});
   }
 }
 
 int SourcePositionTable::GetSourceLineNumber(int pc_offset) const {
-  if (pc_offsets_to_lines_.empty()) {
-    return v8::CpuProfileNode::kNoLineNumberInfo;
-  }
-  auto it = std::lower_bound(
-      pc_offsets_to_lines_.begin(), pc_offsets_to_lines_.end(),
-      SourcePositionTuple{pc_offset, 0, SourcePosition::kNotInlined});
-  if (it != pc_offsets_to_lines_.begin()) --it;
-  return it->line_number;
+  return GetTuple(pc_offset).line_number;
+}
+
+int SourcePositionTable::GetSourceColumnNumber(int pc_offset) const {
+  return GetTuple(pc_offset).column_number;
+}
+
+LineAndColumn SourcePositionTable::GetSourceLineAndColumn(int pc_offset) const {
+  auto& tuple = GetTuple(pc_offset);
+  return {tuple.line_number, tuple.column_number};
 }
 
 int SourcePositionTable::GetInliningId(int pc_offset) const {
+  return GetTuple(pc_offset).inlining_id;
+}
+
+const SourcePositionTable::SourcePositionTuple& SourcePositionTable::GetTuple(
+    int pc_offset) const {
   if (pc_offsets_to_lines_.empty()) {
-    return SourcePosition::kNotInlined;
+    static constexpr SourcePositionTuple kEmptyTuple = {
+        -1, v8::CpuProfileNode::kNoLineNumberInfo,
+        v8::CpuProfileNode::kNoColumnNumberInfo, SourcePosition::kNotInlined};
+    return kEmptyTuple;
   }
   auto it = std::lower_bound(
       pc_offsets_to_lines_.begin(), pc_offsets_to_lines_.end(),
-      SourcePositionTuple{pc_offset, 0, SourcePosition::kNotInlined});
+      SourcePositionTuple{pc_offset, 0, 0, SourcePosition::kNotInlined});
   if (it != pc_offsets_to_lines_.begin()) --it;
-  return it->inlining_id;
+  return *it;
 }
 
 size_t SourcePositionTable::Size() const {
@@ -92,8 +109,7 @@ const char* const CodeEntry::kRootEntryName = "(root)";
 CodeEntry* CodeEntry::program_entry() {
   static base::LeakyObject<CodeEntry> kProgramEntry(
       LogEventListener::CodeTag::kFunction, CodeEntry::kProgramEntryName,
-      CodeEntry::kEmptyResourceName, v8::CpuProfileNode::kNoLineNumberInfo,
-      v8::CpuProfileNode::kNoColumnNumberInfo, nullptr, false,
+      CodeEntry::kEmptyResourceName, LineAndColumn{}, nullptr, false,
       CodeEntry::CodeType::OTHER);
   return kProgramEntry.get();
 }
@@ -102,8 +118,7 @@ CodeEntry* CodeEntry::program_entry() {
 CodeEntry* CodeEntry::idle_entry() {
   static base::LeakyObject<CodeEntry> kIdleEntry(
       LogEventListener::CodeTag::kFunction, CodeEntry::kIdleEntryName,
-      CodeEntry::kEmptyResourceName, v8::CpuProfileNode::kNoLineNumberInfo,
-      v8::CpuProfileNode::kNoColumnNumberInfo, nullptr, false,
+      CodeEntry::kEmptyResourceName, LineAndColumn{}, nullptr, false,
       CodeEntry::CodeType::OTHER);
   return kIdleEntry.get();
 }
@@ -113,9 +128,7 @@ CodeEntry* CodeEntry::gc_entry() {
   static base::LeakyObject<CodeEntry> kGcEntry(
       LogEventListener::CodeTag::kBuiltin,
       CodeEntry::kGarbageCollectorEntryName, CodeEntry::kEmptyResourceName,
-      v8::CpuProfileNode::kNoLineNumberInfo,
-      v8::CpuProfileNode::kNoColumnNumberInfo, nullptr, false,
-      CodeEntry::CodeType::OTHER);
+      LineAndColumn{}, nullptr, false, CodeEntry::CodeType::OTHER);
   return kGcEntry.get();
 }
 
@@ -123,8 +136,7 @@ CodeEntry* CodeEntry::gc_entry() {
 CodeEntry* CodeEntry::unresolved_entry() {
   static base::LeakyObject<CodeEntry> kUnresolvedEntry(
       LogEventListener::CodeTag::kFunction, CodeEntry::kUnresolvedFunctionName,
-      CodeEntry::kEmptyResourceName, v8::CpuProfileNode::kNoLineNumberInfo,
-      v8::CpuProfileNode::kNoColumnNumberInfo, nullptr, false,
+      CodeEntry::kEmptyResourceName, LineAndColumn{}, nullptr, false,
       CodeEntry::CodeType::OTHER);
   return kUnresolvedEntry.get();
 }
@@ -133,25 +145,22 @@ CodeEntry* CodeEntry::unresolved_entry() {
 CodeEntry* CodeEntry::root_entry() {
   static base::LeakyObject<CodeEntry> kRootEntry(
       LogEventListener::CodeTag::kFunction, CodeEntry::kRootEntryName,
-      CodeEntry::kEmptyResourceName, v8::CpuProfileNode::kNoLineNumberInfo,
-      v8::CpuProfileNode::kNoColumnNumberInfo, nullptr, false,
+      CodeEntry::kEmptyResourceName, LineAndColumn{}, nullptr, false,
       CodeEntry::CodeType::OTHER);
   return kRootEntry.get();
 }
 
-uint32_t CodeEntry::GetHash() const {
-  uint32_t hash = 0;
+size_t CodeEntry::GetHash() const {
+  base::Hasher hasher;
   if (script_id_ != v8::UnboundScript::kNoScriptId) {
-    hash ^= ComputeUnseededHash(static_cast<uint32_t>(script_id_));
-    hash ^= ComputeUnseededHash(static_cast<uint32_t>(position_));
+    hasher.Add(script_id_);
+    hasher.Add(position_);
   } else {
-    hash ^= ComputeUnseededHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name_)));
-    hash ^= ComputeUnseededHash(
-        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(resource_name_)));
-    hash ^= ComputeUnseededHash(line_number_);
+    hasher.Add(name_);
+    hasher.Add(resource_name_);
+    hasher.Add(position_);
   }
-  return hash;
+  return hasher.hash();
 }
 
 bool CodeEntry::IsSameFunctionAs(const CodeEntry* entry) const {
@@ -160,7 +169,8 @@ bool CodeEntry::IsSameFunctionAs(const CodeEntry* entry) const {
     return script_id_ == entry->script_id_ && position_ == entry->position_;
   }
   return name_ == entry->name_ && resource_name_ == entry->resource_name_ &&
-         line_number_ == entry->line_number_;
+         line_and_column_.line == entry->line_and_column_.line &&
+         line_and_column_.column == entry->line_and_column_.column;
 }
 
 void CodeEntry::SetBuiltinId(Builtin id) {
@@ -169,20 +179,19 @@ void CodeEntry::SetBuiltinId(Builtin id) {
   bit_field_ = BuiltinField::update(bit_field_, id);
 }
 
-int CodeEntry::GetSourceLine(int pc_offset) const {
-  if (line_info_) return line_info_->GetSourceLineNumber(pc_offset);
-  return v8::CpuProfileNode::kNoLineNumberInfo;
+LineAndColumn CodeEntry::GetSourcePosition(int pc_offset) const {
+  if (line_info_) return line_info_->GetSourceLineAndColumn(pc_offset);
+  return {};
 }
 
 void CodeEntry::SetInlineStacks(
     std::unordered_set<CodeEntry*, Hasher, Equals> inline_entries,
-    std::unordered_map<int, std::vector<CodeEntryAndLineNumber>>
-        inline_stacks) {
+    std::unordered_map<int, std::vector<CodeEntryAndPosition>> inline_stacks) {
   EnsureRareData()->inline_entries_ = std::move(inline_entries);
   rare_data_->inline_stacks_ = std::move(inline_stacks);
 }
 
-const std::vector<CodeEntryAndLineNumber>* CodeEntry::GetInlineStack(
+const std::vector<CodeEntryAndPosition>* CodeEntry::GetInlineStack(
     int pc_offset) const {
   if (!line_info_) return nullptr;
 
@@ -203,13 +212,14 @@ void CodeEntry::set_deopt_info(
   rare_data->deopt_inlined_frames_ = std::move(inlined_frames);
 }
 
-void CodeEntry::FillFunctionInfo(SharedFunctionInfo shared) {
-  if (!shared.script().IsScript()) return;
-  Script script = Script::cast(shared.script());
-  set_script_id(script.id());
-  set_position(shared.StartPosition());
-  if (shared.optimization_disabled()) {
-    set_bailout_reason(GetBailoutReason(shared.disabled_optimization_reason()));
+void CodeEntry::FillFunctionInfo(Tagged<SharedFunctionInfo> shared) {
+  if (!IsScript(shared->script())) return;
+  Tagged<Script> script = Cast<Script>(shared->script());
+  set_script_id(script->id());
+  set_position(shared->StartPosition());
+  if (shared->all_optimization_disabled()) {
+    set_bailout_reason(
+        GetBailoutReason(shared->disabled_optimization_reason()));
   }
 }
 
@@ -239,7 +249,7 @@ size_t CodeEntry::EstimatedSize() const {
   }
 
   if (line_info_) {
-    estimated_size += line_info_.get()->Size();
+    estimated_size += line_info_->Size();
   }
   return sizeof(*this) + estimated_size;
 }
@@ -261,7 +271,15 @@ CpuProfileDeoptInfo CodeEntry::GetDeoptInfo() {
 
 CodeEntry::RareData* CodeEntry::EnsureRareData() {
   if (!rare_data_) {
-    rare_data_.reset(new RareData());
+    // On platforms with store-store reordering, we need to ensure that the
+    // field initializations in RareData complete before the pointer (in the
+    // std::unique_ptr) becomes visible. Using an std::atomic for rare_data_
+    // would also work, but would penalize every read, also on platforms with
+    // no store-store reordering (like x64).
+    // See http://crbug.com/513435594 for additional details.
+    RareData* rare_data = new RareData();
+    std::atomic_thread_fence(std::memory_order_release);
+    rare_data_.reset(rare_data);
   }
   return rare_data_.get();
 }
@@ -284,8 +302,8 @@ void CodeEntry::print() const {
 
   base::OS::Print(" - name: %s\n", name_);
   base::OS::Print(" - resource_name: %s\n", resource_name_);
-  base::OS::Print(" - line_number: %d\n", line_number_);
-  base::OS::Print(" - column_number: %d\n", column_number_);
+  base::OS::Print(" - line_number: %d\n", line_and_column_.line);
+  base::OS::Print(" - column_number: %d\n", line_and_column_.column);
   base::OS::Print(" - script_id: %d\n", script_id_);
   base::OS::Print(" - position: %d\n", position_);
 
@@ -304,8 +322,8 @@ void CodeEntry::print() const {
            it != rare_data_->inline_stacks_.end(); it++) {
         base::OS::Print("    inlining_id: [%d]\n", it->first);
         for (const auto& e : it->second) {
-          base::OS::Print("     %s --> %d\n", e.code_entry->name(),
-                          e.line_number);
+          base::OS::Print("     %s --> %d:%d\n", e.code_entry->name(),
+                          e.line_and_column.line, e.line_and_column.column);
         }
       }
     } else {
@@ -337,8 +355,9 @@ CpuProfileNode::SourceType ProfileNode::source_type() const {
       entry_ == CodeEntry::root_entry()) {
     return CpuProfileNode::kInternal;
   }
-  if (entry_ == CodeEntry::unresolved_entry())
+  if (entry_ == CodeEntry::unresolved_entry()) {
     return CpuProfileNode::kUnresolved;
+  }
 
   // Otherwise, resolve based on logger tag.
   switch (entry_->code_tag()) {
@@ -368,16 +387,18 @@ void ProfileNode::CollectDeoptInfo(CodeEntry* entry) {
   entry->clear_deopt_info();
 }
 
-ProfileNode* ProfileNode::FindChild(CodeEntry* entry, int line_number) {
-  auto map_entry = children_.find({entry, line_number});
+ProfileNode* ProfileNode::FindChild(CodeEntry* entry,
+                                    LineAndColumn line_and_column) {
+  auto map_entry = children_.find({entry, line_and_column});
   return map_entry != children_.end() ? map_entry->second : nullptr;
 }
 
-ProfileNode* ProfileNode::FindOrAddChild(CodeEntry* entry, int line_number) {
-  auto map_entry = children_.find({entry, line_number});
+ProfileNode* ProfileNode::FindOrAddChild(CodeEntry* entry,
+                                         LineAndColumn line_and_column) {
+  auto map_entry = children_.find({entry, line_and_column});
   if (map_entry == children_.end()) {
-    ProfileNode* node = new ProfileNode(tree_, entry, this, line_number);
-    children_[{entry, line_number}] = node;
+    ProfileNode* node = new ProfileNode(tree_, entry, this, line_and_column);
+    children_[{entry, line_and_column}] = node;
     children_list_.push_back(node);
     return node;
   } else {
@@ -385,33 +406,28 @@ ProfileNode* ProfileNode::FindOrAddChild(CodeEntry* entry, int line_number) {
   }
 }
 
-
-void ProfileNode::IncrementLineTicks(int src_line) {
-  if (src_line == v8::CpuProfileNode::kNoLineNumberInfo) return;
+void ProfileNode::IncrementLineAndColumnTicks(LineAndColumn line_and_column) {
+  if (line_and_column.line == v8::CpuProfileNode::kNoLineNumberInfo) return;
   // Increment a hit counter of a certain source line.
-  // Add a new source line if not found.
-  auto map_entry = line_ticks_.find(src_line);
-  if (map_entry == line_ticks_.end()) {
-    line_ticks_[src_line] = 1;
-  } else {
-    line_ticks_[src_line]++;
-  }
+  // Adds a new source line if not found.
+  line_and_column_ticks_[{line_and_column.line, line_and_column.column}]++;
 }
-
 
 bool ProfileNode::GetLineTicks(v8::CpuProfileNode::LineTick* entries,
                                unsigned int length) const {
   if (entries == nullptr || length == 0) return false;
 
-  unsigned line_count = static_cast<unsigned>(line_ticks_.size());
+  unsigned line_count = static_cast<unsigned>(line_and_column_ticks_.size());
 
   if (line_count == 0) return true;
   if (length < line_count) return false;
 
   v8::CpuProfileNode::LineTick* entry = entries;
 
-  for (auto p = line_ticks_.begin(); p != line_ticks_.end(); p++, entry++) {
-    entry->line = p->first;
+  for (auto p = line_and_column_ticks_.begin();
+       p != line_and_column_ticks_.end(); p++, entry++) {
+    entry->line = p->first.first;
+    entry->column = p->first.second;
     entry->hit_count = p->second;
   }
 
@@ -419,12 +435,15 @@ bool ProfileNode::GetLineTicks(v8::CpuProfileNode::LineTick* entries,
 }
 
 void ProfileNode::Print(int indent) const {
-  int line_number = line_number_ != 0 ? line_number_ : entry_->line_number();
-  base::OS::Print("%5u %*s %s:%d %d %d #%d", self_ticks_, indent, "",
-                  entry_->name(), line_number, source_type(),
-                  entry_->script_id(), id());
-  if (entry_->resource_name()[0] != '\0')
-    base::OS::Print(" %s:%d", entry_->resource_name(), entry_->line_number());
+  LineAndColumn line_and_column = this->line_and_column();
+  base::OS::Print("%5u %*s %s:%d:%d %d %d #%d", self_ticks_, indent, "",
+                  entry_->name(), line_and_column.line, line_and_column.column,
+                  source_type(), entry_->script_id(), id());
+  if (entry_->resource_name()[0] != '\0') {
+    base::OS::Print(" %s:%d:%d", entry_->resource_name(),
+                    entry_->line_and_column().line,
+                    entry_->line_and_column().column);
+  }
   base::OS::Print("\n");
   for (const CpuProfileDeoptInfo& info : deopt_infos_) {
     base::OS::Print(
@@ -469,47 +488,46 @@ ProfileTree::~ProfileTree() {
 }
 
 ProfileNode* ProfileTree::AddPathFromEnd(const std::vector<CodeEntry*>& path,
-                                         int src_line, bool update_stats) {
+                                         LineAndColumn pos, bool update_stats) {
   ProfileNode* node = root_;
   CodeEntry* last_entry = nullptr;
-  for (auto it = path.rbegin(); it != path.rend(); ++it) {
-    if (*it == nullptr) continue;
-    last_entry = *it;
-    node = node->FindOrAddChild(*it, v8::CpuProfileNode::kNoLineNumberInfo);
+  for (CodeEntry* entry : base::Reversed(path)) {
+    if (entry == nullptr) continue;
+    last_entry = entry;
+    node = node->FindOrAddChild(entry, LineAndColumn{});
   }
   if (last_entry && last_entry->has_deopt_info()) {
     node->CollectDeoptInfo(last_entry);
   }
   if (update_stats) {
     node->IncrementSelfTicks();
-    if (src_line != v8::CpuProfileNode::kNoLineNumberInfo) {
-      node->IncrementLineTicks(src_line);
+    if (pos.line != v8::CpuProfileNode::kNoLineNumberInfo) {
+      node->IncrementLineAndColumnTicks(pos);
     }
   }
   return node;
 }
 
 ProfileNode* ProfileTree::AddPathFromEnd(const ProfileStackTrace& path,
-                                         int src_line, bool update_stats,
+                                         LineAndColumn pos, bool update_stats,
                                          ProfilingMode mode) {
   ProfileNode* node = root_;
   CodeEntry* last_entry = nullptr;
-  int parent_line_number = v8::CpuProfileNode::kNoLineNumberInfo;
-  for (auto it = path.rbegin(); it != path.rend(); ++it) {
-    if (it->code_entry == nullptr) continue;
-    last_entry = it->code_entry;
-    node = node->FindOrAddChild(it->code_entry, parent_line_number);
-    parent_line_number = mode == ProfilingMode::kCallerLineNumbers
-                             ? it->line_number
-                             : v8::CpuProfileNode::kNoLineNumberInfo;
+  LineAndColumn parent_pos = {};
+  for (const auto& [entry, frame_pos] : base::Reversed(path)) {
+    if (entry == nullptr) continue;
+    last_entry = entry;
+    node = node->FindOrAddChild(entry, parent_pos);
+    parent_pos =
+        mode == ProfilingMode::kCallerLineNumbers ? frame_pos : LineAndColumn{};
   }
   if (last_entry && last_entry->has_deopt_info()) {
     node->CollectDeoptInfo(last_entry);
   }
   if (update_stats) {
     node->IncrementSelfTicks();
-    if (src_line != v8::CpuProfileNode::kNoLineNumberInfo) {
-      node->IncrementLineTicks(src_line);
+    if (pos.line != v8::CpuProfileNode::kNoLineNumberInfo) {
+      node->IncrementLineAndColumnTicks(pos);
     }
   }
   return node;
@@ -538,7 +556,7 @@ template <typename Callback>
 void ProfileTree::TraverseDepthFirst(Callback* callback) {
   std::vector<Position> stack;
   stack.emplace_back(root_);
-  while (stack.size() > 0) {
+  while (!stack.empty()) {
     Position& current = stack.back();
     if (current.has_current_child()) {
       callback->BeforeTraversingChild(current.node, current.current_child());
@@ -564,6 +582,24 @@ void ContextFilter::OnMoveEvent(Address from_address, Address to_address) {
 
 using v8::tracing::TracedValue;
 
+namespace {
+
+constexpr const char* ToString(v8::CpuProfileSource source) {
+  switch (source) {
+    case v8::CpuProfileSource::kUnspecified:
+      return "Unspecified";
+    case v8::CpuProfileSource::kInspector:
+      return "Inspector";
+    case v8::CpuProfileSource::kSelfProfiling:
+      return "SelfProfiling";
+    case v8::CpuProfileSource::kInternal:
+      return "Internal";
+  }
+  UNREACHABLE();
+}
+
+}  // namespace
+
 std::atomic<ProfilerId> CpuProfilesCollection::last_id_{0};
 
 CpuProfile::CpuProfile(CpuProfiler* profiler, ProfilerId id, const char* title,
@@ -584,6 +620,7 @@ CpuProfile::CpuProfile(CpuProfiler* profiler, ProfilerId id, const char* title,
   // should be used instead (it is recorded nearly immediately after).
   auto value = TracedValue::Create();
   value->SetDouble("startTime", start_time_.since_origin().InMicroseconds());
+  value->SetString("source", ToString(options_.profile_source()));
   TRACE_EVENT_SAMPLE_WITH_ID1(TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"),
                               "Profile", id_, "data", std::move(value));
 
@@ -616,14 +653,14 @@ bool CpuProfile::CheckSubsample(base::TimeDelta source_sampling_interval) {
 }
 
 void CpuProfile::AddPath(base::TimeTicks timestamp,
-                         const ProfileStackTrace& path, int src_line,
+                         const ProfileStackTrace& path, LineAndColumn src_pos,
                          bool update_stats, base::TimeDelta sampling_interval,
                          StateTag state_tag,
-                         EmbedderStateTag embedder_state_tag) {
+                         EmbedderStateTag embedder_state_tag,
+                         const std::optional<uint64_t> trace_id) {
   if (!CheckSubsample(sampling_interval)) return;
-
   ProfileNode* top_frame_node =
-      top_down_.AddPathFromEnd(path, src_line, update_stats, options_.mode());
+      top_down_.AddPathFromEnd(path, src_pos, update_stats, options_.mode());
 
   bool is_buffer_full =
       options_.max_samples() != CpuProfilingOptions::kNoSampleLimit &&
@@ -632,8 +669,8 @@ void CpuProfile::AddPath(base::TimeTicks timestamp,
       !timestamp.IsNull() && timestamp >= start_time_ && !is_buffer_full;
 
   if (should_record_sample) {
-    samples_.push_back(
-        {top_frame_node, timestamp, src_line, state_tag, embedder_state_tag});
+    samples_.push_back({top_frame_node, timestamp, src_pos, state_tag,
+                        embedder_state_tag, trace_id});
   } else if (is_buffer_full && delegate_ != nullptr) {
     const auto task_runner = V8::GetCurrentPlatform()->GetForegroundTaskRunner(
         reinterpret_cast<v8::Isolate*>(profiler_->isolate()));
@@ -662,11 +699,11 @@ void BuildNodeValue(const ProfileNode* node, TracedValue* value) {
     value->SetString("url", entry->resource_name());
   }
   value->SetInteger("scriptId", entry->script_id());
-  if (entry->line_number()) {
-    value->SetInteger("lineNumber", entry->line_number() - 1);
+  if (entry->line_and_column().line) {
+    value->SetInteger("lineNumber", entry->line_and_column().line - 1);
   }
-  if (entry->column_number()) {
-    value->SetInteger("columnNumber", entry->column_number() - 1);
+  if (entry->line_and_column().line) {
+    value->SetInteger("columnNumber", entry->line_and_column().column - 1);
   }
   value->SetString("codeType", entry->code_type_string());
   value->EndDictionary();
@@ -687,6 +724,8 @@ void CpuProfile::StreamPendingTraceEvents() {
   if (pending_nodes.empty() && samples_.empty()) return;
   auto value = TracedValue::Create();
 
+  value->SetString("source", ToString(options_.profile_source()));
+
   if (!pending_nodes.empty() || streaming_next_sample_ != samples_.size()) {
     value->BeginDictionary("cpuProfile");
     if (!pending_nodes.empty()) {
@@ -704,6 +743,16 @@ void CpuProfile::StreamPendingTraceEvents() {
         value->AppendInteger(samples_[i].node->id());
       }
       value->EndArray();
+      value->BeginDictionary("trace_ids");
+      for (size_t i = streaming_next_sample_; i < samples_.size(); ++i) {
+        if (!samples_[i].trace_id.has_value()) {
+          continue;
+        }
+        value->SetUnsignedInteger(
+            std::to_string(samples_[i].trace_id.value()).c_str(),
+            samples_[i].node->id());
+      }
+      value->EndDictionary();
     }
     value->EndDictionary();
   }
@@ -730,11 +779,18 @@ void CpuProfile::StreamPendingTraceEvents() {
     value->EndArray();
     bool has_non_zero_lines =
         std::any_of(samples_.begin() + streaming_next_sample_, samples_.end(),
-                    [](const SampleInfo& sample) { return sample.line != 0; });
+                    [](const SampleInfo& sample) {
+                      return sample.line_and_column.line != 0;
+                    });
     if (has_non_zero_lines) {
       value->BeginArray("lines");
       for (size_t i = streaming_next_sample_; i < samples_.size(); ++i) {
-        value->AppendInteger(samples_[i].line);
+        value->AppendInteger(samples_[i].line_and_column.line);
+      }
+      value->EndArray();
+      value->BeginArray("columns");
+      for (size_t i = streaming_next_sample_; i < samples_.size(); ++i) {
+        value->AppendInteger(samples_[i].line_and_column.column);
       }
       value->EndArray();
     }
@@ -751,6 +807,7 @@ void CpuProfile::FinishProfile() {
   context_filter_.set_native_context_address(kNullAddress);
   StreamPendingTraceEvents();
   auto value = TracedValue::Create();
+  value->SetString("source", ToString(options_.profile_source()));
   // The endTime timestamp is not converted to Perfetto's clock domain and will
   // get out of sync with other timestamps Perfetto knows about, including the
   // automatic trace event "ts" timestamp. endTime is included for backward
@@ -760,6 +817,162 @@ void CpuProfile::FinishProfile() {
   value->SetDouble("endTime", end_time_.since_origin().InMicroseconds());
   TRACE_EVENT_SAMPLE_WITH_ID1(TRACE_DISABLED_BY_DEFAULT("v8.cpu_profiler"),
                               "ProfileChunk", id_, "data", std::move(value));
+}
+
+namespace {
+
+void FlattenNodesTree(const v8::CpuProfileNode* node,
+                      std::vector<const v8::CpuProfileNode*>* nodes) {
+  nodes->emplace_back(node);
+  const int childrenCount = node->GetChildrenCount();
+  for (int i = 0; i < childrenCount; i++) {
+    FlattenNodesTree(node->GetChild(i), nodes);
+  }
+}
+
+}  // namespace
+
+void CpuProfileJSONSerializer::Serialize(v8::OutputStream* stream) {
+  DCHECK_NULL(writer_);
+  writer_ = new OutputStreamWriter(stream);
+  SerializeImpl();
+  delete writer_;
+  writer_ = nullptr;
+}
+
+void CpuProfileJSONSerializer::SerializePositionTicks(
+    const v8::CpuProfileNode* node, int lineCount) {
+  std::vector<v8::CpuProfileNode::LineTick> entries(lineCount);
+  if (node->GetLineTicks(&entries[0], lineCount)) {
+    for (int i = 0; i < lineCount; i++) {
+      writer_->AddCharacter('{');
+      writer_->AddString("\"line\":");
+      writer_->AddNumber(entries[i].line);
+      writer_->AddString(",\"ticks\":");
+      writer_->AddNumber(entries[i].hit_count);
+      writer_->AddCharacter('}');
+      if (i != (lineCount - 1)) writer_->AddCharacter(',');
+    }
+  }
+}
+
+void CpuProfileJSONSerializer::SerializeCallFrame(
+    const v8::CpuProfileNode* node) {
+  writer_->AddString("\"functionName\":");
+  writer_->AddJsonEscapedString(
+      reinterpret_cast<const unsigned char*>(node->GetFunctionNameStr()));
+  writer_->AddString(",\"lineNumber\":");
+  writer_->AddNumber(node->GetLineNumber() - 1);
+  writer_->AddString(",\"columnNumber\":");
+  writer_->AddNumber(node->GetColumnNumber() - 1);
+  writer_->AddString(",\"scriptId\":");
+  writer_->AddNumber(node->GetScriptId());
+  writer_->AddString(",\"url\":");
+  writer_->AddJsonEscapedString(
+      reinterpret_cast<const unsigned char*>(node->GetScriptResourceNameStr()));
+}
+
+void CpuProfileJSONSerializer::SerializeChildren(const v8::CpuProfileNode* node,
+                                                 int childrenCount) {
+  for (int i = 0; i < childrenCount; i++) {
+    writer_->AddNumber(node->GetChild(i)->GetNodeId());
+    if (i != (childrenCount - 1)) writer_->AddCharacter(',');
+  }
+}
+
+void CpuProfileJSONSerializer::SerializeNode(const v8::CpuProfileNode* node) {
+  writer_->AddCharacter('{');
+  writer_->AddString("\"id\":");
+  writer_->AddNumber(node->GetNodeId());
+
+  writer_->AddString(",\"hitCount\":");
+  writer_->AddNumber(node->GetHitCount());
+
+  writer_->AddString(",\"callFrame\":{");
+  SerializeCallFrame(node);
+  writer_->AddCharacter('}');
+
+  const int childrenCount = node->GetChildrenCount();
+  if (childrenCount) {
+    writer_->AddString(",\"children\":[");
+    SerializeChildren(node, childrenCount);
+    writer_->AddCharacter(']');
+  }
+
+  const char* deoptReason = node->GetBailoutReason();
+  if (deoptReason && deoptReason[0] && strcmp(deoptReason, "no reason")) {
+    writer_->AddString(",\"deoptReason\":");
+    writer_->AddJsonEscapedString(
+        reinterpret_cast<const unsigned char*>(deoptReason));
+  }
+
+  unsigned lineCount = node->GetHitLineCount();
+  if (lineCount) {
+    writer_->AddString(",\"positionTicks\":[");
+    SerializePositionTicks(node, lineCount);
+    writer_->AddCharacter(']');
+  }
+  writer_->AddCharacter('}');
+}
+
+void CpuProfileJSONSerializer::SerializeNodes() {
+  std::vector<const v8::CpuProfileNode*> nodes;
+  FlattenNodesTree(
+      reinterpret_cast<const v8::CpuProfileNode*>(profile_->top_down()->root()),
+      &nodes);
+
+  for (size_t i = 0; i < nodes.size(); i++) {
+    SerializeNode(nodes.at(i));
+    if (writer_->aborted()) return;
+    if (i != (nodes.size() - 1)) writer_->AddCharacter(',');
+  }
+}
+
+void CpuProfileJSONSerializer::SerializeTimeDeltas() {
+  int count = profile_->samples_count();
+  uint64_t lastTime = profile_->start_time().since_origin().InMicroseconds();
+  for (int i = 0; i < count; i++) {
+    uint64_t ts = profile_->sample(i).timestamp.since_origin().InMicroseconds();
+    writer_->AddNumber(static_cast<int>(ts - lastTime));
+    if (i != (count - 1)) writer_->AddString(",");
+    lastTime = ts;
+  }
+}
+
+void CpuProfileJSONSerializer::SerializeSamples() {
+  int count = profile_->samples_count();
+  for (int i = 0; i < count; i++) {
+    writer_->AddNumber(profile_->sample(i).node->id());
+    if (i != (count - 1)) writer_->AddString(",");
+  }
+}
+
+void CpuProfileJSONSerializer::SerializeImpl() {
+  writer_->AddCharacter('{');
+  writer_->AddString("\"nodes\":[");
+  SerializeNodes();
+  writer_->AddString("]");
+
+  writer_->AddString(",\"startTime\":");
+  writer_->AddNumber(static_cast<unsigned>(
+      profile_->start_time().since_origin().InMicroseconds()));
+
+  writer_->AddString(",\"endTime\":");
+  writer_->AddNumber(static_cast<unsigned>(
+      profile_->end_time().since_origin().InMicroseconds()));
+
+  writer_->AddString(",\"samples\":[");
+  SerializeSamples();
+  if (writer_->aborted()) return;
+  writer_->AddCharacter(']');
+
+  writer_->AddString(",\"timeDeltas\":[");
+  SerializeTimeDeltas();
+  if (writer_->aborted()) return;
+  writer_->AddString("]");
+
+  writer_->AddCharacter('}');
+  writer_->Finalize();
 }
 
 void CpuProfile::Print() const {
@@ -785,11 +998,12 @@ void CodeEntryStorage::DecRef(CodeEntry* entry) {
   }
 }
 
-CodeMap::CodeMap(CodeEntryStorage& storage) : code_entries_(storage) {}
+InstructionStreamMap::InstructionStreamMap(CodeEntryStorage& storage)
+    : code_entries_(storage) {}
 
-CodeMap::~CodeMap() { Clear(); }
+InstructionStreamMap::~InstructionStreamMap() { Clear(); }
 
-void CodeMap::Clear() {
+void InstructionStreamMap::Clear() {
   for (auto& slot : code_map_) {
     if (CodeEntry* entry = slot.second.entry) {
       code_entries_.DecRef(entry);
@@ -802,12 +1016,13 @@ void CodeMap::Clear() {
   code_map_.clear();
 }
 
-void CodeMap::AddCode(Address addr, CodeEntry* entry, unsigned size) {
+void InstructionStreamMap::AddCode(Address addr, CodeEntry* entry,
+                                   unsigned size) {
   code_map_.emplace(addr, CodeEntryMapInfo{entry, size});
   entry->set_instruction_start(addr);
 }
 
-bool CodeMap::RemoveCode(CodeEntry* entry) {
+bool InstructionStreamMap::RemoveCode(CodeEntry* entry) {
   auto range = code_map_.equal_range(entry->instruction_start());
   for (auto i = range.first; i != range.second; ++i) {
     if (i->second.entry == entry) {
@@ -819,7 +1034,7 @@ bool CodeMap::RemoveCode(CodeEntry* entry) {
   return false;
 }
 
-void CodeMap::ClearCodesInRange(Address start, Address end) {
+void InstructionStreamMap::ClearCodesInRange(Address start, Address end) {
   auto left = code_map_.upper_bound(start);
   if (left != code_map_.begin()) {
     --left;
@@ -832,7 +1047,8 @@ void CodeMap::ClearCodesInRange(Address start, Address end) {
   code_map_.erase(left, right);
 }
 
-CodeEntry* CodeMap::FindEntry(Address addr, Address* out_instruction_start) {
+CodeEntry* InstructionStreamMap::FindEntry(Address addr,
+                                           Address* out_instruction_start) {
   // Note that an address may correspond to multiple CodeEntry objects. An
   // arbitrary selection is made (as per multimap spec) in the event of a
   // collision.
@@ -847,7 +1063,7 @@ CodeEntry* CodeMap::FindEntry(Address addr, Address* out_instruction_start) {
   return ret;
 }
 
-void CodeMap::MoveCode(Address from, Address to) {
+void InstructionStreamMap::MoveCode(Address from, Address to) {
   if (from == to) return;
 
   auto range = code_map_.equal_range(from);
@@ -870,14 +1086,14 @@ void CodeMap::MoveCode(Address from, Address to) {
   code_map_.erase(range.first, it);
 }
 
-void CodeMap::Print() {
+void InstructionStreamMap::Print() {
   for (const auto& pair : code_map_) {
     base::OS::Print("%p %5d %s\n", reinterpret_cast<void*>(pair.first),
                     pair.second.size, pair.second.entry->name());
   }
 }
 
-size_t CodeMap::GetEstimatedMemoryUsage() const {
+size_t InstructionStreamMap::GetEstimatedMemoryUsage() const {
   size_t map_size = 0;
   for (const auto& pair : code_map_) {
     map_size += sizeof(pair.first) + sizeof(pair.second) +
@@ -1023,10 +1239,11 @@ base::TimeDelta CpuProfilesCollection::GetCommonSamplingInterval() {
 }
 
 void CpuProfilesCollection::AddPathToCurrentProfiles(
-    base::TimeTicks timestamp, const ProfileStackTrace& path, int src_line,
-    bool update_stats, base::TimeDelta sampling_interval, StateTag state,
-    EmbedderStateTag embedder_state_tag, Address native_context_address,
-    Address embedder_native_context_address) {
+    base::TimeTicks timestamp, const ProfileStackTrace& path,
+    LineAndColumn src_pos, bool update_stats, base::TimeDelta sampling_interval,
+    StateTag state, EmbedderStateTag embedder_state_tag,
+    Address native_context_address, Address embedder_native_context_address,
+    const std::optional<uint64_t> trace_id) {
   // As starting / stopping profiles is rare relatively to this
   // method, we don't bother minimizing the duration of lock holding,
   // e.g. copying contents of the list to a local vector.
@@ -1040,15 +1257,17 @@ void CpuProfilesCollection::AddPathToCurrentProfiles(
         context_filter.Accept(embedder_native_context_address);
 
     // if FilterContext is set, do not propagate StateTag if not accepted.
-    // GC is exception because native context address is guaranteed to be empty.
-    DCHECK(state != StateTag::GC || native_context_address == kNullAddress);
-    if (!accepts_context && state != StateTag::GC) {
+    // GC (and LOGGING when during GC) is the exception, because native context
+    // address can be empty but we still want to know that this is GC.
+    if (!accepts_context && state != StateTag::GC &&
+        state != StateTag::LOGGING) {
       state = StateTag::IDLE;
     }
-    profile->AddPath(timestamp, accepts_context ? path : empty_path, src_line,
-                     update_stats, sampling_interval, state,
-                     accepts_embedder_context ? embedder_state_tag
-                                              : EmbedderStateTag::EMPTY);
+    profile->AddPath(
+        timestamp, accepts_context ? path : empty_path, src_pos, update_stats,
+        sampling_interval, state,
+        accepts_embedder_context ? embedder_state_tag : EmbedderStateTag::EMPTY,
+        trace_id);
   }
 }
 

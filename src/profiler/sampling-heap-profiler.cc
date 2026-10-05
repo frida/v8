@@ -5,13 +5,16 @@
 #include "src/profiler/sampling-heap-profiler.h"
 
 #include <stdint.h>
+
 #include <memory>
 
 #include "src/api/api-inl.h"
 #include "src/base/ieee754.h"
+#include "src/base/iterator.h"
 #include "src/base/utils/random-number-generator.h"
 #include "src/execution/frames-inl.h"
 #include "src/execution/isolate.h"
+#include "src/heap/heap-layout-inl.h"
 #include "src/heap/heap.h"
 #include "src/profiler/strings-storage.h"
 
@@ -25,8 +28,9 @@ namespace internal {
 // Let u be a uniformly distributed random number between 0 and 1, then
 // next_sample = (- ln u) / λ
 intptr_t SamplingHeapProfiler::Observer::GetNextSampleInterval(uint64_t rate) {
-  if (v8_flags.sampling_heap_profiler_suppress_randomness)
+  if (v8_flags.sampling_heap_profiler_suppress_randomness) {
     return static_cast<intptr_t>(rate);
+  }
   double u = random_->NextDouble();
   double next = (-base::ieee754::log(u)) * rate;
   return next < kTaggedSize
@@ -37,13 +41,14 @@ intptr_t SamplingHeapProfiler::Observer::GetNextSampleInterval(uint64_t rate) {
 // Samples were collected according to a poisson process. Since we have not
 // recorded all allocations, we must approximate the shape of the underlying
 // space of allocations based on the samples we have collected. Given that
-// we sample at rate R, the probability that an allocation of size S will be
-// sampled is 1-exp(-S/R). This function uses the above probability to
+// we sample at interval I, the probability that an allocation of size S will
+// be sampled is 1-exp(-S/I). This function uses the above probability to
 // approximate the true number of allocations with size *size* given that
 // *count* samples were observed.
 v8::AllocationProfile::Allocation SamplingHeapProfiler::ScaleSample(
-    size_t size, unsigned int count) const {
-  double scale = 1.0 / (1.0 - std::exp(-static_cast<double>(size) / rate_));
+    size_t size, unsigned int count, uint64_t sample_interval) const {
+  double scale =
+      1.0 / (1.0 - std::exp(-static_cast<double>(size) / sample_interval));
   // Round count instead of truncating.
   return {size, static_cast<unsigned int>(count * scale + 0.5)};
 }
@@ -53,15 +58,15 @@ SamplingHeapProfiler::SamplingHeapProfiler(
     v8::HeapProfiler::SamplingFlags flags)
     : isolate_(Isolate::FromHeap(heap)),
       heap_(heap),
-      allocation_observer_(heap_, static_cast<intptr_t>(rate), rate, this,
+      allocation_observer_(heap_, static_cast<intptr_t>(rate), this,
                            isolate_->random_number_generator()),
       names_(names),
       profile_root_(nullptr, "(root)", v8::UnboundScript::kNoScriptId, 0,
                     next_node_id()),
       stack_depth_(stack_depth),
-      rate_(rate),
+      interval_(rate),
       flags_(flags) {
-  CHECK_GT(rate_, 0u);
+  CHECK_GT(interval_.load(std::memory_order_relaxed), 0u);
   heap_->AddAllocationObserversToAllSpaces(&allocation_observer_,
                                            &allocation_observer_);
 }
@@ -75,18 +80,29 @@ void SamplingHeapProfiler::SampleObject(Address soon_object, size_t size) {
   DisallowGarbageCollection no_gc;
 
   // Check if the area is iterable by confirming that it starts with a map.
-  DCHECK(HeapObject::FromAddress(soon_object).map(isolate_).IsMap(isolate_));
+  DCHECK(IsMap(HeapObject::FromAddress(soon_object)->map()));
 
   HandleScope scope(isolate_);
-  HeapObject heap_object = HeapObject::FromAddress(soon_object);
+  Tagged<HeapObject> heap_object = HeapObject::FromAddress(soon_object);
   Handle<Object> obj(heap_object, isolate_);
 
-  Local<v8::Value> loc = v8::Utils::ToLocal(obj);
+  // Since soon_object can be in code space or trusted space we can't use
+  // v8::Utils::ToLocal.
+  DCHECK(obj.is_null() ||
+         (IsSmi(*obj) ||
+          (V8_EXTERNAL_CODE_SPACE_BOOL &&
+           TrustedHeapLayout::InCodeSpace(heap_object)) ||
+          TrustedHeapLayout::InTrustedSpace(heap_object) || !IsTheHole(*obj)));
+  auto loc = Local<v8::Value>::FromSlot(obj.location());
 
+  // Record the current sampling interval so that this sample is scaled
+  // with the exact weight in effect at draw time.
+  const uint64_t interval_at_sample =
+      interval_.load(std::memory_order_relaxed);
   AllocationNode* node = AddStack();
-  node->allocations_[size]++;
-  auto sample =
-      std::make_unique<Sample>(size, node, loc, this, next_sample_id());
+  node->allocations_[{size, interval_at_sample}]++;
+  auto sample = std::make_unique<Sample>(size, node, loc, this,
+                                         next_sample_id(), interval_at_sample);
   sample->global.SetWeak(sample.get(), OnWeakCallback,
                          WeakCallbackType::kParameter);
   samples_.emplace(sample.get(), std::move(sample));
@@ -109,10 +125,11 @@ void SamplingHeapProfiler::OnWeakCallback(
     return;
   }
   AllocationNode* node = sample->owner;
-  DCHECK_GT(node->allocations_[sample->size], 0);
-  node->allocations_[sample->size]--;
-  if (node->allocations_[sample->size] == 0) {
-    node->allocations_.erase(sample->size);
+  const auto key = std::make_pair(sample->size, sample->sample_interval);
+  DCHECK_GT(node->allocations_[key], 0u);
+  node->allocations_[key]--;
+  if (node->allocations_[key] == 0) {
+    node->allocations_.erase(key);
     while (node->allocations_.empty() && node->children_.empty() &&
            node->parent_ && !node->parent_->pinned_) {
       AllocationNode* parent = node->parent_;
@@ -144,8 +161,8 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::FindOrAddChildNode(
 SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
   AllocationNode* node = &profile_root_;
 
-  std::vector<SharedFunctionInfo> stack;
-  JavaScriptFrameIterator frame_it(isolate_);
+  std::vector<Tagged<SharedFunctionInfo>> stack;
+  JavaScriptStackFrameIterator frame_it(isolate_);
   int frames_captured = 0;
   bool found_arguments_marker_frames = false;
   while (!frame_it.done() && frames_captured < stack_depth_) {
@@ -155,8 +172,8 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
     // closure on the stack. Skip over any such frames (they'll be
     // in the top frames of the stack). The allocations made in this
     // sensitive moment belong to the formerly optimized frame anyway.
-    if (frame->unchecked_function().IsJSFunction()) {
-      SharedFunctionInfo shared = frame->function().shared();
+    if (IsJSFunction(frame->unchecked_function())) {
+      Tagged<SharedFunctionInfo> shared = frame->function()->shared();
       stack.push_back(shared);
       frames_captured++;
     } else {
@@ -186,6 +203,12 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
       case EXTERNAL:
         name = "(EXTERNAL)";
         break;
+      case LOGGING:
+        name = "(LOGGING)";
+        break;
+      case IDLE_EXTERNAL:
+        name = "(IDLE_EXTERNAL)";
+        break;
       case IDLE:
         name = "(IDLE)";
         break;
@@ -201,15 +224,14 @@ SamplingHeapProfiler::AllocationNode* SamplingHeapProfiler::AddStack() {
 
   // We need to process the stack in reverse order as the top of the stack is
   // the first element in the list.
-  for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
-    SharedFunctionInfo shared = *it;
-    const char* name = this->names()->GetCopy(shared.DebugNameCStr().get());
+  for (Tagged<SharedFunctionInfo> shared : base::Reversed(stack)) {
+    const char* name = this->names()->GetCopy(shared->DebugNameCStr().get());
     int script_id = v8::UnboundScript::kNoScriptId;
-    if (shared.script().IsScript()) {
-      Script script = Script::cast(shared.script());
-      script_id = script.id();
+    if (IsScript(shared->script())) {
+      Tagged<Script> script = Cast<Script>(shared->script());
+      script_id = script->id();
     }
-    node = FindOrAddChildNode(node, name, script_id, shared.StartPosition());
+    node = FindOrAddChildNode(node, name, script_id, shared->StartPosition());
   }
 
   if (found_arguments_marker_frames) {
@@ -227,7 +249,7 @@ v8::AllocationProfile::Node* SamplingHeapProfiler::TranslateAllocationNode(
   // a GC kicks in during the tree retrieval.
   node->pinned_ = true;
   Local<v8::String> script_name =
-      ToApiHandle<v8::String>(isolate_->factory()->InternalizeUtf8String(""));
+      ToApiHandle<v8::String>(isolate_->factory()->empty_string());
   int line = v8::AllocationProfile::kNoLineNumberInfo;
   int column = v8::AllocationProfile::kNoColumnNumberInfo;
   std::vector<v8::AllocationProfile::Allocation> allocations;
@@ -235,18 +257,32 @@ v8::AllocationProfile::Node* SamplingHeapProfiler::TranslateAllocationNode(
   if (node->script_id_ != v8::UnboundScript::kNoScriptId) {
     auto script_iterator = scripts.find(node->script_id_);
     if (script_iterator != scripts.end()) {
-      Handle<Script> script = script_iterator->second;
-      if (script->name().IsName()) {
-        Name name = Name::cast(script->name());
+      DirectHandle<Script> script = script_iterator->second;
+      if (IsString(script->name())) {
+        script_name =
+            ToApiHandle<v8::String>(isolate_->factory()->InternalizeString(
+                direct_handle(Cast<String>(script->name()), isolate_)));
+      } else if (IsSymbol(script->name())) {
+        Tagged<Symbol> symbol = Cast<Symbol>(script->name());
         script_name = ToApiHandle<v8::String>(
-            isolate_->factory()->InternalizeUtf8String(names_->GetName(name)));
+            isolate_->factory()->InternalizeUtf8String(
+                names_->GetName(symbol)));
       }
-      line = 1 + Script::GetLineNumber(script, node->script_position_);
-      column = 1 + Script::GetColumnNumber(script, node->script_position_);
+      Script::PositionInfo pos_info;
+      Script::GetPositionInfo(script, node->script_position_, &pos_info);
+      line = pos_info.line + 1;
+      column = pos_info.column + 1;
     }
   }
-  for (auto alloc : node->allocations_) {
-    allocations.push_back(ScaleSample(alloc.first, alloc.second));
+  // Entries are keyed by (size, interval). Scale each with its own interval,
+  // then merge by size for the public per-size Allocation output.
+  std::map<size_t, unsigned int> per_size;
+  for (const auto& [key, count] : node->allocations_) {
+    const auto& [size, interval] = key;
+    per_size[size] += ScaleSample(size, count, interval).count;
+  }
+  for (const auto& [size, count] : per_size) {
+    allocations.push_back({size, count});
   }
 
   profile->nodes_.push_back(v8::AllocationProfile::Node{
@@ -270,16 +306,16 @@ v8::AllocationProfile::Node* SamplingHeapProfiler::TranslateAllocationNode(
 v8::AllocationProfile* SamplingHeapProfiler::GetAllocationProfile() {
   if (flags_ & v8::HeapProfiler::kSamplingForceGC) {
     isolate_->heap()->CollectAllGarbage(
-        Heap::kNoGCFlags, GarbageCollectionReason::kSamplingProfiler);
+        GCFlag::kNoFlags, GarbageCollectionReason::kSamplingProfiler);
   }
   // To resolve positions to line/column numbers, we will need to look up
   // scripts. Build a map to allow fast mapping from script id to script.
   std::map<int, Handle<Script>> scripts;
   {
     Script::Iterator iterator(isolate_);
-    for (Script script = iterator.Next(); !script.is_null();
+    for (Tagged<Script> script = iterator.Next(); !script.is_null();
          script = iterator.Next()) {
-      scripts[script.id()] = handle(script, isolate_);
+      scripts[script->id()] = handle(script, isolate_);
     }
   }
   auto profile = new v8::internal::AllocationProfile();
@@ -295,11 +331,26 @@ SamplingHeapProfiler::BuildSamples() const {
   samples.reserve(samples_.size());
   for (const auto& it : samples_) {
     const Sample* sample = it.second.get();
+    const bool is_live = !sample->global.IsEmpty();
     samples.emplace_back(v8::AllocationProfile::Sample{
-        sample->owner->id_, sample->size, ScaleSample(sample->size, 1).count,
-        sample->sample_id});
+        sample->owner->id_, sample->size,
+        ScaleSample(sample->size, 1, sample->sample_interval).count,
+        sample->sample_id, is_live, sample->sample_interval});
   }
   return samples;
+}
+
+std::vector<v8::AllocationProfile::Sample> SamplingHeapProfiler::GetSamples() {
+  if (flags_ & v8::HeapProfiler::kSamplingForceGC) {
+    isolate_->heap()->CollectAllGarbage(
+        GCFlag::kNoFlags, GarbageCollectionReason::kSamplingProfiler);
+  }
+  return BuildSamples();
+}
+
+void SamplingHeapProfiler::SetSamplingInterval(uint64_t sample_interval) {
+  CHECK_GT(sample_interval, 0u);
+  interval_.store(sample_interval, std::memory_order_relaxed);
 }
 
 }  // namespace internal

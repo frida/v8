@@ -30,6 +30,9 @@ BasicBlock::BasicBlock(Zone* zone, Id id)
 #if DEBUG
       debug_info_(AssemblerDebugInfo(nullptr, nullptr, -1)),
 #endif
+#ifdef LOG_BUILTIN_BLOCK_COUNT
+      pgo_execution_count_(0),
+#endif
       id_(id) {
 }
 
@@ -232,6 +235,11 @@ bool IsPotentiallyThrowingCall(IrOpcode::Value opcode) {
     JS_OP_LIST(BUILD_BLOCK_JS_CASE)
 #undef BUILD_BLOCK_JS_CASE
     case IrOpcode::kCall:
+    case IrOpcode::kFastApiCall:
+    case IrOpcode::kStringToLowerCaseIntl:
+    case IrOpcode::kStringToUpperCaseIntl:
+    case IrOpcode::kStringLocaleCompareIntl:
+    case IrOpcode::kLoadDictionaryField:
       return true;
     default:
       return false;
@@ -460,22 +468,17 @@ std::ostream& operator<<(std::ostream& os, const Schedule& s) {
   for (BasicBlock* block :
        ((s.RpoBlockCount() == 0) ? *s.all_blocks() : *s.rpo_order())) {
     if (block == nullptr) continue;
-    if (block->rpo_number() == -1) {
-      os << "--- BLOCK id:" << block->id();
-    } else {
-      os << "--- BLOCK B" << block->rpo_number();
-    }
+    os << "--- BLOCK B" << block->rpo_number() << " id" << block->id();
+#ifdef LOG_BUILTIN_BLOCK_COUNT
+    os << " PGO Execution Count:" << block->pgo_execution_count();
+#endif
     if (block->deferred()) os << " (deferred)";
     if (block->PredecessorCount() != 0) os << " <- ";
     bool comma = false;
     for (BasicBlock const* predecessor : block->predecessors()) {
       if (comma) os << ", ";
       comma = true;
-      if (predecessor->rpo_number() == -1) {
-        os << "id:" << predecessor->id();
-      } else {
-        os << "B" << predecessor->rpo_number();
-      }
+      os << "B" << predecessor->rpo_number();
     }
     os << " ---\n";
     for (Node* node : *block) {
@@ -498,11 +501,7 @@ std::ostream& operator<<(std::ostream& os, const Schedule& s) {
       for (BasicBlock const* successor : block->successors()) {
         if (comma) os << ", ";
         comma = true;
-        if (successor->rpo_number() == -1) {
-          os << "id:" << successor->id();
-        } else {
-          os << "B" << successor->rpo_number();
-        }
+        os << "B" << successor->rpo_number();
       }
       os << "\n";
     }

@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 
 function Bar(x) {
   this.bar = x
@@ -18,4 +18,4 @@ assertEquals(2, foo([2]).bar);
 %OptimizeMaglevOnNextCall(foo);
 assertEquals(1, foo([1]).bar);
 assertEquals(2, foo([2]).bar);
-assertTrue(isMaglevved(foo));
+assertMaglevved(foo);

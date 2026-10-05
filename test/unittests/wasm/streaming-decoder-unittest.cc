@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "test/unittests/test-utils.h"
-
-#include "src/objects/objects-inl.h"
-
-#include "src/wasm/module-decoder.h"
 #include "src/wasm/streaming-decoder.h"
 
-#include "src/objects/descriptor-array.h"
-#include "src/objects/dictionary.h"
+#include "src/wasm/module-decoder.h"
+#include "src/wasm/wasm-engine.h"
+#include "test/common/flag-utils.h"
 #include "test/common/wasm/wasm-macro-gen.h"
+#include "test/unittests/test-utils.h"
 
 namespace v8 {
 namespace internal {
@@ -20,17 +17,17 @@ namespace wasm {
 struct MockStreamingResult {
   size_t num_sections = 0;
   size_t num_functions = 0;
-  WasmError error;
-  base::OwnedVector<uint8_t> received_bytes;
+  bool error;
+  base::OwnedVector<const uint8_t> received_bytes;
 
-  bool ok() const { return !error.has_error(); }
+  bool ok() const { return !error; }
 
   MockStreamingResult() = default;
 };
 
 class NoTracer {
  public:
-  void Bytes(const byte* start, uint32_t count) {}
+  void Bytes(const uint8_t* start, uint32_t count) {}
   void Description(const char* desc) {}
 };
 
@@ -39,16 +36,17 @@ class MockStreamingProcessor : public StreamingProcessor {
   explicit MockStreamingProcessor(MockStreamingResult* result)
       : result_(result) {}
 
-  bool ProcessModuleHeader(base::Vector<const uint8_t> bytes,
-                           uint32_t offset) override {
+  void InitializeIsolateSpecificInfo(Isolate*) override {}
+
+  bool ProcessModuleHeader(base::Vector<const uint8_t> bytes) override {
     Decoder decoder(bytes.begin(), bytes.end());
-    NoTracer no_tracer;
-    uint32_t magic_word = decoder.consume_u32("wasm magic", no_tracer);
+    uint32_t magic_word = decoder.consume_u32("wasm magic", ITracer::NoTrace);
     if (decoder.failed() || magic_word != kWasmMagic) {
       result_->error = WasmError(0, "expected wasm magic");
       return false;
     }
-    uint32_t magic_version = decoder.consume_u32("wasm version", no_tracer);
+    uint32_t magic_version =
+        decoder.consume_u32("wasm version", ITracer::NoTrace);
     if (decoder.failed() || magic_version != kWasmVersion) {
       result_->error = WasmError(4, "expected wasm version");
       return false;
@@ -66,34 +64,31 @@ class MockStreamingProcessor : public StreamingProcessor {
 
   bool ProcessCodeSectionHeader(int num_functions, uint32_t offset,
                                 std::shared_ptr<WireBytesStorage>,
-                                int code_section_start,
-                                int code_section_length) override {
+                                size_t code_section_start,
+                                size_t code_section_length) override {
     return true;
   }
 
   // Process a function body.
-  void ProcessFunctionBody(base::Vector<const uint8_t> bytes,
+  bool ProcessFunctionBody(base::Vector<const uint8_t> bytes,
                            uint32_t offset) override {
     ++result_->num_functions;
+    return true;
   }
 
   void OnFinishedChunk() override {}
 
   // Finish the processing of the stream.
-  void OnFinishedStream(base::OwnedVector<uint8_t> bytes) override {
+  void OnFinishedStream(base::OwnedVector<const uint8_t> bytes,
+                        bool after_error) override {
     result_->received_bytes = std::move(bytes);
-  }
-
-  // Report an error detected in the StreamingDecoder.
-  void OnError(const WasmError& error) override {
-    result_->error = error;
-    CHECK(!result_->ok());
+    result_->error = after_error;
   }
 
   void OnAbort() override {}
 
   bool Deserialize(base::Vector<const uint8_t> module_bytes,
-                   base::Vector<const uint8_t> wire_bytes) override {
+                   base::OwnedVector<const uint8_t>& wire_bytes) override {
     return false;
   }
 
@@ -105,13 +100,13 @@ class WasmStreamingDecoderTest : public ::testing::Test {
  public:
   void ExpectVerifies(base::Vector<const uint8_t> data,
                       size_t expected_sections, size_t expected_functions) {
-    for (int split = 0; split <= data.length(); ++split) {
+    for (size_t split = 0; split <= data.size(); ++split) {
       MockStreamingResult result;
-      auto stream = StreamingDecoder::CreateAsyncStreamingDecoder(
+      auto stream = StreamingDecoder::Create(
           std::make_unique<MockStreamingProcessor>(&result));
       stream->OnBytesReceived(data.SubVector(0, split));
-      stream->OnBytesReceived(data.SubVector(split, data.length()));
-      stream->Finish();
+      stream->OnBytesReceived(data.SubVector(split, data.size()));
+      stream->Finish({});
       EXPECT_TRUE(result.ok());
       EXPECT_EQ(expected_sections, result.num_sections);
       EXPECT_EQ(expected_functions, result.num_functions);
@@ -119,27 +114,25 @@ class WasmStreamingDecoderTest : public ::testing::Test {
     }
   }
 
-  void ExpectFailure(base::Vector<const uint8_t> data, uint32_t error_offset,
-                     const char* message) {
-    for (int split = 0; split <= data.length(); ++split) {
+  void ExpectFailure(base::Vector<const uint8_t> data) {
+    for (size_t split = 0; split <= data.size(); ++split) {
       MockStreamingResult result;
-      auto stream = StreamingDecoder::CreateAsyncStreamingDecoder(
+      auto stream = StreamingDecoder::Create(
           std::make_unique<MockStreamingProcessor>(&result));
       stream->OnBytesReceived(data.SubVector(0, split));
-      stream->OnBytesReceived(data.SubVector(split, data.length()));
-      stream->Finish();
+      stream->OnBytesReceived(data.SubVector(split, data.size()));
+      stream->Finish({});
       EXPECT_FALSE(result.ok());
-      EXPECT_EQ(error_offset, result.error.offset());
-      EXPECT_EQ(message, result.error.message());
+      EXPECT_TRUE(result.error);
     }
   }
 };
 
 TEST_F(WasmStreamingDecoderTest, EmptyStream) {
   MockStreamingResult result;
-  auto stream = StreamingDecoder::CreateAsyncStreamingDecoder(
+  auto stream = StreamingDecoder::Create(
       std::make_unique<MockStreamingProcessor>(&result));
-  stream->Finish();
+  stream->Finish({});
   EXPECT_FALSE(result.ok());
 }
 
@@ -147,15 +140,14 @@ TEST_F(WasmStreamingDecoderTest, IncompleteModuleHeader) {
   const uint8_t data[] = {U32_LE(kWasmMagic), U32_LE(kWasmVersion)};
   {
     MockStreamingResult result;
-    auto stream = StreamingDecoder::CreateAsyncStreamingDecoder(
+    auto stream = StreamingDecoder::Create(
         std::make_unique<MockStreamingProcessor>(&result));
     stream->OnBytesReceived(base::VectorOf(data, 1));
-    stream->Finish();
+    stream->Finish({});
     EXPECT_FALSE(result.ok());
   }
   for (uint32_t length = 1; length < sizeof(data); ++length) {
-    ExpectFailure(base::VectorOf(data, length), length - 1,
-                  "unexpected end of stream");
+    ExpectFailure(base::VectorOf(data, length));
   }
 }
 
@@ -167,14 +159,14 @@ TEST_F(WasmStreamingDecoderTest, MagicAndVersion) {
 TEST_F(WasmStreamingDecoderTest, BadMagic) {
   for (uint32_t x = 1; x; x <<= 1) {
     const uint8_t data[] = {U32_LE(kWasmMagic ^ x), U32_LE(kWasmVersion)};
-    ExpectFailure(base::ArrayVector(data), 0, "expected wasm magic");
+    ExpectFailure(base::ArrayVector(data));
   }
 }
 
 TEST_F(WasmStreamingDecoderTest, BadVersion) {
   for (uint32_t x = 1; x; x <<= 1) {
     const uint8_t data[] = {U32_LE(kWasmMagic), U32_LE(kWasmVersion ^ x)};
-    ExpectFailure(base::ArrayVector(data), 4, "expected wasm version");
+    ExpectFailure(base::ArrayVector(data));
   }
 }
 
@@ -261,8 +253,7 @@ TEST_F(WasmStreamingDecoderTest, OneSectionNotEnoughPayload1) {
       0x0,                   // 4
       0x0                    // 5
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "unexpected end of stream");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, OneSectionNotEnoughPayload2) {
@@ -273,8 +264,7 @@ TEST_F(WasmStreamingDecoderTest, OneSectionNotEnoughPayload2) {
       0x6,                   // Section Length
       0x0                    // Payload
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "unexpected end of stream");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, OneSectionInvalidLength) {
@@ -288,8 +278,7 @@ TEST_F(WasmStreamingDecoderTest, OneSectionInvalidLength) {
       0x80,                  // --
       0x80,                  // --
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "expected section length");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, TwoLongSections) {
@@ -404,8 +393,7 @@ TEST_F(WasmStreamingDecoderTest, EmptyFunction) {
       0x1,                   // Number of Functions
       0x0,                   // Function Length  -- ERROR
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "invalid function length (0)");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, TwoFunctions) {
@@ -462,8 +450,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthZero) {
       kCodeSectionCode,      // Section ID
       0x0,                   // Section Length
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "code section cannot have size 0");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooHigh) {
@@ -484,8 +471,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooHigh) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "not all code section bytes were used");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooHighZeroFunctions) {
@@ -496,8 +482,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooHighZeroFunctions) {
       0xD,                   // Section Length
       0x0,                   // Number of Functions
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "not all code section bytes were used");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLow) {
@@ -518,8 +503,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLow) {
       0x1,                   // Function Length      <8> -- ERROR
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 2,
-                "read past code section end");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLowEndsInNumFunctions) {
@@ -542,7 +526,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLowEndsInNumFunctions) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), 12, "invalid code section length");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLowEndsInFunctionLength) {
@@ -567,7 +551,7 @@ TEST_F(WasmStreamingDecoderTest, CodeSectionLengthTooLowEndsInFunctionLength) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), 15, "read past code section end");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, NumberOfFunctionsTooHigh) {
@@ -588,8 +572,7 @@ TEST_F(WasmStreamingDecoderTest, NumberOfFunctionsTooHigh) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 1,
-                "unexpected end of stream");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, NumberOfFunctionsTooLow) {
@@ -607,8 +590,7 @@ TEST_F(WasmStreamingDecoderTest, NumberOfFunctionsTooLow) {
       0x1,                   // Function Length
       0x0                    // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 3,
-                "not all code section bytes were used");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, TwoCodeSections) {
@@ -626,8 +608,7 @@ TEST_F(WasmStreamingDecoderTest, TwoCodeSections) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 5,
-                "code section can only appear once");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, UnknownSection) {
@@ -668,14 +649,50 @@ TEST_F(WasmStreamingDecoderTest, UnknownSectionSandwich) {
       0x1,                   // Function Length
       0x0,                   // Function
   };
-  ExpectFailure(base::ArrayVector(data), sizeof(data) - 5,
-                "code section can only appear once");
+  ExpectFailure(base::ArrayVector(data));
 }
 
 TEST_F(WasmStreamingDecoderTest, InvalidSectionCode) {
   uint8_t kInvalidSectionCode = 61;
   const uint8_t data[] = {WASM_MODULE_HEADER, SECTION(Invalid)};
-  ExpectFailure(base::ArrayVector(data), 8, "invalid section code");
+  ExpectFailure(base::ArrayVector(data));
+}
+
+class EmptyResolver : public CompilationResultResolver {
+ public:
+  void OnCompilationSucceeded(DirectHandle<WasmModuleObject> module) override {}
+  void OnCompilationFailed(DirectHandle<JSAny> error_reason) override {}
+};
+
+using WasmStreamingCompilationTest = TestWithNativeContext;
+
+TEST_F(WasmStreamingCompilationTest, ContextDisposeDuringValidation) {
+  FlagScope<bool> lazy_compilation(&v8_flags.wasm_lazy_compilation, true);
+
+  std::shared_ptr<EmptyResolver> resolver = std::make_shared<EmptyResolver>();
+  WasmEnabledFeatures features = WasmEnabledFeatures::FromIsolate(isolate());
+
+  std::shared_ptr<StreamingDecoder> stream =
+      GetWasmEngine()->StartStreamingCompilation(
+          features, CompileTimeImports{}, "WebAssembly.compileStreaming()",
+          resolver);
+  stream->InitializeIsolateSpecificInfo(isolate());
+
+  const uint8_t data[] = {
+      0x00, 0x61, 0x73, 0x6d,  // wasm magic
+      0x01, 0x00, 0x00, 0x00,  // wasm version
+      0x01, 0x04,              // Type section, length: 4
+      0x01, 0x60, 0x00, 0x00,  // One type, signature, no params, no results
+      0x03, 0x02,              // Function section, length: 2
+      0x01, 0x00,              // One function, type $sig0
+      0x0a, 0x04,              // Code section, length: 4
+      0x01, 0x02, 0x00, 0x0b,  // One function, length: 2, unreachable, end
+  };
+
+  stream->OnBytesReceived(base::VectorOf(data));
+
+  // Dispose context. This triggered crbug.com/523030583 before the fix.
+  v8_isolate()->ContextDisposedNotification(ContextDependants::kNoDependants);
 }
 
 }  // namespace wasm

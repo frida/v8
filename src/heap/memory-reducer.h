@@ -5,24 +5,39 @@
 #ifndef V8_HEAP_MEMORY_REDUCER_H_
 #define V8_HEAP_MEMORY_REDUCER_H_
 
+#include <optional>
+
 #include "include/v8-platform.h"
 #include "src/base/macros.h"
+#include "src/base/platform/time.h"
 #include "src/common/globals.h"
 #include "src/tasks/cancelable-task.h"
 
 namespace v8 {
 namespace internal {
 
-namespace heap {
-class HeapTester;
-}  // namespace heap
-
 class Heap;
 
+class V8_EXPORT_PRIVATE MemoryReducerBase {
+ public:
+  virtual ~MemoryReducerBase() = default;
+  static std::unique_ptr<MemoryReducerBase> Create(Heap* heap);
+  virtual void NotifyMarkCompact(size_t committed_memory_before) = 0;
+  virtual void NotifyPossibleGarbage() = 0;
+  virtual bool ShouldGrowHeapSlowly() = 0;
 
-// The goal of the MemoryReducer class is to detect transition of the mutator
-// from high allocation phase to low allocation phase and to collect potential
-// garbage created in the high allocation phase.
+ protected:
+  explicit MemoryReducerBase(Heap* heap);
+
+  Heap* heap() { return heap_; }
+
+  Heap* heap_;
+  std::shared_ptr<v8::TaskRunner> task_runner_;
+};
+
+// The goal of the MemoryReducer class is to detect transition of the
+// mutator from high allocation phase to low allocation phase and to collect
+// potential garbage created in the high allocation phase.
 //
 // The class implements an automaton with the following states and transitions.
 //
@@ -31,19 +46,20 @@ class Heap;
 // - WAIT <started_gcs> <next_gc_start_ms> <last_gc_time_ms>
 // - RUN <started_gcs> <last_gc_time_ms>
 // The <started_gcs> is an integer in range from 0..kMaxNumberOfGCs that stores
-// the number of GCs initiated by the MemoryReducer since it left the DONE
-// state.
-// The <next_gc_start_ms> is a double that stores the earliest time the next GC
-// can be initiated by the MemoryReducer.
+// the number of GCs initiated by the MemoryReducer since it left the
+// DONE state.
+// The <next_gc_start_ms> is a double that stores the earliest time
+// the next GC can be initiated by the MemoryReducer.
 // The <last_gc_start_ms> is a double that stores the time of the last full GC.
 // The DONE state means that the MemoryReducer is not active.
-// The WAIT state means that the MemoryReducer is waiting for mutator allocation
-// rate to drop. The check for the allocation rate happens in the timer task
-// callback. If the allocation rate does not drop in watchdog_delay_ms since
-// the last GC then transition to the RUN state is forced.
-// The RUN state means that the MemoryReducer started incremental marking and is
-// waiting for it to finish. Incremental marking steps are performed as usual
-// in the idle notification and in the mutator.
+// The WAIT state means that the MemoryReducer is waiting for mutator
+// allocation rate to drop. The check for the allocation rate happens in the
+// timer task callback. If the allocation rate does not drop in
+// watchdog_delay_ms since the last GC then transition to the RUN state is
+// forced.
+// The RUN state means that the MemoryReducer started incremental
+// marking and is waiting for it to finish. Incremental marking steps are
+// performed as usual in the idle notification and in the mutator.
 //
 // Transitions:
 // DONE t -> WAIT 0 (now_ms + long_delay_ms) t' happens:
@@ -59,8 +75,8 @@ class Heap;
 // WAIT n x t -> WAIT (n+1) t happens:
 //     - on background idle notification, which signals that we can start
 //       incremental marking even if the allocation rate is high.
-// The MemoryReducer starts incremental marking on this transition but still
-// has a pending timer task.
+// The MemoryReducer starts incremental marking on this transition but
+// still has a pending timer task.
 //
 // WAIT n x t -> DONE t happens:
 //     - in the timer callback if n >= kMaxNumberOfGCs.
@@ -84,23 +100,63 @@ class Heap;
 // now_ms is the current time,
 // t' is t if the current event is not a GC event and is now_ms otherwise,
 // long_delay_ms, short_delay_ms, and watchdog_delay_ms are constants.
-class V8_EXPORT_PRIVATE MemoryReducer {
+class V8_EXPORT_PRIVATE MemoryReducer final : public MemoryReducerBase {
  public:
-  enum Action { kDone, kWait, kRun };
+  enum Id { kUninit, kDone, kWait, kRun };
 
-  struct State {
-    State(Action action, int started_gcs, double next_gc_start_ms,
+  class State {
+   public:
+    static State CreateUninitialized() { return {kUninit, 0, 0, 0, 0}; }
+
+    static State CreateDone(double last_gc_time_ms, size_t committed_memory) {
+      return {kDone, 0, 0, last_gc_time_ms, committed_memory};
+    }
+
+    static State CreateWait(int started_gcs, double next_gc_time_ms,
+                            double last_gc_time_ms) {
+      return {kWait, started_gcs, next_gc_time_ms, last_gc_time_ms, 0};
+    }
+
+    static State CreateRun(int started_gcs) {
+      return {kRun, started_gcs, 0, 0, 0};
+    }
+
+    Id id() const { return id_; }
+
+    int started_gcs() const {
+      DCHECK(id() == kWait || id() == kRun);
+      return started_gcs_;
+    }
+
+    double next_gc_start_ms() const {
+      DCHECK_EQ(id(), kWait);
+      return next_gc_start_ms_;
+    }
+
+    double last_gc_time_ms() const {
+      DCHECK(id() == kWait || id() == kDone || id() == kUninit);
+      return last_gc_time_ms_;
+    }
+
+    size_t committed_memory_at_last_run() const {
+      DCHECK(id() == kUninit || id() == kDone);
+      return committed_memory_at_last_run_;
+    }
+
+   private:
+    State(Id action, int started_gcs, double next_gc_start_ms,
           double last_gc_time_ms, size_t committed_memory_at_last_run)
-        : action(action),
-          started_gcs(started_gcs),
-          next_gc_start_ms(next_gc_start_ms),
-          last_gc_time_ms(last_gc_time_ms),
-          committed_memory_at_last_run(committed_memory_at_last_run) {}
-    Action action;
-    int started_gcs;
-    double next_gc_start_ms;
-    double last_gc_time_ms;
-    size_t committed_memory_at_last_run;
+        : id_(action),
+          started_gcs_(started_gcs),
+          next_gc_start_ms_(next_gc_start_ms),
+          last_gc_time_ms_(last_gc_time_ms),
+          committed_memory_at_last_run_(committed_memory_at_last_run) {}
+
+    Id id_;
+    int started_gcs_;
+    double next_gc_start_ms_;
+    double last_gc_time_ms_;
+    size_t committed_memory_at_last_run_;
   };
 
   enum EventType { kTimer, kMarkCompact, kPossibleGarbage };
@@ -118,19 +174,15 @@ class V8_EXPORT_PRIVATE MemoryReducer {
   MemoryReducer(const MemoryReducer&) = delete;
   MemoryReducer& operator=(const MemoryReducer&) = delete;
   // Callbacks.
-  void NotifyMarkCompact(const Event& event);
-  void NotifyPossibleGarbage(const Event& event);
-  void NotifyBackgroundIdleNotification(const Event& event);
+  void NotifyMarkCompact(size_t committed_memory_before) override;
+  void NotifyPossibleGarbage() override;
   // The step function that computes the next state from the current state and
   // the incoming event.
   static State Step(const State& state, const Event& event);
   // Posts a timer task that will call NotifyTimer after the given delay.
   void ScheduleTimer(double delay_ms);
-  void TearDown();
-  static const int kLongDelayMs;
   static const int kShortDelayMs;
   static const int kWatchdogDelayMs;
-  static const int kMaxNumberOfGCs;
   // The committed memory has to increase by at least this factor since the
   // last run in order to trigger a new run after mark-compact.
   static const double kCommittedMemoryFactor;
@@ -138,11 +190,9 @@ class V8_EXPORT_PRIVATE MemoryReducer {
   // last run in order to trigger a new run after mark-compact.
   static const size_t kCommittedMemoryDelta;
 
-  Heap* heap() { return heap_; }
+  bool ShouldGrowHeapSlowly() override { return state_.id() == kDone; }
 
-  bool ShouldGrowHeapSlowly() {
-    return state_.action == kDone && state_.started_gcs > 0;
-  }
+  static int MaxNumberOfGCs();
 
  private:
   class TimerTask : public v8::internal::CancelableTask {
@@ -161,15 +211,37 @@ class V8_EXPORT_PRIVATE MemoryReducer {
 
   static bool WatchdogGC(const State& state, const Event& event);
 
-  Heap* heap_;
-  std::shared_ptr<v8::TaskRunner> taskrunner_;
   State state_;
   unsigned int js_calls_counter_;
   double js_calls_sample_time_ms_;
   int start_delay_ms_ = false;
 
-  // Used in cctest.
-  friend class heap::HeapTester;
+  // Used in tests.
+  friend class HeapInternalsBase;
+};
+
+class V8_EXPORT_PRIVATE LimitBasedMemoryReducer final
+    : public MemoryReducerBase {
+ public:
+  explicit LimitBasedMemoryReducer(Heap* heap);
+  void NotifyMarkCompact(size_t committed_memory_before) override;
+  void NotifyPossibleGarbage() override;
+  bool ShouldGrowHeapSlowly() override;
+
+  bool is_scheduled() const { return desired_run_time_.has_value(); }
+
+ private:
+  void ScheduleTimer(base::TimeDelta delay);
+  class TimerTask : public v8::internal::CancelableTask {
+   public:
+    TimerTask(LimitBasedMemoryReducer* memory_reducer);
+    void RunInternal() override;
+
+   private:
+    LimitBasedMemoryReducer* memory_reducer_;
+  };
+
+  std::optional<base::TimeTicks> desired_run_time_;
 };
 
 }  // namespace internal

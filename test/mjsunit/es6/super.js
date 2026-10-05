@@ -2245,3 +2245,33 @@ TestKeyedSetterCreatingOwnPropertiesNonConfigurable(42, 43, 44);
   assertThrows(C.prototype.named, TypeError);
   assertThrows(C.prototype.keyed, TypeError);
 })();
+
+(function TestDeleteSuperPropertyEvaluationOrder() {
+  var i = 0;
+  class Base {}
+  class Derived extends Base {
+    test() {
+      delete super[i++];
+    }
+  }
+  assertThrows(Derived.prototype.test, ReferenceError);
+  assertEquals(1, i);
+})();
+
+(function TestDeleteSuperPropertyWithUninitializedThis() {
+  var keyEvaluated = false;
+  var baseCalled = false;
+  class Base {
+    constructor() {
+      baseCalled = true;
+    }
+  }
+  class Derived extends Base {
+    constructor() {
+      delete super[(keyEvaluated = true, super(), 0)];
+    }
+  }
+  assertThrows(() => new Derived(), ReferenceError);
+  assertFalse(keyEvaluated);
+  assertFalse(baseCalled);
+})();

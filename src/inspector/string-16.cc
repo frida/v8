@@ -58,10 +58,10 @@ String16::String16(const UChar* characters) : m_impl(characters) {}
 String16::String16(const char* characters)
     : String16(characters, std::strlen(characters)) {}
 
-String16::String16(const char* characters, size_t size) {
-  m_impl.resize(size);
-  for (size_t i = 0; i < size; ++i) m_impl[i] = characters[i];
-}
+String16::String16(const char* characters, size_t size)
+    : m_impl(characters, characters + size) {}
+String16::String16(std::string_view string)
+    : String16(string.data(), string.length()) {}
 
 String16::String16(const std::basic_string<UChar>& impl) : m_impl(impl) {}
 
@@ -70,18 +70,19 @@ String16::String16(std::basic_string<UChar>&& impl) : m_impl(impl) {}
 // static
 String16 String16::fromInteger(int number) {
   char arr[50];
-  v8::base::Vector<char> buffer(arr, arraysize(arr));
-  return String16(v8::internal::IntToCString(number, buffer));
+  v8::base::Vector<char> buffer = v8::base::ArrayVector(arr);
+  std::string_view str = v8::internal::IntToStringView(number, buffer);
+  return String16(str);
 }
 
 // static
 String16 String16::fromInteger(size_t number) {
   const size_t kBufferSize = 50;
   char buffer[kBufferSize];
-#if !defined(_WIN32) && !defined(_WIN64)
-  v8::base::OS::SNPrintF(buffer, kBufferSize, "%zu", number);
-#else
+#if defined(V8_OS_WIN)
   v8::base::OS::SNPrintF(buffer, kBufferSize, "%Iu", number);
+#else
+  v8::base::OS::SNPrintF(buffer, kBufferSize, "%zu", number);
 #endif
   return String16(buffer);
 }
@@ -96,15 +97,18 @@ String16 String16::fromInteger64(int64_t number) {
 // static
 String16 String16::fromDouble(double number) {
   char arr[50];
-  v8::base::Vector<char> buffer(arr, arraysize(arr));
-  return String16(v8::internal::DoubleToCString(number, buffer));
+  v8::base::Vector<char> buffer = v8::base::ArrayVector(arr);
+  std::string_view str = v8::internal::DoubleToStringView(number, buffer);
+  return String16(str);
 }
 
 // static
 String16 String16::fromDouble(double number, int precision) {
-  std::unique_ptr<char[]> str(
-      v8::internal::DoubleToPrecisionCString(number, precision));
-  return String16(str.get());
+  char arr[v8::internal::kDoubleToPrecisionMaxChars];
+  v8::base::Vector<char> buffer = v8::base::ArrayVector(arr);
+  std::string_view str =
+      v8::internal::DoubleToPrecisionStringView(number, precision, buffer);
+  return String16(str);
 }
 
 int64_t String16::toInteger64(bool* ok) const {
@@ -120,8 +124,8 @@ int String16::toInteger(bool* ok) const {
   return static_cast<int>(result);
 }
 
-String16 String16::stripWhiteSpace() const {
-  if (!length()) return String16();
+std::pair<size_t, size_t> String16::getTrimmedOffsetAndLength() const {
+  if (!length()) return std::make_pair(0, 0);
 
   size_t start = 0;
   size_t end = length() - 1;
@@ -130,13 +134,21 @@ String16 String16::stripWhiteSpace() const {
   while (start <= end && isSpaceOrNewLine(characters16()[start])) ++start;
 
   // only white space
-  if (start > end) return String16();
+  if (start > end) return std::make_pair(0, 0);
 
   // skip white space from end
   while (end && isSpaceOrNewLine(characters16()[end])) --end;
 
-  if (!start && end == length() - 1) return *this;
-  return String16(characters16() + start, end + 1 - start);
+  return std::make_pair(start, end + 1 - start);
+}
+
+String16 String16::stripWhiteSpace() const {
+  std::pair<size_t, size_t> offsetAndLength = getTrimmedOffsetAndLength();
+  if (offsetAndLength.second == 0) return String16();
+  if (offsetAndLength.first == 0 && offsetAndLength.second == length() - 1) {
+    return *this;
+  }
+  return substring(offsetAndLength.first, offsetAndLength.second);
 }
 
 String16Builder::String16Builder() = default;
@@ -162,7 +174,7 @@ void String16Builder::append(const char* characters, size_t length) {
 }
 
 void String16Builder::appendNumber(int number) {
-  constexpr int kBufferSize = 11;
+  constexpr int kBufferSize = 12;
   char buffer[kBufferSize];
   int chars = v8::base::OS::SNPrintF(buffer, kBufferSize, "%d", number);
   DCHECK_LE(0, chars);
@@ -170,12 +182,12 @@ void String16Builder::appendNumber(int number) {
 }
 
 void String16Builder::appendNumber(size_t number) {
-  constexpr int kBufferSize = 20;
+  constexpr int kBufferSize = 21;
   char buffer[kBufferSize];
-#if !defined(_WIN32) && !defined(_WIN64)
-  int chars = v8::base::OS::SNPrintF(buffer, kBufferSize, "%zu", number);
-#else
+#if defined(V8_OS_WIN)
   int chars = v8::base::OS::SNPrintF(buffer, kBufferSize, "%Iu", number);
+#else
+  int chars = v8::base::OS::SNPrintF(buffer, kBufferSize, "%zu", number);
 #endif
   DCHECK_LE(0, chars);
   m_buffer.insert(m_buffer.end(), buffer, buffer + chars);

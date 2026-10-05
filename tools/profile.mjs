@@ -49,6 +49,15 @@ export class SourcePosition {
     this.entries.push(entry);
   }
 
+  toDetailJSON() {
+    return {
+      line: this.line,
+      column: this.column,
+      scriptId: this.script?.id,
+      file: `${this.script ? this.script.url : '<unknown>'}:${this.line}:${this.column}`
+    };
+  }
+
   toString() {
     return `${this.script.name}:${this.line}:${this.column}`;
   }
@@ -87,6 +96,18 @@ export class Script {
     this.url = url;
     this.name = Script.getShortestUniqueName(url, this);
     this.source = source;
+  }
+
+  toDetailJSON() {
+    const res = {
+      id: this.id ?? '<unknown>',
+      name: this.url ?? '<unknown>',
+      size: this.source?.length ?? 0,
+    };
+    if (this.source) {
+      res.sourceLines = this.source.split('\n');
+    }
+    return res;
   }
 
   get length() {
@@ -155,7 +176,7 @@ export class Script {
 
   static getShortestUniqueName(url, script) {
     const parts = url.split('/');
-    const filename = parts[parts.length -1];
+    const filename = parts[parts.length - 1];
     const dict = this._dict ?? (this._dict = new Map());
     const matchingScripts = dict.get(filename);
     if (matchingScripts == undefined) {
@@ -171,11 +192,11 @@ export class Script {
     return url;
   }
 
-  ensureSourceMapCalculated(sourceMapFetchPrefix=undefined) {
+  ensureSourceMapCalculated(sourceMapFetchPrefix = undefined) {
     if (this._sourceMapState !== "unknown") return;
 
     const sourceMapURLMatch =
-        this.source.match(/\/\/# sourceMappingURL=(.*)\n/);
+      this.source.match(/\/\/# sourceMappingURL=(.*)\n/);
     if (!sourceMapURLMatch) {
       this._sourceMapState = "none";
       return;
@@ -183,6 +204,10 @@ export class Script {
 
     this._sourceMapState = "loading";
     let sourceMapURL = sourceMapURLMatch[1];
+    if (typeof fetch !== 'function') {
+      this._sourceMapState = "disabled";
+      return;
+    }
     (async () => {
       try {
         let sourceMapPayload;
@@ -195,7 +220,7 @@ export class Script {
             // TODO(leszeks): Remove the retry once the prefix is
             // configurable.
             sourceMapPayload =
-                await fetch(sourceMapFetchPrefix + sourceMapURL, options);
+              await fetch(sourceMapFetchPrefix + sourceMapURL, options);
           } else {
             throw e;
           }
@@ -204,11 +229,11 @@ export class Script {
 
         if (sourceMapPayload.startsWith(')]}')) {
           sourceMapPayload =
-              sourceMapPayload.substring(sourceMapPayload.indexOf('\n'));
+            sourceMapPayload.substring(sourceMapPayload.indexOf('\n'));
         }
         sourceMapPayload = JSON.parse(sourceMapPayload);
         const sourceMap =
-            new WebInspector.SourceMap(sourceMapURL, sourceMapPayload);
+          new WebInspector.SourceMap(sourceMapURL, sourceMapPayload);
 
         const startLine = this.startLine;
         for (const sourcePosition of this.sourcePositions) {
@@ -222,7 +247,7 @@ export class Script {
               column: mapping[4] + 1
             };
           } else {
-            sourcePosition.originalPosition = {source: null, line:0, column:0};
+            sourcePosition.originalPosition = { source: null, line: 0, column: 0 };
           }
         }
         this._sourceMapState = "loaded";
@@ -245,7 +270,7 @@ class SourcePositionTable {
       const codeOffset = parseInt(regexResult[1]);
       const scriptOffset = parseInt(regexResult[2]);
       if (isNaN(codeOffset) || isNaN(scriptOffset)) continue;
-      this._offsets.push({code: codeOffset, script: scriptOffset});
+      this._offsets.push({ code: codeOffset, script: scriptOffset });
     }
   }
 
@@ -274,15 +299,19 @@ class SourceInfo {
   disassemble;
 
   setSourcePositionInfo(
-        script, startPos, endPos, sourcePositionTableData, inliningPositions,
-        inlinedFunctions) {
+    script, startPos, endPos, sourcePositionTableData, inliningPositions,
+    inlinedSFIs) {
     this.script = script;
     this.start = startPos;
     this.end = endPos;
     this.positions = sourcePositionTableData;
     this.inlined = inliningPositions;
-    this.fns = inlinedFunctions;
+    this.fns = inlinedSFIs;
     this.sourcePositionTable = new SourcePositionTable(sourcePositionTableData);
+  }
+
+  get sfis() {
+    return this.fns;
   }
 
   setDisassemble(code) {
@@ -305,13 +334,17 @@ const kProfileOperationTick = 2;
  * @constructor
  */
 export class Profile {
-  codeMap_ = new CodeMap();
   topDownTree_ = new CallTree();
   bottomUpTree_ = new CallTree();
-  c_entries_ = {__proto__:null};
+  c_entries_ = { __proto__: null };
   scripts_ = [];
   urlToScript_ = new Map();
   warnings = new Set();
+
+  constructor(useBigIntAddresses = false) {
+    this.useBigIntAddresses = useBigIntAddresses;
+    this.codeMap_ = new CodeMap(useBigIntAddresses);
+  }
 
   serializeVMSymbols() {
     let result = this.codeMap_.getAllStaticEntriesWithAddresses();
@@ -356,6 +389,15 @@ export class Profile {
     TURBOFAN: 5,
   }
 
+  static CODE_KIND_NAMES = [
+    "Builtin",    // 0
+    "Unopt",      // 1
+    "Sparkplug",  // 2
+    undefined,    // 3
+    "Maglev",     // 4
+    "Opt"         // 5
+  ];
+
   static VMState = {
     JS: 0,
     GC: 1,
@@ -365,7 +407,10 @@ export class Profile {
     COMPILER: 4,
     OTHER: 5,
     EXTERNAL: 6,
-    IDLE: 7,
+    ATOMICS_WAIT: 7,
+    IDLE: 8,
+    LOGGING: 9,
+    IDLE_EXTERNAL: 10,
   }
 
   static CodeType = {
@@ -385,26 +430,25 @@ export class Profile {
       case '^':
         return this.CodeState.SPARKPLUG;
       case '+':
+      case '+\'':
+      case 'o+':
+      case 'o+\'':
         return this.CodeState.MAGLEV;
       case '*':
+      case '*\'':
+      case 'o*':
+      case 'o*\'':
         return this.CodeState.TURBOFAN;
     }
     throw new Error(`unknown code state: ${s}`);
   }
 
   static getKindFromState(state) {
-    if (state === this.CodeState.COMPILED) {
-      return "Builtin";
-    } else if (state === this.CodeState.IGNITION) {
-      return "Unopt";
-    } else if (state === this.CodeState.SPARKPLUG) {
-      return "Sparkplug";
-    } else if (state === this.CodeState.MAGLEV) {
-      return "Maglev";
-    } else if (state === this.CodeState.TURBOFAN) {
-      return "Opt";
+    const kind = this.CODE_KIND_NAMES[state];
+    if (kind === undefined) {
+      throw new Error(`unknown code state: ${state}`);
     }
-    throw new Error(`unknown code state: ${state}`);
+    return kind;
   }
 
   static vmStateString(state) {
@@ -423,6 +467,8 @@ export class Profile {
         return 'Other';
       case this.VMState.EXTERNAL:
         return 'External';
+      case this.VMState.EXTERNAL_IDLE:
+        return 'ExternalIdle';
       case this.VMState.IDLE:
         return 'Idle';
     }
@@ -505,23 +551,25 @@ export class Profile {
    * @param {string} name Code entry name.
    * @param {number} start Starting address.
    * @param {number} size Code entry size.
-   * @param {number} funcAddr Shared function object address.
+   * @param {number} sfiAddr Shared function object address.
    * @param {Profile.CodeState} state Optimization state.
    */
-  addFuncCode(type, name, timestamp, start, size, funcAddr, state) {
+  addFuncCode(type, name, timestamp, start, size, sfiAddr, state) {
     // As code and functions are in the same address space,
     // it is safe to put them in a single code map.
-    let func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
-    if (func === null) {
-      func = new FunctionEntry(name);
-      this.codeMap_.addCode(funcAddr, func);
-    } else if (func.name !== name) {
-      // Function object has been overwritten with a new one.
-      func.name = name;
+    let sfi = this.codeMap_.findDynamicEntryByStartAddress(sfiAddr);
+    // Overwrite any old (unused) code objects that overlap with the new SFI.
+    const new_sfi_old_code = !(sfi instanceof SharedFunctionInfoEntry)
+    if (sfi === null || new_sfi_old_code) {
+      sfi = new SharedFunctionInfoEntry(name, this.useBigIntAddresses);
+      this.codeMap_.addCode(sfiAddr, sfi);
+    } else if (sfi.name !== name) {
+      // SFI object has been overwritten with a new one.
+      sfi.name = name;
     }
     let entry = this.codeMap_.findDynamicEntryByStartAddress(start);
     if (entry !== null) {
-      if (entry.size === size && entry.func === func) {
+      if (entry.size === size && entry.sfi === sfi) {
         // Entry state has changed.
         entry.state = state;
       } else {
@@ -530,7 +578,7 @@ export class Profile {
       }
     }
     if (entry === null) {
-      entry = new DynamicFuncCodeEntry(size, type, func, state);
+      entry = new DynamicFuncCodeEntry(size, type, sfi, state);
       this.codeMap_.addCode(start, entry);
     }
     return entry;
@@ -571,31 +619,31 @@ export class Profile {
    * Adds source positions for given code.
    */
   addSourcePositions(start, scriptId, startPos, endPos, sourcePositionTable,
-        inliningPositions, inlinedFunctions) {
+    inliningPositions, inlinedSFIs) {
     const script = this.getOrCreateScript(scriptId);
     const entry = this.codeMap_.findDynamicEntryByStartAddress(start);
     if (entry === null) return;
-    // Resolve the inlined functions list.
-    if (inlinedFunctions.length > 0) {
-      inlinedFunctions = inlinedFunctions.substring(1).split("S");
-      for (let i = 0; i < inlinedFunctions.length; i++) {
-        const funcAddr = parseInt(inlinedFunctions[i]);
-        const func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
-        if (func === null || func.funcId === undefined) {
+    // Resolve the inlined SharedFunctionInfo list.
+    if (inlinedSFIs.length > 0) {
+      inlinedSFIs = inlinedSFIs.substring(1).split("S");
+      for (let i = 0; i < inlinedSFIs.length; i++) {
+        const sfiAddr = parseInt(inlinedSFIs[i]);
+        const sfi = this.codeMap_.findDynamicEntryByStartAddress(sfiAddr);
+        if (sfi === null || sfi.funcId === undefined) {
           // TODO: fix
-          this.warnings.add(`Could not find function ${inlinedFunctions[i]}`);
-          inlinedFunctions[i] = null;
+          this.warnings.add(`Could not find function ${inlinedSFIs[i]}`);
+          inlinedSFIs[i] = null;
         } else {
-          inlinedFunctions[i] = func.funcId;
+          inlinedSFIs[i] = sfi.funcId;
         }
       }
     } else {
-      inlinedFunctions = [];
+      inlinedSFIs = [];
     }
 
     this.getOrCreateSourceInfo(entry).setSourcePositionInfo(
       script, startPos, endPos, sourcePositionTable, inliningPositions,
-      inlinedFunctions);
+      inlinedSFIs);
   }
 
   addDisassemble(start, kind, disassemble) {
@@ -635,7 +683,7 @@ export class Profile {
    * @param {number} from Current code entry address.
    * @param {number} to New code entry address.
    */
-  moveFunc(from, to) {
+  moveSharedFunctionInfo(from, to) {
     if (this.codeMap_.findDynamicEntryByStartAddress(from)) {
       this.codeMap_.moveCode(from, to);
     }
@@ -657,7 +705,7 @@ export class Profile {
    * @param {number[]} stack Stack sample.
    */
   recordTick(time_ns, vmState, stack) {
-    const {nameStack, entryStack} = this.resolveAndFilterFuncs_(stack);
+    const { nameStack, entryStack } = this.resolveAndFilterFuncs_(stack);
     this.bottomUpTree_.addPath(nameStack);
     nameStack.reverse();
     this.topDownTree_.addPath(nameStack);
@@ -696,8 +744,8 @@ export class Profile {
         entryStack.push(pc);
       }
       if (look_for_first_c_function && i > 0 &&
-          (entry === null || entry.type !== 'CPP')
-          && last_seen_c_function !== '') {
+        (entry === null || entry.type !== 'CPP')
+        && last_seen_c_function !== '') {
         if (this.c_entries_[last_seen_c_function] === undefined) {
           this.c_entries_[last_seen_c_function] = 0;
         }
@@ -705,7 +753,7 @@ export class Profile {
         look_for_first_c_function = false;  // Found it, we're done.
       }
     }
-    return {nameStack, entryStack};
+    return { nameStack, entryStack };
   }
 
   /**
@@ -772,7 +820,7 @@ export class Profile {
   getFlatProfile(opt_label) {
     const counters = new CallTree();
     const rootLabel = opt_label || CallTree.ROOT_NODE_LABEL;
-    const precs = {__proto__:null};
+    const precs = { __proto__: null };
     precs[rootLabel] = 0;
     const root = counters.findOrAddChild(rootLabel);
 
@@ -838,17 +886,17 @@ export class Profile {
     const referencedFuncEntries = [];
     const entries = this.codeMap_.getAllDynamicEntriesWithAddresses();
     for (let i = 0, l = entries.length; i < l; ++i) {
-      if (entries[i][1].constructor === FunctionEntry) {
+      if (entries[i][1].constructor === SharedFunctionInfoEntry) {
         entries[i][1].used = false;
       }
     }
     for (let i = 0, l = entries.length; i < l; ++i) {
-      if ("func" in entries[i][1]) {
-        entries[i][1].func.used = true;
+      if ("sfi" in entries[i][1]) {
+        entries[i][1].sfi.used = true;
       }
     }
     for (let i = 0, l = entries.length; i < l; ++i) {
-      if (entries[i][1].constructor === FunctionEntry &&
+      if (entries[i][1].constructor === SharedFunctionInfoEntry &&
         !entries[i][1].used) {
         this.codeMap_.deleteCode(entries[i][0]);
       }
@@ -903,20 +951,20 @@ class DynamicCodeEntry extends CodeEntry {
  *
  * @param {number} size Code size.
  * @param {string} type Code type.
- * @param {FunctionEntry} func Shared function entry.
+ * @param {SharedFunctionInfoEntry} sfi Shared function entry.
  * @param {Profile.CodeState} state Code optimization state.
  * @constructor
  */
 class DynamicFuncCodeEntry extends CodeEntry {
-  constructor(size, type, func, state) {
+  constructor(size, type, sfi, state) {
     super(size, '', type);
-    this.func = func;
-    func.addDynamicCode(this);
+    this.sfi = sfi;
+    sfi.addDynamicCode(this);
     this.state = state;
   }
 
   get functionName() {
-    return this.func.functionName;
+    return this.sfi.functionName;
   }
 
   getSourceCode() {
@@ -929,7 +977,7 @@ class DynamicFuncCodeEntry extends CodeEntry {
   }
 
   getName() {
-    const name = this.func.getName();
+    const name = this.sfi.getName();
     return this.type + ': ' + this.getState() + name;
   }
 
@@ -937,7 +985,7 @@ class DynamicFuncCodeEntry extends CodeEntry {
    * Returns raw node name (without type decoration).
    */
   getRawName() {
-    return this.func.getName();
+    return this.sfi.getName();
   }
 
   isJSFunction() {
@@ -955,20 +1003,20 @@ class DynamicFuncCodeEntry extends CodeEntry {
  * @param {string} name Function name.
  * @constructor
  */
-class FunctionEntry extends CodeEntry {
+class SharedFunctionInfoEntry extends CodeEntry {
 
   // Contains the list of generated code for this function.
   /** @type {Set<DynamicCodeEntry>} */
   _codeEntries = new Set();
 
-  constructor(name) {
-    super(0, name);
+  constructor(name, useBigIntAddresses = false) {
+    super(useBigIntAddresses ? 0n : 0, name);
     const index = name.lastIndexOf(' ');
     this.functionName = 1 <= index ? name.substring(0, index) : '<anonymous>';
   }
 
   addDynamicCode(code) {
-    if (code.func != this) {
+    if (code.sfi != this) {
       throw new Error("Adding dynamic code to wrong function");
     }
     this._codeEntries.add(code);
@@ -995,6 +1043,48 @@ class FunctionEntry extends CodeEntry {
       return `<anonymous>${name}`;
     }
     return name;
+  }
+
+  toDetailJSON(script) {
+    const name = this.getName();
+    const match = name.match(/:(\d+):(\d+)$/);
+    let sourcePosition = null;
+    const scriptId = script?.id ?? '<unknown>';
+
+    if (match) {
+      sourcePosition = {
+        line: parseInt(match[1]),
+        column: parseInt(match[2]),
+        scriptId: scriptId,
+        file: `${script?.url ?? '<unknown>'}:${match[1]}:${match[2]}`
+      };
+    }
+
+    const code = {};
+    this._codeEntries.forEach(codeEntry => {
+      const kind = Profile.getKindFromState(codeEntry.state);
+      const typeStr = `${codeEntry.type} (${kind})`;
+      code[typeStr] = (code[typeStr] || 0) + 1;
+    });
+
+    const info = {
+      name: this.functionName,
+      script: script?.url ?? '<unknown>',
+      scriptId: scriptId,
+      variants: this._codeEntries.size,
+      code: code
+    };
+
+    if (sourcePosition) {
+      info.sourcePosition = sourcePosition;
+    }
+
+    const source = this.getSourceCode();
+    if (source) {
+      info.source = source.split('\n');
+    }
+
+    return info;
   }
 }
 
@@ -1146,7 +1236,7 @@ class CallTreeNode {
     this.selfWeight = 0;
     // Node total weight (includes weights of all children).
     this.totalWeight = 0;
-    this. children = { __proto__:null };
+    this.children = { __proto__: null };
     this.label = label;
     this.parent = opt_parent;
   }
@@ -1246,8 +1336,8 @@ class CallTreeNode {
   }
 }
 
-export function JsonProfile() {
-  this.codeMap_ = new CodeMap();
+export function JsonProfile(useBigIntAddresses = false) {
+  this.codeMap_ = new CodeMap(useBigIntAddresses);
   this.codeEntries_ = [];
   this.functionEntries_ = [];
   this.ticks_ = [];
@@ -1301,27 +1391,27 @@ JsonProfile.prototype.addCode = function (
 };
 
 JsonProfile.prototype.addFuncCode = function (
-  kind, name, timestamp, start, size, funcAddr, state) {
+  kind, name, timestamp, start, size, sfiAddr, state) {
   // As code and functions are in the same address space,
   // it is safe to put them in a single code map.
-  let func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
-  if (!func) {
-    func = new CodeEntry(0, name, 'SFI');
-    this.codeMap_.addCode(funcAddr, func);
+  let sfi = this.codeMap_.findDynamicEntryByStartAddress(sfiAddr);
+  if (!sfi) {
+    sfi = new CodeEntry(0, name, 'SFI');
+    this.codeMap_.addCode(sfiAddr, sfi);
 
-    func.funcId = this.functionEntries_.length;
+    sfi.funcId = this.functionEntries_.length;
     this.functionEntries_.push({ name, codes: [] });
-  } else if (func.name !== name) {
+  } else if (sfi.name !== name) {
     // Function object has been overwritten with a new one.
-    func.name = name;
+    sfi.name = name;
 
-    func.funcId = this.functionEntries_.length;
+    sfi.funcId = this.functionEntries_.length;
     this.functionEntries_.push({ name, codes: [] });
   }
   // TODO(jarin): Insert the code object into the SFI's code list.
   let entry = this.codeMap_.findDynamicEntryByStartAddress(start);
   if (entry) {
-    if (entry.size === size && entry.func === func) {
+    if (entry.size === size && entry.sfi === sfi) {
       // Entry state has changed.
       entry.state = state;
     } else {
@@ -1335,7 +1425,7 @@ JsonProfile.prototype.addFuncCode = function (
 
     entry.codeId = this.codeEntries_.length;
 
-    this.functionEntries_[func.funcId].codes.push(entry.codeId);
+    this.functionEntries_[sfi.funcId].codes.push(entry.codeId);
 
     kind = Profile.getKindFromState(state);
 
@@ -1343,7 +1433,7 @@ JsonProfile.prototype.addFuncCode = function (
       name: entry.name,
       type: entry.type,
       kind: kind,
-      func: func.funcId,
+      func: sfi.funcId,
       tm: timestamp,
     });
   }
@@ -1360,26 +1450,26 @@ JsonProfile.prototype.moveCode = function (from, to) {
 
 JsonProfile.prototype.addSourcePositions = function (
   start, script, startPos, endPos, sourcePositions, inliningPositions,
-  inlinedFunctions) {
+  inlinedSFIs) {
   const entry = this.codeMap_.findDynamicEntryByStartAddress(start);
   if (!entry) return;
   const codeId = entry.codeId;
 
   // Resolve the inlined functions list.
-  if (inlinedFunctions.length > 0) {
-    inlinedFunctions = inlinedFunctions.substring(1).split("S");
-    for (let i = 0; i < inlinedFunctions.length; i++) {
-      const funcAddr = parseInt(inlinedFunctions[i]);
-      const func = this.codeMap_.findDynamicEntryByStartAddress(funcAddr);
-      if (!func || func.funcId === undefined) {
-        printErr(`Could not find function ${inlinedFunctions[i]}`);
-        inlinedFunctions[i] = null;
+  if (inlinedSFIs.length > 0) {
+    inlinedSFIs = inlinedSFIs.substring(1).split("S");
+    for (let i = 0; i < inlinedSFIs.length; i++) {
+      const sfiAddr = parseInt(inlinedSFIs[i]);
+      const sfi = this.codeMap_.findDynamicEntryByStartAddress(sfiAddr);
+      if (!sfi || sfi.funcId === undefined) {
+        printErr(`Could not find SFI ${inlinedSFIs[i]}`);
+        inlinedSFIs[i] = null;
       } else {
-        inlinedFunctions[i] = func.funcId;
+        inlinedSFIs[i] = sfi.funcId;
       }
     }
   } else {
-    inlinedFunctions = [];
+    inlinedSFIs = [];
   }
 
   this.codeEntries_[entry.codeId].source = {
@@ -1388,7 +1478,7 @@ JsonProfile.prototype.addSourcePositions = function (
     end: endPos,
     positions: sourcePositions,
     inlined: inliningPositions,
-    fns: inlinedFunctions
+    fns: inlinedSFIs
   };
 };
 
@@ -1428,7 +1518,7 @@ JsonProfile.prototype.deleteCode = function (start) {
   }
 };
 
-JsonProfile.prototype.moveFunc = function (from, to) {
+JsonProfile.prototype.moveSharedFunctionInfo = function (from, to) {
   if (this.codeMap_.findDynamicEntryByStartAddress(from)) {
     this.codeMap_.moveCode(from, to);
   }

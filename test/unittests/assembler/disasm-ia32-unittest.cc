@@ -46,8 +46,8 @@ using DisasmIa320Test = TestWithIsolate;
 #define __ assm.
 
 TEST_F(DisasmIa320Test, DisasmIa320) {
-  HandleScope scope(isolate());
-  v8::internal::byte buffer[8192];
+  HandleScope handle_scope(isolate());
+  uint8_t buffer[8192];
   Assembler assm(AssemblerOptions{},
                  ExternalAssemblerBuffer(buffer, sizeof buffer));
   // Short immediate instructions
@@ -288,13 +288,9 @@ TEST_F(DisasmIa320Test, DisasmIa320) {
   __ bind(&L2);
   __ call(Operand(ebx, ecx, times_4, 10000));
   __ nop();
-  Handle<Code> ic = BUILTIN_CODE(isolate(), ArrayFrom);
-  __ call(ic, RelocInfo::CODE_TARGET);
-  __ nop();
 
   __ jmp(&L1);
   __ jmp(Operand(ebx, ecx, times_4, 10000));
-  __ jmp(ic, RelocInfo::CODE_TARGET);
   __ nop();
 
   Label Ljcc;
@@ -987,11 +983,11 @@ TEST_F(DisasmIa320Test, DisasmIa320) {
   USE(code);
 #ifdef OBJECT_PRINT
   StdoutStream os;
-  code->Print(os);
-  Address begin = code->raw_instruction_start();
-  Address end = code->raw_instruction_end();
-  disasm::Disassembler::Disassemble(stdout, reinterpret_cast<byte*>(begin),
-                                    reinterpret_cast<byte*>(end));
+  Print(*code, os);
+  Address begin = code->instruction_start();
+  Address end = code->instruction_end();
+  disasm::Disassembler::Disassemble(stdout, reinterpret_cast<uint8_t*>(begin),
+                                    reinterpret_cast<uint8_t*>(end));
 #endif
 }
 

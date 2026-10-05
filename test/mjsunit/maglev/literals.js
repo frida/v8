@@ -15,12 +15,8 @@
 
   %OptimizeMaglevOnNextCall(f);
   assertEquals(0, f().length);
-  assertTrue(isMaglevved(f));
+  assertMaglevved(f);
 })();
-
-// TODO(victorgomes): Array literal.
-
-// TODO(victorgomes): Empty object.
 
 // Calls builtin create shallow object.
 (function() {
@@ -30,10 +26,11 @@
 
   %PrepareFunctionForOptimization(f);
   f();
+  f();
 
   %OptimizeMaglevOnNextCall(f);
   assertEquals(42, f().a);
-  assertTrue(isMaglevved(f));
+  assertMaglevved(f);
 })();
 
 // Calls runtime create literal object.
@@ -44,8 +41,9 @@
 
   %PrepareFunctionForOptimization(f);
   f();
+  f();
 
   %OptimizeMaglevOnNextCall(f);
   assertEquals(42, f().out.in);
-  assertTrue(isMaglevved(f));
+  assertMaglevved(f);
 })();

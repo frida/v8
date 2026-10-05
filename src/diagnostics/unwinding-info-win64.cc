@@ -51,7 +51,7 @@ void SetUnhandledExceptionCallback(
 // part of the registration of unwinding info. It is referenced by
 // RegisterNonABICompliantCodeRange(), below, and by the unwinding info for
 // builtins declared in the embedded blob.
-extern "C" V8_EXPORT_PRIVATE int CRASH_HANDLER_FUNCTION_NAME(
+extern "C" __declspec(dllexport) int CRASH_HANDLER_FUNCTION_NAME(
     PEXCEPTION_RECORD ExceptionRecord, ULONG64 EstablisherFrame,
     PCONTEXT ContextRecord, PDISPATCHER_CONTEXT DispatcherContext) {
   if (unhandled_exception_callback_g != nullptr) {
@@ -168,9 +168,10 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
   record->exception_handler = offsetof(Record, exception_thunk);
 
   // Hardcoded thunk.
+  AccountingAllocator allocator;
   AssemblerOptions options;
   options.record_reloc_info_for_serialization = false;
-  MacroAssembler masm(nullptr, options, CodeObjectRequired::kNo,
+  MacroAssembler masm(&allocator, options, CodeObjectRequired{false},
                       NewAssemblerBuffer(64));
   masm.movq(rax, reinterpret_cast<uint64_t>(&CRASH_HANDLER_FUNCTION_NAME));
   masm.jmp(rax);
@@ -445,9 +446,10 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
   record->exception_handler = offsetof(Record, exception_thunk);
 
   // Hardcoded thunk.
+  AccountingAllocator allocator;
   AssemblerOptions options;
   options.record_reloc_info_for_serialization = false;
-  TurboAssembler masm(nullptr, options, CodeObjectRequired::kNo,
+  MacroAssembler masm(&allocator, options, CodeObjectRequired{false},
                       NewAssemblerBuffer(64));
   masm.Mov(x16,
            Operand(reinterpret_cast<uint64_t>(&CRASH_HANDLER_FUNCTION_NAME)));
@@ -461,18 +463,11 @@ void InitUnwindingRecord(Record* record, size_t code_size_in_bytes) {
 
 namespace {
 
-typedef DWORD (NTAPI *AddGrowableFunctionTableFunc) (
-    PVOID* dynamic_table,
-    PRUNTIME_FUNCTION function_table,
-    DWORD entry_count,
-    DWORD maximum_entry_count,
-    ULONG_PTR range_base,
-    ULONG_PTR range_end);
-typedef VOID (NTAPI *DeleteGrowableFunctionTableFunc) (PVOID table);
-
 V8_DECLARE_ONCE(load_ntdll_unwinding_functions_once);
-static AddGrowableFunctionTableFunc add_growable_function_table_func = nullptr;
-static DeleteGrowableFunctionTableFunc delete_growable_function_table_func =
+static decltype(
+    &::RtlAddGrowableFunctionTable) add_growable_function_table_func = nullptr;
+static decltype(
+    &::RtlDeleteGrowableFunctionTable) delete_growable_function_table_func =
     nullptr;
 
 void LoadNtdllUnwindingFunctionsOnce() {
@@ -483,12 +478,12 @@ void LoadNtdllUnwindingFunctionsOnce() {
 
   // This fails on Windows 7.
   add_growable_function_table_func =
-      reinterpret_cast<AddGrowableFunctionTableFunc>(
+      reinterpret_cast<decltype(&::RtlAddGrowableFunctionTable)>(
           ::GetProcAddress(ntdll_module, "RtlAddGrowableFunctionTable"));
   DCHECK_IMPLIES(IsWindows8OrGreater(), add_growable_function_table_func);
 
   delete_growable_function_table_func =
-      reinterpret_cast<DeleteGrowableFunctionTableFunc>(
+      reinterpret_cast<decltype(&::RtlDeleteGrowableFunctionTable)>(
           ::GetProcAddress(ntdll_module, "RtlDeleteGrowableFunctionTable"));
   DCHECK_IMPLIES(IsWindows8OrGreater(), delete_growable_function_table_func);
 }

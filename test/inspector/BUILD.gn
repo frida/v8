@@ -6,6 +6,8 @@ import("../../gni/v8.gni")
 
 v8_source_set("inspector_test") {
   sources = [
+    "devtools-session.cc",
+    "devtools-session.h",
     "frontend-channel.h",
     "isolate-data.cc",
     "isolate-data.h",
@@ -21,10 +23,15 @@ v8_source_set("inspector_test") {
 
   public_deps = [
     "../..:v8",
+    "../..:v8_internal_headers",
     "../..:v8_libbase",
     "../..:v8_libplatform",
     "../../src/inspector:inspector_test_headers",
   ]
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }
 
 v8_executable("inspector-test") {
@@ -48,4 +55,8 @@ v8_executable("inspector-test") {
 
   cflags = []
   ldflags = []
+
+  # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
+  # enable the diagnostic by removing this line.
+  configs += [ "//build/config/compiler:no_exit_time_destructors" ]
 }

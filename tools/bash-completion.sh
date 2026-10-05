@@ -45,11 +45,10 @@ _get_v8_flags() {
     | grep -v "DEFINE_NEG_IMPLICATION" \
     | grep -v "DEFINE_VALUE_IMPLICATION" \
     | sed -e 's/_/-/g'; \
-    grep "^  V(harmony_" "$flags_file" \
-    | sed -e 's/^  V/DEFINE-BOOL/' \
-    | sed -e 's/_/-/g'; \
-    grep "^  V(" "$v8_source/src/wasm/wasm-feature-flags.h" \
-    | sed -e 's/^  V(/DEFINE-BOOL(experimental-wasm-/' \
+    sed -e 's/IF_[A-Z0-9_]*(\([A-Z_]*\), */\1(/' "$v8_source/src/flags/feature-flags.h" \
+    | sed -ne 's/.*WASM_FEATURE(/DEFINE-BOOL(wasm-/p' \
+          -ne 's/.*JS_FEATURE(/DEFINE-BOOL(/p' \
+          -ne 's/.*INTERNAL_FEATURE(/DEFINE-BOOL(/p' \
     | sed -e 's/_/-/g')
   sed -ne 's/^DEFINE-[^(]*(\([^,]*\).*/--\1/p' <<< "$defines"
   sed -ne 's/^DEFINE-BOOL(\([^,]*\).*/--no\1/p' <<< "$defines"
@@ -75,7 +74,7 @@ _test_flag() {
 }
 
 complete -F _d8_flag -f d8 v8 v8-debug
-complete -F _test_flag -f cctest unittests
+complete -F _test_flag -f cctest v8_unittests
 
 # Many distros set up their own GDB completion scripts. The logic below is
 # careful to wrap any such functions (with additional logic), rather than
@@ -105,7 +104,7 @@ _maybe_setup_gdb_completions() {
         if [ "$next" = "d8" ] ; then
           _d8_flag
           return 0
-        elif [ "$next" = "unittests" ] || [ "$next" = "cctest" ]; then
+        elif [ "$next" = "v8_unittests" ] || [ "$next" = "cctest" ]; then
           _test_flag
           return 0
         fi
@@ -126,6 +125,10 @@ _get_gm_flags() {
   find "$v8_source/test/cctest/" -type f -name 'test-*' | \
     xargs basename -a -s ".cc" | \
     while read -r item; do echo "cctest/$item/*"; done
+
+  # Find all out/* directories that have an args.gn file.
+  find out/ -maxdepth 1 -type d | \
+    while read -r dir; do [[ -f "$dir/args.gn" ]] && echo $dir; done
 }
 
 _gm_flag() {

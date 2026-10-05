@@ -5,13 +5,18 @@
 #ifndef V8_MAGLEV_MAGLEV_CODE_GEN_STATE_H_
 #define V8_MAGLEV_MAGLEV_CODE_GEN_STATE_H_
 
+#include <unordered_set>
+
 #include "src/codegen/assembler.h"
 #include "src/codegen/label.h"
 #include "src/codegen/machine-type.h"
 #include "src/codegen/maglev-safepoint-table.h"
+#include "src/codegen/source-position-table.h"
 #include "src/common/globals.h"
 #include "src/compiler/backend/instruction.h"
 #include "src/compiler/js-heap-broker.h"
+#include "src/diagnostics/gdb-jit.h"
+#include "src/execution/frame-constants.h"
 #include "src/maglev/maglev-compilation-info.h"
 #include "src/maglev/maglev-ir.h"
 
@@ -21,6 +26,7 @@ namespace maglev {
 
 class InterpreterFrameState;
 class MaglevAssembler;
+class Graph;
 
 class DeferredCodeInfo {
  public:
@@ -31,12 +37,23 @@ class DeferredCodeInfo {
 class MaglevCodeGenState {
  public:
   MaglevCodeGenState(MaglevCompilationInfo* compilation_info,
-                     MaglevSafepointTableBuilder* safepoint_table_builder)
+                     MaglevSafepointTableBuilder* safepoint_table_builder,
+                     SourcePositionTableBuilder* source_position_table_builder,
+                     uint32_t max_block_id)
       : compilation_info_(compilation_info),
-        safepoint_table_builder_(safepoint_table_builder) {}
+        safepoint_table_builder_(safepoint_table_builder),
+        source_position_table_builder_(source_position_table_builder),
+        real_jump_target_(max_block_id) {}
 
   void set_tagged_slots(int slots) { tagged_slots_ = slots; }
   void set_untagged_slots(int slots) { untagged_slots_ = slots; }
+
+  void AddVariableInfo(const MaglevVariableInfo& info) {
+    maglev_variables_.push_back(info);
+  }
+  const std::vector<MaglevVariableInfo>& maglev_variables() const {
+    return maglev_variables_;
+  }
 
   void PushDeferredCode(DeferredCodeInfo* deferred_code) {
     deferred_code_.push_back(deferred_code);
@@ -68,22 +85,88 @@ class MaglevCodeGenState {
   }
   int stack_slots() const { return untagged_slots_ + tagged_slots_; }
   int tagged_slots() const { return tagged_slots_; }
+
+  uint16_t parameter_count() const {
+    return compilation_info_->toplevel_compilation_unit()->parameter_count();
+  }
+
+  MaglevCompilationInfo* compilation_info() const { return compilation_info_; }
   MaglevSafepointTableBuilder* safepoint_table_builder() const {
     return safepoint_table_builder_;
   }
-  MaglevCompilationInfo* compilation_info() const { return compilation_info_; }
+  SourcePositionTableBuilder* source_position_table_builder() const {
+    return source_position_table_builder_;
+  }
+
+  Label* entry_label() { return &entry_label_; }
+
+  void set_max_deopted_stack_size(uint32_t max_deopted_stack_size) {
+    max_deopted_stack_size_ = max_deopted_stack_size;
+  }
+
+  void set_max_call_stack_args_(uint32_t max_call_stack_args) {
+    max_call_stack_args_ = max_call_stack_args;
+  }
+
+  uint32_t stack_check_offset() {
+    int32_t parameter_slots =
+        compilation_info_->toplevel_compilation_unit()->parameter_count();
+    uint32_t stack_slots = tagged_slots_ + untagged_slots_;
+    DCHECK(is_int32(stack_slots));
+    int32_t optimized_frame_height = parameter_slots * kSystemPointerSize +
+                                     StandardFrameConstants::kFixedFrameSize +
+                                     stack_slots * kSystemPointerSize;
+    DCHECK(is_int32(max_deopted_stack_size_));
+    int32_t signed_max_unoptimized_frame_height =
+        static_cast<int32_t>(max_deopted_stack_size_);
+
+    // The offset is either the delta between the optimized frames and the
+    // interpreted frame, or the maximal number of bytes pushed to the stack
+    // while preparing for function calls, whichever is bigger.
+    uint32_t frame_height_delta = static_cast<uint32_t>(std::max(
+        signed_max_unoptimized_frame_height - optimized_frame_height, 0));
+    uint32_t max_pushed_argument_bytes =
+        static_cast<uint32_t>(max_call_stack_args_ * kSystemPointerSize);
+    return std::max(frame_height_delta, max_pushed_argument_bytes);
+  }
+
+  Label* osr_entry() { return &osr_entry_; }
+
+  inline BasicBlock* RealJumpTarget(BasicBlock* block);
+
+  using RetainedObjects =
+      std::unordered_set<Handle<HeapObject>, Handle<HeapObject>::hash,
+                         Handle<HeapObject>::equal_to>;
+  void Retain(Handle<HeapObject> heap_object) {
+    retained_objects_.insert(heap_object);
+  }
+
+  const RetainedObjects& retained_objects() const { return retained_objects_; }
 
  private:
   MaglevCompilationInfo* const compilation_info_;
   MaglevSafepointTableBuilder* const safepoint_table_builder_;
+  SourcePositionTableBuilder* const source_position_table_builder_;
 
+  std::vector<MaglevVariableInfo> maglev_variables_;
   std::vector<DeferredCodeInfo*> deferred_code_;
   std::vector<EagerDeoptInfo*> eager_deopts_;
   std::vector<LazyDeoptInfo*> lazy_deopts_;
   std::vector<NodeBase*> handlers_;
 
+  RetainedObjects retained_objects_;
+
   int untagged_slots_ = 0;
   int tagged_slots_ = 0;
+  uint32_t max_deopted_stack_size_ = kMaxUInt32;
+  uint32_t max_call_stack_args_ = kMaxUInt32;
+
+  // Entry point label for recursive calls.
+  Label entry_label_;
+  Label osr_entry_;
+
+  // Cached jump targets skipping empty blocks.
+  std::vector<BasicBlock*> real_jump_target_;
 };
 
 // Some helpers for codegen.
@@ -116,9 +199,13 @@ inline auto ToRegisterT(const compiler::InstructionOperand& operand) {
 inline Register ToRegister(const ValueLocation& location) {
   return ToRegister(location.operand());
 }
+inline Register ToRegister(Input input) { return ToRegister(input.operand()); }
 
 inline DoubleRegister ToDoubleRegister(const ValueLocation& location) {
   return ToDoubleRegister(location.operand());
+}
+inline DoubleRegister ToDoubleRegister(Input input) {
+  return ToDoubleRegister(input.operand());
 }
 
 }  // namespace maglev

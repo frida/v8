@@ -15,32 +15,43 @@ namespace internal {
 
 class EntryFrameConstants : public AllStatic {
  public:
-  static constexpr int kCallerFPOffset = -3 * kSystemPointerSize;
+  static constexpr int kNextExitFrameFPOffset = -3 * kSystemPointerSize;
+
+  static constexpr int kNextFastCallFrameFPOffset =
+      kNextExitFrameFPOffset - kSystemPointerSize;
+  static constexpr int kNextFastCallFramePCOffset =
+      kNextFastCallFrameFPOffset - kSystemPointerSize;
 
   // Stack offsets for arguments passed to JSEntry.
   static constexpr int kArgvOffset = 20 * kSystemPointerSize;
 };
 
-class WasmCompileLazyFrameConstants : public TypedFrameConstants {
+class WasmLiftoffSetupFrameConstants : public TypedFrameConstants {
  public:
+  // Number of gp parameters, without the instance.
   static constexpr int kNumberOfSavedGpParamRegs = 3;
-#ifdef V8_TARGET_ARCH_S390X
   static constexpr int kNumberOfSavedFpParamRegs = 4;
-#else
-  static constexpr int kNumberOfSavedFpParamRegs = 2;
-#endif
 
+  // There's one spilled value (which doesn't need visiting) below the instance.
+  static constexpr int kCallingPCOffset = TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
   static constexpr int kInstanceSpillOffset =
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(0);
+      TYPED_FRAME_PUSHED_VALUE_OFFSET(1);
 
+  // Spilled registers are implicitly sorted backwards by number.
   static constexpr int kParameterSpillsOffset[] = {
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(1), TYPED_FRAME_PUSHED_VALUE_OFFSET(2),
-      TYPED_FRAME_PUSHED_VALUE_OFFSET(3)};
+      TYPED_FRAME_PUSHED_VALUE_OFFSET(4), TYPED_FRAME_PUSHED_VALUE_OFFSET(3),
+      TYPED_FRAME_PUSHED_VALUE_OFFSET(2)};
 
   // SP-relative.
-  static constexpr int kWasmInstanceOffset = 2 * kSystemPointerSize;
-  static constexpr int kFunctionIndexOffset = 1 * kSystemPointerSize;
+  static constexpr int kWasmInstanceDataOffset = 2 * kSystemPointerSize;
+  static constexpr int kDeclaredFunctionIndexOffset = 1 * kSystemPointerSize;
   static constexpr int kNativeModuleOffset = 0;
+};
+
+class WasmLiftoffFrameConstants : public TypedFrameConstants {
+ public:
+  static constexpr int kFeedbackVectorOffset = 3 * kSystemPointerSize;
+  static constexpr int kInstanceDataOffset = 2 * kSystemPointerSize;
 };
 
 // Frame constructed by the {WasmDebugBreak} builtin.

@@ -26,10 +26,7 @@ namespace compiler {
 class JSCreateLoweringTest : public TypedGraphTest {
  public:
   JSCreateLoweringTest()
-      : TypedGraphTest(3),
-        javascript_(zone()),
-        deps_(broker(), zone()),
-        handle_scope_(isolate()) {}
+      : TypedGraphTest(3), javascript_(zone()), deps_(broker(), zone()) {}
   ~JSCreateLoweringTest() override = default;
 
  protected:
@@ -39,19 +36,20 @@ class JSCreateLoweringTest : public TypedGraphTest {
     JSGraph jsgraph(isolate(), graph(), common(), javascript(), &simplified,
                     &machine);
     GraphReducer graph_reducer(zone(), graph(), tick_counter(), broker());
-    JSCreateLowering reducer(&graph_reducer, &deps_, &jsgraph, broker(),
-                             zone());
+    JSCreateLowering reducer(&graph_reducer, &jsgraph, broker(), zone());
     return reducer.Reduce(node);
   }
 
-  Node* FrameState(Handle<SharedFunctionInfo> shared, Node* outer_frame_state) {
+  Node* FrameState(Handle<SharedFunctionInfo> shared, Node* outer_frame_state,
+                   int parameter_count = 1) {
     Node* state_values =
         graph()->NewNode(common()->StateValues(0, SparseInputMask::Dense()));
     return graph()->NewNode(
-        common()->FrameState(
-            BytecodeOffset::None(), OutputFrameStateCombine::Ignore(),
-            common()->CreateFrameStateFunctionInfo(
-                FrameStateType::kUnoptimizedFunction, 1, 0, shared)),
+        common()->FrameState(BytecodeOffset::None(),
+                             OutputFrameStateCombine::Ignore(),
+                             common()->CreateFrameStateFunctionInfo(
+                                 FrameStateType::kUnoptimizedFunction,
+                                 parameter_count, 0, 0, shared, {})),
         state_values, state_values, state_values, NumberConstant(0),
         UndefinedConstant(), outer_frame_state);
   }
@@ -61,14 +59,13 @@ class JSCreateLoweringTest : public TypedGraphTest {
  private:
   JSOperatorBuilder javascript_;
   CompilationDependencies deps_;
-  CanonicalHandleScope handle_scope_;
 };
 
 // -----------------------------------------------------------------------------
 // JSCreate
 
 TEST_F(JSCreateLoweringTest, JSCreate) {
-  Handle<JSFunction> function = isolate()->object_function();
+  Handle<JSFunction> function = CanonicalHandle(*isolate()->object_function());
   Node* const target = graph()->NewNode(common()->HeapConstant(function));
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();
@@ -80,7 +77,7 @@ TEST_F(JSCreateLoweringTest, JSCreate) {
   EXPECT_THAT(
       r.replacement(),
       IsFinishRegion(
-          IsAllocate(IsNumberConstant(function->initial_map().instance_size()),
+          IsAllocate(IsNumberConstant(function->initial_map()->instance_size()),
                      IsBeginRegion(effect), control),
           _));
 }
@@ -92,8 +89,8 @@ TEST_F(JSCreateLoweringTest, JSCreateArgumentsInlinedMapped) {
   Node* const closure = Parameter(Type::Any());
   Node* const context = UndefinedConstant();
   Node* const effect = graph()->start();
-  Handle<SharedFunctionInfo> shared(isolate()->regexp_function()->shared(),
-                                    isolate());
+  Handle<SharedFunctionInfo> shared =
+      CanonicalHandle(isolate()->regexp_function()->shared());
   Node* const frame_state_outer = FrameState(shared, graph()->start());
   Node* const frame_state_inner = FrameState(shared, frame_state_outer);
   Reduction r = Reduce(graph()->NewNode(
@@ -111,8 +108,8 @@ TEST_F(JSCreateLoweringTest, JSCreateArgumentsInlinedUnmapped) {
   Node* const closure = Parameter(Type::Any());
   Node* const context = UndefinedConstant();
   Node* const effect = graph()->start();
-  Handle<SharedFunctionInfo> shared(isolate()->regexp_function()->shared(),
-                                    isolate());
+  Handle<SharedFunctionInfo> shared =
+      CanonicalHandle(isolate()->regexp_function()->shared());
   Node* const frame_state_outer = FrameState(shared, graph()->start());
   Node* const frame_state_inner = FrameState(shared, frame_state_outer);
   Reduction r = Reduce(graph()->NewNode(
@@ -130,10 +127,14 @@ TEST_F(JSCreateLoweringTest, JSCreateArgumentsInlinedRestArray) {
   Node* const closure = Parameter(Type::Any());
   Node* const context = UndefinedConstant();
   Node* const effect = graph()->start();
-  Handle<SharedFunctionInfo> shared(isolate()->regexp_function()->shared(),
-                                    isolate());
-  Node* const frame_state_outer = FrameState(shared, graph()->start());
-  Node* const frame_state_inner = FrameState(shared, frame_state_outer);
+  Handle<SharedFunctionInfo> shared =
+      CanonicalHandle(isolate()->regexp_function()->shared());
+  Node* const frame_state_outer =
+      FrameState(shared, graph()->start(),
+                 shared->internal_formal_parameter_count_with_receiver());
+  Node* const frame_state_inner =
+      FrameState(shared, frame_state_outer,
+                 shared->internal_formal_parameter_count_with_receiver());
   Reduction r = Reduce(graph()->NewNode(
       javascript()->CreateArguments(CreateArgumentsType::kRestParameter),
       closure, context, frame_state_inner, effect));
@@ -150,10 +151,10 @@ TEST_F(JSCreateLoweringTest, JSCreateFunctionContextViaInlinedAllocation) {
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();
   Node* const control = graph()->start();
-  Reduction const r = Reduce(graph()->NewNode(
-      javascript()->CreateFunctionContext(
-          MakeRef(broker(), ScopeInfo::Empty(isolate())), 8, FUNCTION_SCOPE),
-      context, effect, control));
+  Reduction const r = Reduce(
+      graph()->NewNode(javascript()->CreateFunctionContext(
+                           broker()->empty_scope_info(), 8, FUNCTION_SCOPE),
+                       context, effect, control));
   ASSERT_TRUE(r.Changed());
   EXPECT_THAT(r.replacement(),
               IsFinishRegion(IsAllocate(IsNumberConstant(Context::SizeFor(
@@ -166,8 +167,7 @@ TEST_F(JSCreateLoweringTest, JSCreateFunctionContextViaInlinedAllocation) {
 // JSCreateWithContext
 
 TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
-  ScopeInfoRef scope_info =
-      MakeRef(broker(), ReadOnlyRoots(isolate()).empty_function_scope_info());
+  ScopeInfoRef scope_info = broker()->empty_function_scope_info();
   Node* const object = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();
@@ -188,8 +188,7 @@ TEST_F(JSCreateLoweringTest, JSCreateWithContext) {
 // JSCreateCatchContext
 
 TEST_F(JSCreateLoweringTest, JSCreateCatchContext) {
-  ScopeInfoRef scope_info =
-      MakeRef(broker(), ReadOnlyRoots(isolate()).empty_function_scope_info());
+  ScopeInfoRef scope_info = broker()->empty_function_scope_info();
   Node* const exception = Parameter(Type::Receiver());
   Node* const context = Parameter(Type::Any());
   Node* const effect = graph()->start();

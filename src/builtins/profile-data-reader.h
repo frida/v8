@@ -8,6 +8,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#if defined(LOG_BUILTIN_BLOCK_COUNT) || defined(BUILTIN_BLOCK_POSITION)
+#include <unordered_map>
+#endif
 #include <vector>
 
 #include "src/common/globals.h"
@@ -31,6 +34,13 @@ class ProfileDataFromFile {
     return BranchHint::kNone;
   }
 
+#if defined(LOG_BUILTIN_BLOCK_COUNT) || defined(BUILTIN_BLOCK_POSITION)
+  uint64_t GetExecutedCount(size_t block_id) const {
+    if (executed_count_.count(block_id) == 0) return 0;
+    return executed_count_.at(block_id);
+  }
+#endif
+
   // Load basic block profiling data for the builtin with the given name, if
   // such data exists. The returned vector is indexed by block ID, and its
   // values are the number of times each block was executed while profiling.
@@ -43,6 +53,10 @@ class ProfileDataFromFile {
   // the branch condition. The vector is indexed by the basic block ids of
   // the two destinations of the branch.
   std::map<std::pair<size_t, size_t>, bool> block_hints_by_id;
+
+#if defined(LOG_BUILTIN_BLOCK_COUNT) || defined(BUILTIN_BLOCK_POSITION)
+  std::unordered_map<size_t, uint64_t> executed_count_;
+#endif
 };
 
 // The following strings can't be static members of ProfileDataFromFile until

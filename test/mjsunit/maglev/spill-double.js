@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 // Flags: --allow-natives-syntax --maglev
+// Flags: --nooptimize-maglev-optimizes-to-turbofan
 
 // This tests that we can lazy deopt with a double spilled.
 
@@ -30,8 +31,8 @@ assertEquals(4.2, f(false, value));
 
 %OptimizeMaglevOnNextCall(f);
 assertEquals(4.2, f(false, value));
-assertTrue(isMaglevved(f));
+assertMaglevved(f);
 
 // We should deopt here.
 assertEquals(4.2, f(true, value));
-assertFalse(isMaglevved(f));
+assertNotMaglevved(f);

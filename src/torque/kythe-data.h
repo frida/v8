@@ -5,8 +5,8 @@
 #ifndef V8_TORQUE_KYTHE_DATA_H_
 #define V8_TORQUE_KYTHE_DATA_H_
 
+#include "src/base/contextual.h"
 #include "src/torque/ast.h"
-#include "src/torque/contextual.h"
 #include "src/torque/global-context.h"
 #include "src/torque/implementation-visitor.h"
 
@@ -36,7 +36,14 @@ class KytheConsumer {
   virtual ~KytheConsumer() = 0;
 
   virtual kythe_entity_t AddDefinition(Kind kind, std::string name,
-                                       KythePosition pos) = 0;
+                                       KythePosition pos) {
+    return 0;
+  }
+  virtual kythe_entity_t AddDefinition(Kind kind, std::string name,
+                                       KythePosition pos, bool is_extern,
+                                       std::string readable_name) {
+    return AddDefinition(kind, std::move(name), pos);
+  }
 
   virtual void AddUse(Kind kind, kythe_entity_t entity,
                       KythePosition use_pos) = 0;
@@ -46,7 +53,7 @@ class KytheConsumer {
 };
 inline KytheConsumer::~KytheConsumer() = default;
 
-class KytheData : public ContextualClass<KytheData> {
+class KytheData : public base::ContextualClass<KytheData> {
  public:
   KytheData() = default;
 

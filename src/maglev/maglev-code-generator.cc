@@ -5,9 +5,13 @@
 #include "src/maglev/maglev-code-generator.h"
 
 #include <algorithm>
+#include <fstream>
 
+#include "absl/container/flat_hash_map.h"
 #include "src/base/hashmap.h"
+#include "src/base/logging.h"
 #include "src/codegen/code-desc.h"
+#include "src/codegen/compiler.h"
 #include "src/codegen/interface-descriptors-inl.h"
 #include "src/codegen/interface-descriptors.h"
 #include "src/codegen/register.h"
@@ -16,20 +20,28 @@
 #include "src/codegen/source-position.h"
 #include "src/common/globals.h"
 #include "src/compiler/backend/instruction.h"
+#include "src/compiler/frame-states.h"
 #include "src/deoptimizer/deoptimize-reason.h"
-#include "src/deoptimizer/translation-array.h"
+#include "src/deoptimizer/deoptimizer.h"
+#include "src/deoptimizer/frame-translation-builder.h"
+#include "src/diagnostics/gdb-jit.h"
 #include "src/execution/frame-constants.h"
+#include "src/flags/flags.h"
+#include "src/handles/global-handles-inl.h"
 #include "src/interpreter/bytecode-register.h"
 #include "src/maglev/maglev-assembler-inl.h"
-#include "src/maglev/maglev-code-gen-state.h"
+#include "src/maglev/maglev-code-gen-state-inl.h"
 #include "src/maglev/maglev-compilation-unit.h"
 #include "src/maglev/maglev-graph-labeller.h"
 #include "src/maglev/maglev-graph-printer.h"
 #include "src/maglev/maglev-graph-processor.h"
 #include "src/maglev/maglev-graph.h"
+#include "src/maglev/maglev-ir-inl.h"
 #include "src/maglev/maglev-ir.h"
 #include "src/maglev/maglev-regalloc-data.h"
+#include "src/maglev/maglev-regalloc-node-info.h"
 #include "src/objects/code-inl.h"
+#include "src/objects/deoptimization-data.h"
 #include "src/utils/identity-map.h"
 
 namespace v8 {
@@ -44,15 +56,16 @@ template <typename RegisterT>
 struct RegisterTHelper;
 template <>
 struct RegisterTHelper<Register> {
-  static constexpr Register kScratch = kScratchRegister;
-  static constexpr RegList kAllocatableRegisters = kAllocatableGeneralRegisters;
+  static constexpr RegList kAllocatableRegisters =
+      MaglevAssembler::GetAllocatableRegisters();
 };
 template <>
 struct RegisterTHelper<DoubleRegister> {
-  static constexpr DoubleRegister kScratch = kScratchDoubleReg;
   static constexpr DoubleRegList kAllocatableRegisters =
-      kAllocatableDoubleRegisters;
+      MaglevAssembler::GetAllocatableDoubleRegisters();
 };
+
+enum NeedsDecompression { kDoesNotNeedDecompression, kNeedsDecompression };
 
 // The ParallelMoveResolver is used to resolve multiple moves between registers
 // and stack slots that are intended to happen, semantically, in parallel. It
@@ -86,33 +99,40 @@ struct RegisterTHelper<DoubleRegister> {
 // It additionally keeps track of materialising moves, which don't have a stack
 // slot but rather materialise a value from, e.g., a constant. These can safely
 // be emitted at the end, once all the parallel moves are done.
-template <typename RegisterT>
+template <typename RegisterT, bool DecompressIfNeeded>
 class ParallelMoveResolver {
-  static constexpr RegisterT kScratchRegT =
-      RegisterTHelper<RegisterT>::kScratch;
-
   static constexpr auto kAllocatableRegistersT =
       RegisterTHelper<RegisterT>::kAllocatableRegisters;
+  static_assert(!DecompressIfNeeded || std::is_same_v<Register, RegisterT>);
+  static_assert(!DecompressIfNeeded || COMPRESS_POINTERS_BOOL);
 
  public:
-  explicit ParallelMoveResolver(MaglevAssembler* masm) : masm_(masm) {}
+  explicit ParallelMoveResolver(MaglevAssembler* masm)
+      : masm_(masm), scratch_(RegisterT::no_reg()) {}
 
   void RecordMove(ValueNode* source_node, compiler::InstructionOperand source,
-                  compiler::AllocatedOperand target) {
-    if (target.IsRegister()) {
-      RecordMoveToRegister(source_node, source, ToRegisterT<RegisterT>(target));
+                  compiler::AllocatedOperand target,
+                  bool target_needs_to_be_decompressed) {
+    if (target.IsAnyRegister()) {
+      RecordMoveToRegister(source_node, source, ToRegisterT<RegisterT>(target),
+                           target_needs_to_be_decompressed);
     } else {
       RecordMoveToStackSlot(source_node, source,
-                            masm_->GetFramePointerOffsetForStackSlot(target));
+                            masm_->GetFramePointerOffsetForStackSlot(target),
+                            target_needs_to_be_decompressed);
     }
   }
 
   void RecordMove(ValueNode* source_node, compiler::InstructionOperand source,
-                  RegisterT target_reg) {
-    RecordMoveToRegister(source_node, source, target_reg);
+                  RegisterT target_reg,
+                  NeedsDecompression target_needs_to_be_decompressed) {
+    RecordMoveToRegister(source_node, source, target_reg,
+                         target_needs_to_be_decompressed);
   }
 
-  void EmitMoves() {
+  void EmitMoves(RegisterT scratch) {
+    DCHECK(!scratch_.is_valid());
+    scratch_ = scratch;
     for (RegisterT reg : kAllocatableRegistersT) {
       StartEmitMoveChain(reg);
       ValueNode* materializing_register_move =
@@ -128,8 +148,15 @@ class ParallelMoveResolver {
       StartEmitMoveChain(moves_from_stack_slot_.begin()->first);
     }
     for (auto [stack_slot, node] : materializing_stack_slot_moves_) {
-      node->LoadToRegister(masm_, kScratchRegT);
-      EmitStackMove(stack_slot, kScratchRegT);
+      if constexpr (std::is_same_v<RegisterT, Register> &&
+                    MaglevAssembler::HasZeroRegister()) {
+        if (node->MaterializesToZero()) {
+          __ Move(StackSlot{stack_slot}, MaglevAssembler::ZeroRegister());
+          continue;
+        }
+      }
+      node->LoadToRegister(masm_, scratch_);
+      __ Move(StackSlot{stack_slot}, scratch_);
     }
   }
 
@@ -139,12 +166,25 @@ class ParallelMoveResolver {
   ParallelMoveResolver operator=(const ParallelMoveResolver&) = delete;
 
  private:
-  // The targets of moves from a source, i.e. the set of outgoing edges for a
-  // node in the move graph.
+  // For the GapMoveTargets::needs_decompression member when DecompressIfNeeded
+  // is false.
+  struct DummyNeedsDecompression {
+    // NOLINTNEXTLINE
+    DummyNeedsDecompression(NeedsDecompression) {}
+  };
+
+  // The targets of moves from a source, i.e. the set of outgoing edges for
+  // a node in the move graph.
   struct GapMoveTargets {
+    base::SmallVector<int32_t, 1> stack_slots = base::SmallVector<int32_t, 1>{};
     RegListBase<RegisterT> registers;
-    base::SmallVector<uint32_t, 1> stack_slots =
-        base::SmallVector<uint32_t, 1>{};
+
+    // We only need this field for DecompressIfNeeded, otherwise use an empty
+    // dummy value.
+    V8_NO_UNIQUE_ADDRESS
+    std::conditional_t<DecompressIfNeeded, NeedsDecompression,
+                       DummyNeedsDecompression>
+        needs_decompression = kDoesNotNeedDecompression;
 
     GapMoveTargets() = default;
     GapMoveTargets(GapMoveTargets&&) V8_NOEXCEPT = default;
@@ -178,11 +218,11 @@ class ParallelMoveResolver {
     }
   }
 
-  void CheckNoExistingMoveToStackSlot(uint32_t target_slot) {
-    for (Register reg : kAllocatableRegistersT) {
+  void CheckNoExistingMoveToStackSlot(int32_t target_slot) {
+    for (RegisterT reg : kAllocatableRegistersT) {
       auto& stack_slots = moves_from_register_[reg.code()].stack_slots;
       if (std::any_of(stack_slots.begin(), stack_slots.end(),
-                      [&](uint32_t slot) { return slot == target_slot; })) {
+                      [&](int32_t slot) { return slot == target_slot; })) {
         FATAL("Existing move from %s to stack slot %d", RegisterName(reg),
               target_slot);
       }
@@ -190,7 +230,7 @@ class ParallelMoveResolver {
     for (auto& [stack_slot, targets] : moves_from_stack_slot_) {
       auto& stack_slots = targets.stack_slots;
       if (std::any_of(stack_slots.begin(), stack_slots.end(),
-                      [&](uint32_t slot) { return slot == target_slot; })) {
+                      [&](int32_t slot) { return slot == target_slot; })) {
         FATAL("Existing move from stack slot %d to stack slot %d", stack_slot,
               target_slot);
       }
@@ -204,51 +244,109 @@ class ParallelMoveResolver {
   }
 #else
   void CheckNoExistingMoveToRegister(RegisterT target_reg) {}
-  void CheckNoExistingMoveToStackSlot(uint32_t target_slot) {}
+  void CheckNoExistingMoveToStackSlot(int32_t target_slot) {}
 #endif
 
   void RecordMoveToRegister(ValueNode* node,
                             compiler::InstructionOperand source,
-                            RegisterT target_reg) {
+                            RegisterT target_reg,
+                            bool target_needs_to_be_decompressed) {
     // There shouldn't have been another move to this register already.
     CheckNoExistingMoveToRegister(target_reg);
 
+    NeedsDecompression needs_decompression = kDoesNotNeedDecompression;
+    if constexpr (DecompressIfNeeded) {
+      if (target_needs_to_be_decompressed &&
+          !node->decompresses_tagged_result()) {
+        needs_decompression = kNeedsDecompression;
+      }
+    } else {
+      DCHECK_IMPLIES(target_needs_to_be_decompressed,
+                     node->decompresses_tagged_result());
+    }
+
+    GapMoveTargets* targets;
     if (source.IsAnyRegister()) {
       RegisterT source_reg = ToRegisterT<RegisterT>(source);
-      if (target_reg != source_reg) {
-        moves_from_register_[source_reg.code()].registers.set(target_reg);
+      if (target_reg == source_reg) {
+        // We should never have a register aliasing case that needs
+        // decompression, since this path is only used by exception phis and
+        // they have no reg->reg moves.
+        DCHECK_EQ(needs_decompression, kDoesNotNeedDecompression);
+        return;
       }
+      targets = &moves_from_register_[source_reg.code()];
     } else if (source.IsAnyStackSlot()) {
-      uint32_t source_slot = masm_->GetFramePointerOffsetForStackSlot(
+      int32_t source_slot = masm_->GetFramePointerOffsetForStackSlot(
           compiler::AllocatedOperand::cast(source));
-      moves_from_stack_slot_[source_slot].registers.set(target_reg);
+      targets = &moves_from_stack_slot_[source_slot];
     } else {
       DCHECK(source.IsConstant());
       DCHECK(IsConstantNode(node->opcode()));
+#ifdef V8_COMPRESS_POINTERS
+      if constexpr (DecompressIfNeeded) {
+        if (needs_decompression == kNeedsDecompression) {
+          node->SetTaggedResultNeedsDecompress();
+        }
+      }
+#endif
       materializing_register_moves_[target_reg.code()] = node;
+      return;
+    }
+
+    targets->registers.set(target_reg);
+    if (needs_decompression == kNeedsDecompression) {
+      targets->needs_decompression = kNeedsDecompression;
     }
   }
 
   void RecordMoveToStackSlot(ValueNode* node,
                              compiler::InstructionOperand source,
-                             uint32_t target_slot) {
+                             int32_t target_slot,
+                             bool target_needs_to_be_decompressed) {
     // There shouldn't have been another move to this stack slot already.
     CheckNoExistingMoveToStackSlot(target_slot);
 
+    NeedsDecompression needs_decompression = kDoesNotNeedDecompression;
+    if constexpr (DecompressIfNeeded) {
+      if (target_needs_to_be_decompressed &&
+          !node->decompresses_tagged_result()) {
+        needs_decompression = kNeedsDecompression;
+      }
+    } else {
+      DCHECK_IMPLIES(target_needs_to_be_decompressed,
+                     node->decompresses_tagged_result());
+    }
+
+    GapMoveTargets* targets;
     if (source.IsAnyRegister()) {
       RegisterT source_reg = ToRegisterT<RegisterT>(source);
-      moves_from_register_[source_reg.code()].stack_slots.push_back(
-          target_slot);
+      targets = &moves_from_register_[source_reg.code()];
     } else if (source.IsAnyStackSlot()) {
-      uint32_t source_slot = masm_->GetFramePointerOffsetForStackSlot(
+      int32_t source_slot = masm_->GetFramePointerOffsetForStackSlot(
           compiler::AllocatedOperand::cast(source));
-      if (source_slot != target_slot) {
-        moves_from_stack_slot_[source_slot].stack_slots.push_back(target_slot);
+      if (source_slot == target_slot &&
+          needs_decompression == kDoesNotNeedDecompression) {
+        return;
       }
+      targets = &moves_from_stack_slot_[source_slot];
     } else {
       DCHECK(source.IsConstant());
       DCHECK(IsConstantNode(node->opcode()));
+#ifdef V8_COMPRESS_POINTERS
+      if constexpr (DecompressIfNeeded) {
+        if (needs_decompression == kNeedsDecompression) {
+          node->SetTaggedResultNeedsDecompress();
+        }
+      }
+#endif
       materializing_stack_slot_moves_.emplace_back(target_slot, node);
+      return;
+    }
+
+    targets->stack_slots.push_back(target_slot);
+    if (needs_decompression == kNeedsDecompression) {
+      targets->needs_decompression = kNeedsDecompression;
     }
   }
 
@@ -258,7 +356,7 @@ class ParallelMoveResolver {
     return std::exchange(moves_from_register_[source_reg.code()],
                          GapMoveTargets{});
   }
-  GapMoveTargets PopTargets(uint32_t source_slot) {
+  GapMoveTargets PopTargets(int32_t source_slot) {
     auto handle = moves_from_stack_slot_.extract(source_slot);
     if (handle.empty()) return {};
     DCHECK(!handle.mapped().is_empty());
@@ -286,14 +384,14 @@ class ParallelMoveResolver {
     // chain start.
     if (has_cycle) {
       if (!scratch_has_cycle_start_) {
-        Pop(kScratchRegT);
+        Pop(scratch_);
         scratch_has_cycle_start_ = true;
       }
-      EmitMovesFromSource(kScratchRegT, targets);
+      EmitMovesFromSource(scratch_, std::move(targets));
       scratch_has_cycle_start_ = false;
       __ RecordComment("--   * End of cycle");
     } else {
-      EmitMovesFromSource(source, targets);
+      EmitMovesFromSource(source, std::move(targets));
       __ RecordComment("--   * Chain emitted with no cycles");
     }
   }
@@ -306,10 +404,10 @@ class ParallelMoveResolver {
       if (chain_start == source) {
         __ RecordComment("--   * Cycle");
         DCHECK(!scratch_has_cycle_start_);
-        if constexpr (std::is_same_v<ChainStartT, uint32_t>) {
-          EmitStackMove(kScratchRegT, chain_start);
+        if constexpr (std::is_same_v<ChainStartT, int32_t>) {
+          __ Move(scratch_, StackSlot{chain_start});
         } else {
-          __ Move(kScratchRegT, chain_start);
+          __ Move(scratch_, chain_start);
         }
         scratch_has_cycle_start_ = true;
         return true;
@@ -324,7 +422,7 @@ class ParallelMoveResolver {
 
     bool has_cycle = RecursivelyEmitMoveChainTargets(chain_start, targets);
 
-    EmitMovesFromSource(source, targets);
+    EmitMovesFromSource(source, std::move(targets));
     return has_cycle;
   }
 
@@ -338,78 +436,84 @@ class ParallelMoveResolver {
     for (auto target : targets.registers) {
       has_cycle |= ContinueEmitMoveChain(chain_start, target);
     }
-    for (uint32_t target_slot : targets.stack_slots) {
+    for (int32_t target_slot : targets.stack_slots) {
       has_cycle |= ContinueEmitMoveChain(chain_start, target_slot);
     }
     return has_cycle;
   }
 
-  void EmitMovesFromSource(RegisterT source_reg,
-                           const GapMoveTargets& targets) {
+  void EmitMovesFromSource(RegisterT source_reg, GapMoveTargets&& targets) {
     DCHECK(moves_from_register_[source_reg.code()].is_empty());
+    if constexpr (DecompressIfNeeded) {
+      // The DecompressIfNeeded clause is redundant with the if-constexpr above,
+      // but otherwise this code cannot be compiled by compilers not yet
+      // implementing CWG2518.
+      static_assert(DecompressIfNeeded && COMPRESS_POINTERS_BOOL);
+
+      if (targets.needs_decompression == kNeedsDecompression) {
+        __ DecompressTagged(source_reg, source_reg);
+      }
+    }
     for (RegisterT target_reg : targets.registers) {
       DCHECK(moves_from_register_[target_reg.code()].is_empty());
       __ Move(target_reg, source_reg);
     }
-    for (uint32_t target_slot : targets.stack_slots) {
+    for (int32_t target_slot : targets.stack_slots) {
       DCHECK_EQ(moves_from_stack_slot_.find(target_slot),
                 moves_from_stack_slot_.end());
-      EmitStackMove(target_slot, source_reg);
+      __ Move(StackSlot{target_slot}, source_reg);
     }
   }
 
-  void EmitMovesFromSource(uint32_t source_slot,
-                           const GapMoveTargets& targets) {
+  void EmitMovesFromSource(int32_t source_slot, GapMoveTargets&& targets) {
     DCHECK_EQ(moves_from_stack_slot_.find(source_slot),
               moves_from_stack_slot_.end());
-    for (RegisterT target_reg : targets.registers) {
-      DCHECK(moves_from_register_[target_reg.code()].is_empty());
-      EmitStackMove(target_reg, source_slot);
-    }
-    if (scratch_has_cycle_start_ && !targets.stack_slots.empty()) {
-      Push(kScratchRegT);
-      scratch_has_cycle_start_ = false;
-    }
-    for (uint32_t target_slot : targets.stack_slots) {
-      DCHECK_EQ(moves_from_stack_slot_.find(target_slot),
-                moves_from_stack_slot_.end());
-      EmitStackMove(kScratchRegT, source_slot);
-      EmitStackMove(target_slot, kScratchRegT);
-    }
-  }
 
-  // The slot index used for representing slots in the move graph is the offset
-  // from the frame pointer. These helpers help translate this into an actual
-  // machine move.
-  void EmitStackMove(uint32_t target_slot, Register source_reg) {
-    __ movq(MemOperand(rbp, target_slot), source_reg);
-  }
-  void EmitStackMove(uint32_t target_slot, DoubleRegister source_reg) {
-    __ Movsd(MemOperand(rbp, target_slot), source_reg);
-  }
-  void EmitStackMove(Register target_reg, uint32_t source_slot) {
-    __ movq(target_reg, MemOperand(rbp, source_slot));
-  }
-  void EmitStackMove(DoubleRegister target_reg, uint32_t source_slot) {
-    __ Movsd(target_reg, MemOperand(rbp, source_slot));
+    // Cache the slot value on a register.
+    RegisterT register_with_slot_value = RegisterT::no_reg();
+    if (!targets.registers.is_empty()) {
+      // If one of the targets is a register, we can move our value into it and
+      // optimize the moves from this stack slot to always be via that register.
+      register_with_slot_value = targets.registers.PopFirst();
+    } else {
+      DCHECK(!targets.stack_slots.empty());
+      // Otherwise, cache the slot value on the scratch register, clobbering it
+      // if necessary.
+      if (scratch_has_cycle_start_) {
+        Push(scratch_);
+        scratch_has_cycle_start_ = false;
+      }
+      register_with_slot_value = scratch_;
+    }
+    // Now emit moves from that cached register instead of from the stack slot.
+    DCHECK(register_with_slot_value.is_valid());
+    DCHECK(moves_from_register_[register_with_slot_value.code()].is_empty());
+    __ Move(register_with_slot_value, StackSlot{source_slot});
+    // Decompress after the first move, subsequent moves reuse this register so
+    // they're guaranteed to be decompressed.
+    if constexpr (DecompressIfNeeded) {
+      // The DecompressIfNeeded clause is redundant with the if-constexpr above,
+      // but otherwise this code cannot be compiled by compilers not yet
+      // implementing CWG2518.
+      static_assert(DecompressIfNeeded && COMPRESS_POINTERS_BOOL);
+
+      if (targets.needs_decompression == kNeedsDecompression) {
+        __ DecompressTagged(register_with_slot_value, register_with_slot_value);
+        targets.needs_decompression = kDoesNotNeedDecompression;
+      }
+    }
+    EmitMovesFromSource(register_with_slot_value, std::move(targets));
   }
 
   void Push(Register reg) { __ Push(reg); }
   void Push(DoubleRegister reg) { __ PushAll({reg}); }
-  void Push(uint32_t stack_slot) {
-    __ movq(kScratchRegister, MemOperand(rbp, stack_slot));
-    __ movq(MemOperand(rsp, -1), kScratchRegister);
-  }
   void Pop(Register reg) { __ Pop(reg); }
   void Pop(DoubleRegister reg) { __ PopAll({reg}); }
-  void Pop(uint32_t stack_slot) {
-    __ movq(kScratchRegister, MemOperand(rsp, -1));
-    __ movq(MemOperand(rbp, stack_slot), kScratchRegister);
-  }
 
-  MacroAssembler* masm() const { return masm_; }
+  MaglevAssembler* masm() const { return masm_; }
 
   MaglevAssembler* const masm_;
+  RegisterT scratch_;
 
   // Keep moves to/from registers and stack slots separate -- there are a fixed
   // number of registers but an infinite number of stack slots, so the register
@@ -420,15 +524,16 @@ class ParallelMoveResolver {
   std::array<GapMoveTargets, RegisterT::kNumRegisters> moves_from_register_ =
       {};
 
+  // TODO(victorgomes): Use MaglevAssembler::StackSlot instead of int32_t.
   // moves_from_stack_slot_[source] = target.
-  std::unordered_map<uint32_t, GapMoveTargets> moves_from_stack_slot_;
+  absl::flat_hash_map<int32_t, GapMoveTargets> moves_from_stack_slot_;
 
   // materializing_register_moves[target] = node.
   std::array<ValueNode*, RegisterT::kNumRegisters>
       materializing_register_moves_ = {};
 
   // materializing_stack_slot_moves = {(node,target), ... }.
-  std::vector<std::pair<uint32_t, ValueNode*>> materializing_stack_slot_moves_;
+  std::vector<std::pair<int32_t, ValueNode*>> materializing_stack_slot_moves_;
 
   bool scratch_has_cycle_start_ = false;
 };
@@ -456,8 +561,9 @@ class ExceptionHandlerTrampolineBuilder {
     DCHECK(node->properties().can_throw());
 
     ExceptionHandlerInfo* const handler_info = node->exception_handler_info();
+    if (handler_info->ShouldLazyDeopt()) return;
     DCHECK(handler_info->HasExceptionHandler());
-    BasicBlock* const catch_block = handler_info->catch_block.block_ptr();
+    BasicBlock* const catch_block = handler_info->catch_block();
     LazyDeoptInfo* const deopt_info = node->lazy_deopt_info();
 
     // The exception handler trampoline resolves moves for exception phis and
@@ -479,30 +585,36 @@ class ExceptionHandlerTrampolineBuilder {
     // values are tagged and b) the stack walk treats unknown stack slots as
     // tagged.
 
-    // TODO(v8:7700): Handle inlining.
+    const InterpretedDeoptFrame& lazy_frame =
+        deopt_info->GetFrameForExceptionHandler(handler_info);
 
-    ParallelMoveResolver<Register> direct_moves(masm_);
+    // TODO(v8:7700): Handle inlining.
+    ParallelMoveResolver<Register, COMPRESS_POINTERS_BOOL> direct_moves(masm_);
     MoveVector materialising_moves;
     bool save_accumulator = false;
-    RecordMoves(deopt_info->unit, catch_block, deopt_info->state.register_frame,
+    RecordMoves(lazy_frame.unit(), catch_block, lazy_frame.frame_state(),
                 &direct_moves, &materialising_moves, &save_accumulator);
-
-    __ bind(&handler_info->trampoline_entry);
+    __ BindJumpTarget(&handler_info->trampoline_entry());
     __ RecordComment("-- Exception handler trampoline START");
     EmitMaterialisationsAndPushResults(materialising_moves, save_accumulator);
+
     __ RecordComment("EmitMoves");
-    direct_moves.EmitMoves();
-    EmitPopMaterialisedResults(materialising_moves, save_accumulator);
-    __ jmp(catch_block->label());
+    MaglevAssembler::TemporaryRegisterScope temps(masm_);
+    Register scratch = temps.AcquireScratch();
+    direct_moves.EmitMoves(scratch);
+    EmitPopMaterialisedResults(materialising_moves, save_accumulator, scratch);
+    __ Jump(catch_block->label());
     __ RecordComment("-- Exception handler trampoline END");
   }
 
-  MacroAssembler* masm() const { return masm_; }
+  MaglevAssembler* masm() const { return masm_; }
 
-  void RecordMoves(const MaglevCompilationUnit& unit, BasicBlock* catch_block,
-                   const CompactInterpreterFrameState* register_frame,
-                   ParallelMoveResolver<Register>* direct_moves,
-                   MoveVector* materialising_moves, bool* save_accumulator) {
+  void RecordMoves(
+      const MaglevCompilationUnit& unit, BasicBlock* catch_block,
+      const CompactInterpreterFrameState* register_frame,
+      ParallelMoveResolver<Register, COMPRESS_POINTERS_BOOL>* direct_moves,
+      MoveVector* materialising_moves, bool* save_accumulator) {
+    if (!catch_block->has_phi()) return;
     for (Phi* phi : *catch_block->phis()) {
       DCHECK(phi->is_exception_phi());
       if (!phi->has_valid_live_range()) continue;
@@ -519,41 +631,47 @@ class ExceptionHandlerTrampolineBuilder {
         continue;
       }
 
-      ValueNode* const source = register_frame->GetValueOf(phi->owner(), unit);
+      ValueNode* source = register_frame->GetValueOf(phi->owner(), unit);
       DCHECK_NOT_NULL(source);
+      if (VirtualObject* vobj = source->TryCast<VirtualObject>()) {
+        DCHECK(vobj->allocation()->HasEscaped());
+        source = vobj->allocation();
+      }
       // All registers must have been spilled due to the call.
       // TODO(jgruber): Which call? Because any throw requires at least a call
       // to Runtime::kThrowFoo?
-      DCHECK(!source->allocation().IsRegister());
+      DCHECK(!source->regalloc_info()->allocation().IsRegister());
+
+      // The DeoptInfoVisitor should unwrap identity nodes in frame states.
+      DCHECK(!source->Is<Identity>());
 
       switch (source->properties().value_representation()) {
         case ValueRepresentation::kTagged:
           direct_moves->RecordMove(
-              source, source->allocation(),
-              compiler::AllocatedOperand::cast(target.operand()));
+              source, source->regalloc_info()->allocation(),
+              compiler::AllocatedOperand::cast(target.operand()),
+              phi->decompresses_tagged_result() ? kNeedsDecompression
+                                                : kDoesNotNeedDecompression);
           break;
         case ValueRepresentation::kInt32:
-          if (source->allocation().IsConstant()) {
-            // TODO(jgruber): Why is it okay for Int32 constants to remain
-            // untagged while non-constants are unconditionally smi-tagged or
-            // converted to a HeapNumber during materialisation?
-            direct_moves->RecordMove(
-                source, source->allocation(),
-                compiler::AllocatedOperand::cast(target.operand()));
-          } else {
-            materialising_moves->emplace_back(target, source);
-          }
-          break;
-        case ValueRepresentation::kFloat64:
+        case ValueRepresentation::kUint32:
+        case ValueRepresentation::kIntPtr:
+        case ValueRepresentation::kRawPtr:
           materialising_moves->emplace_back(target, source);
           break;
+        case ValueRepresentation::kFloat64:
+        case ValueRepresentation::kHoleyFloat64:
+          materialising_moves->emplace_back(target, source);
+          break;
+        case ValueRepresentation::kNone:
+          UNREACHABLE();
       }
     }
   }
 
   void EmitMaterialisationsAndPushResults(const MoveVector& moves,
                                           bool save_accumulator) const {
-    if (moves.size() == 0) return;
+    if (moves.empty()) return;
 
     // It's possible to optimize this further, at the cost of additional
     // complexity:
@@ -569,73 +687,45 @@ class ExceptionHandlerTrampolineBuilder {
     // talking about a presumably infrequent case for exception handlers.
 
     __ RecordComment("EmitMaterialisationsAndPushResults");
+
     if (save_accumulator) __ Push(kReturnRegister0);
+
+#ifdef DEBUG
+    // Allow calls in these materialisations.
+    __ set_allow_call(true);
+#endif
     for (const Move& move : moves) {
-      MaterialiseTo(move.source, kReturnRegister0);
+      // We consider constants after all other operations, since constants
+      // don't need to call NewHeapNumber.
+      if (IsConstantNode(move.source->opcode())) continue;
+      __ MaterialiseValueNode(kReturnRegister0, move.source);
       __ Push(kReturnRegister0);
     }
+#ifdef DEBUG
+    __ set_allow_call(false);
+#endif
   }
 
   void EmitPopMaterialisedResults(const MoveVector& moves,
-                                  bool save_accumulator) const {
-    if (moves.size() == 0) return;
+                                  bool save_accumulator,
+                                  Register scratch) const {
+    if (moves.empty()) return;
     __ RecordComment("EmitPopMaterialisedResults");
-    for (auto it = moves.rbegin(); it < moves.rend(); it++) {
-      const ValueLocation& target = it->target;
-      if (target.operand().IsRegister()) {
-        __ Pop(target.AssignedGeneralRegister());
+    for (const Move& move : base::Reversed(moves)) {
+      const ValueLocation& target = move.target;
+      Register target_reg = target.operand().IsAnyRegister()
+                                ? target.AssignedGeneralRegister()
+                                : scratch;
+      if (IsConstantNode(move.source->opcode())) {
+        __ MaterialiseValueNode(target_reg, move.source);
       } else {
-        DCHECK(target.operand().IsStackSlot());
-        __ Pop(kScratchRegister);
-        __ movq(masm_->ToMemOperand(target.operand()), kScratchRegister);
+        __ Pop(target_reg);
+      }
+      if (target_reg == scratch) {
+        __ Move(masm_->ToMemOperand(target.operand()), scratch);
       }
     }
-
     if (save_accumulator) __ Pop(kReturnRegister0);
-  }
-
-  void MaterialiseTo(ValueNode* value, Register dst) const {
-    using D = NewHeapNumberDescriptor;
-    switch (value->properties().value_representation()) {
-      case ValueRepresentation::kInt32: {
-        // We consider Int32Constants together with tagged values.
-        DCHECK(!value->allocation().IsConstant());
-        Label done;
-        __ movq(dst, ToMemOperand(value));
-        __ addl(dst, dst);
-        __ j(no_overflow, &done);
-        // If we overflow, instead of bailing out (deopting), we change
-        // representation to a HeapNumber.
-        __ Cvtlsi2sd(D::GetDoubleRegisterParameter(D::kValue),
-                     ToMemOperand(value));
-        __ CallBuiltin(Builtin::kNewHeapNumber);
-        __ Move(dst, kReturnRegister0);
-        __ bind(&done);
-        break;
-      }
-      case ValueRepresentation::kFloat64:
-        if (Float64Constant* constant = value->TryCast<Float64Constant>()) {
-          __ Move(D::GetDoubleRegisterParameter(D::kValue), constant->value());
-        } else {
-          __ Movsd(D::GetDoubleRegisterParameter(D::kValue),
-                   ToMemOperand(value));
-        }
-        __ CallBuiltin(Builtin::kNewHeapNumber);
-        __ Move(dst, kReturnRegister0);
-        break;
-      case ValueRepresentation::kTagged:
-        UNREACHABLE();
-    }
-  }
-
-  MemOperand ToMemOperand(ValueNode* node) const {
-    DCHECK(node->allocation().IsAnyStackSlot());
-    return masm_->ToMemOperand(node->allocation());
-  }
-
-  MemOperand ToMemOperand(const ValueLocation& location) const {
-    DCHECK(location.operand().IsStackSlot());
-    return masm_->ToMemOperand(location.operand());
   }
 
   MaglevAssembler* const masm_;
@@ -643,205 +733,242 @@ class ExceptionHandlerTrampolineBuilder {
 
 class MaglevCodeGeneratingNodeProcessor {
  public:
-  explicit MaglevCodeGeneratingNodeProcessor(MaglevAssembler* masm)
-      : masm_(masm) {}
+  MaglevCodeGeneratingNodeProcessor(MaglevAssembler* masm, Zone* zone)
+      : masm_(masm),
+        zone_(zone),
+        // Cache for faster check.
+        collect_source_positions_(masm->code_gen_state()
+                                      ->compilation_info()
+                                      ->collect_source_positions()) {
+    DCHECK_IMPLIES(collect_source_positions_, graph_labeller() != nullptr);
+  }
 
   void PreProcessGraph(Graph* graph) {
+    // TODO(victorgomes): I wonder if we want to create a struct that shares
+    // these fields between graph and code_gen_state.
     code_gen_state()->set_untagged_slots(graph->untagged_stack_slots());
     code_gen_state()->set_tagged_slots(graph->tagged_stack_slots());
+    code_gen_state()->set_max_deopted_stack_size(
+        graph->max_deopted_stack_size());
+    code_gen_state()->set_max_call_stack_args_(graph->max_call_stack_args());
 
     if (v8_flags.maglev_break_on_entry) {
-      __ int3();
+      __ DebugBreak();
     }
 
-    if (v8_flags.maglev_ool_prologue) {
-      // Call the out-of-line prologue (with parameters passed on the stack).
-      __ Push(Immediate(code_gen_state()->stack_slots() * kSystemPointerSize));
-      __ Push(Immediate(code_gen_state()->tagged_slots() * kSystemPointerSize));
-      __ CallBuiltin(Builtin::kMaglevOutOfLinePrologue);
+    if (graph->is_osr()) {
+      __ OSRPrologue(graph);
     } else {
-      __ BailoutIfDeoptimized(rbx);
+      __ Prologue(graph);
+    }
 
-      // Tiering support.
-      // TODO(jgruber): Extract to a builtin (the tiering prologue is ~230 bytes
-      // per Maglev code object on x64).
-      {
-        // Scratch registers. Don't clobber regs related to the calling
-        // convention (e.g. kJavaScriptCallArgCountRegister).
-        Register flags = rcx;
-        Register feedback_vector = r9;
+    // Maglev always sets up a frame.
+    __ set_has_frame(true);
 
-        // Load the feedback vector.
-        __ LoadTaggedPointerField(
-            feedback_vector,
-            FieldOperand(kJSFunctionRegister, JSFunction::kFeedbackCellOffset));
-        __ LoadTaggedPointerField(
-            feedback_vector, FieldOperand(feedback_vector, Cell::kValueOffset));
-        __ AssertFeedbackVector(feedback_vector);
+    // "Deferred" computation has to be done before block removal, because
+    // block removal doesn't propagate deferredness of removed blocks.
+    int deferred_count = ComputeDeferred(graph);
 
-        Label flags_need_processing, next;
-        __ LoadFeedbackVectorFlagsAndJumpIfNeedsProcessing(
-            flags, feedback_vector, CodeKind::MAGLEV, &flags_need_processing);
-        __ jmp(&next);
+    // If we deferred the first block, un-defer it. This can happen because we
+    // defer a block if all its successors are deferred (i.e., lead to an
+    // unconditional deopt). E.g., if we only executed exception throwing code
+    // paths, the non-exception code paths might be untaken, and thus contain
+    // unconditional deopts, so we end up deferring all non-exception code
+    // paths, including the first block.
+    if (graph->blocks()[0]->is_deferred()) {
+      graph->blocks()[0]->set_deferred(false);
+      --deferred_count;
+    }
 
-        __ bind(&flags_need_processing);
-        {
-          ASM_CODE_COMMENT_STRING(masm(), "Optimized marker check");
-          __ OptimizeCodeOrTailCallOptimizedCodeSlot(
-              flags, feedback_vector, kJSFunctionRegister, JumpMode::kJump);
-          __ Trap();
-        }
+    // Reorder the blocks so that dererred blocks are at the end.
+    int non_deferred_count = graph->num_blocks() - deferred_count;
 
-        __ bind(&next);
-      }
+    ZoneVector<BasicBlock*> new_blocks(graph->num_blocks(), zone_);
 
-      __ EnterFrame(StackFrame::MAGLEV);
-
-      // Save arguments in frame.
-      // TODO(leszeks): Consider eliding this frame if we don't make any calls
-      // that could clobber these registers.
-      __ Push(kContextRegister);
-      __ Push(kJSFunctionRegister);              // Callee's JS function.
-      __ Push(kJavaScriptCallArgCountRegister);  // Actual argument count.
-
-      {
-        ASM_CODE_COMMENT_STRING(masm(), " Stack/interrupt check");
-        // Stack check. This folds the checks for both the interrupt stack limit
-        // check and the real stack limit into one by just checking for the
-        // interrupt limit. The interrupt limit is either equal to the real
-        // stack limit or tighter. By ensuring we have space until that limit
-        // after building the frame we can quickly precheck both at once.
-        __ Move(kScratchRegister, rsp);
-        // TODO(leszeks): Include a max call argument size here.
-        __ subq(kScratchRegister, Immediate(code_gen_state()->stack_slots() *
-                                            kSystemPointerSize));
-        __ cmpq(kScratchRegister,
-                __ StackLimitAsOperand(StackLimitKind::kInterruptStackLimit));
-
-        __ j(below, &deferred_call_stack_guard_);
-        __ bind(&deferred_call_stack_guard_return_);
-      }
-
-      // Initialize stack slots.
-      if (graph->tagged_stack_slots() > 0) {
-        ASM_CODE_COMMENT_STRING(masm(), "Initializing stack slots");
-        // TODO(leszeks): Consider filling with xmm + movdqa instead.
-        __ Move(rax, Immediate(0));
-
-        // Magic value. Experimentally, an unroll size of 8 doesn't seem any
-        // worse than fully unrolled pushes.
-        const int kLoopUnrollSize = 8;
-        int tagged_slots = graph->tagged_stack_slots();
-        if (tagged_slots < 2 * kLoopUnrollSize) {
-          // If the frame is small enough, just unroll the frame fill
-          // completely.
-          for (int i = 0; i < tagged_slots; ++i) {
-            __ pushq(rax);
-          }
-        } else {
-          // Extract the first few slots to round to the unroll size.
-          int first_slots = tagged_slots % kLoopUnrollSize;
-          for (int i = 0; i < first_slots; ++i) {
-            __ pushq(rax);
-          }
-          __ Move(rbx, Immediate(tagged_slots / kLoopUnrollSize));
-          // We enter the loop unconditionally, so make sure we need to loop at
-          // least once.
-          DCHECK_GT(tagged_slots / kLoopUnrollSize, 0);
-          Label loop;
-          __ bind(&loop);
-          for (int i = 0; i < kLoopUnrollSize; ++i) {
-            __ pushq(rax);
-          }
-          __ decl(rbx);
-          __ j(greater, &loop);
-        }
-      }
-      if (graph->untagged_stack_slots() > 0) {
-        // Extend rsp by the size of the remaining untagged part of the frame,
-        // no need to initialise these.
-        __ subq(rsp,
-                Immediate(graph->untagged_stack_slots() * kSystemPointerSize));
+    size_t ix_non_deferred = 0;
+    size_t ix_deferred = non_deferred_count;
+    for (auto block_it = graph->begin(); block_it != graph->end(); ++block_it) {
+      BasicBlock* block = *block_it;
+      DCHECK(!block->is_dead());
+      if (block->is_deferred()) {
+        new_blocks[ix_deferred++] = block;
+      } else {
+        new_blocks[ix_non_deferred++] = block;
       }
     }
-  }
+    CHECK_EQ(ix_deferred, graph->num_blocks());
+    CHECK_EQ(ix_non_deferred, non_deferred_count);
+    graph->set_blocks(new_blocks);
 
-  void PostProcessGraph(Graph*) {
-    __ int3();
-
-    if (!v8_flags.maglev_ool_prologue) {
-      __ bind(&deferred_call_stack_guard_);
-      ASM_CODE_COMMENT_STRING(masm(), "Stack/interrupt call");
-      // Save any registers that can be referenced by RegisterInput.
-      // TODO(leszeks): Only push those that are used by the graph.
-      __ PushAll(RegisterInput::kAllowedRegisters);
-      // Push the frame size
-      __ Push(Immediate(
-          Smi::FromInt(code_gen_state()->stack_slots() * kSystemPointerSize)));
-      __ CallRuntime(Runtime::kStackGuardWithGap, 1);
-      __ PopAll(RegisterInput::kAllowedRegisters);
-      __ jmp(&deferred_call_stack_guard_return_);
+    // Remove empty blocks.
+    ZoneVector<BasicBlock*>& blocks = graph->blocks();
+    size_t current_ix = 0;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+      BasicBlock* block = blocks[i];
+      if (code_gen_state()->RealJumpTarget(block) == block) {
+        // This block cannot be replaced.
+        blocks[current_ix++] = block;
+      }
     }
+    blocks.resize(current_ix);
   }
 
-  void PreProcessBasicBlock(BasicBlock* block) {
+  void PostProcessGraph(Graph* graph) {}
+  BlockProcessResult PostProcessBasicBlock(BasicBlock* block) {
+    return BlockProcessResult::kContinue;
+  }
+  void PostPhiProcessing() {}
+
+  BlockProcessResult PreProcessBasicBlock(BasicBlock* block) {
+    if (block->is_loop()) {
+      __ LoopHeaderAlign();
+    }
     if (v8_flags.code_comments) {
       std::stringstream ss;
-      ss << "-- Block b" << graph_labeller()->BlockId(block);
+      ss << "-- Block b" << block->id();
       __ RecordComment(ss.str());
     }
-
-    __ bind(block->label());
+    __ BindBlock(block);
+    return BlockProcessResult::kContinue;
   }
 
   template <typename NodeT>
-  void Process(NodeT* node, const ProcessingState& state) {
+  ProcessResult Process(NodeT* node, const ProcessingState& state) {
+#ifdef DEBUG
+    if constexpr (std::is_base_of_v<ValueNode, NodeT>) {
+      // Regalloc must clear its temp allocations.
+      DCHECK(!node->regalloc_info()->has_register());
+    }
+#endif
     if (v8_flags.code_comments) {
       std::stringstream ss;
       ss << "--   " << graph_labeller()->NodeId(node) << ": "
-         << PrintNode(graph_labeller(), node);
+         << PrintNode(node);
       __ RecordComment(ss.str());
     }
-
-    if (v8_flags.debug_code) {
-      __ movq(kScratchRegister, rbp);
-      __ subq(kScratchRegister, rsp);
-      __ cmpq(kScratchRegister,
-              Immediate(code_gen_state()->stack_slots() * kSystemPointerSize +
-                        StandardFrameConstants::kFixedFrameSizeFromFp));
-      __ Assert(equal, AbortReason::kStackAccessBelowStackPointer);
+    bool handled_gdbjit = false;
+#ifdef ENABLE_GDB_JIT_INTERFACE
+    if (v8_flags.gdbjit_full && v8_flags.maglev_gdbjit) {
+      int line_number = graph_labeller()->GetNodeLineNumber(node);
+      if (line_number != -1) {
+        Isolate* isolate = masm_->code_gen_state()
+                               ->compilation_info()
+                               ->broker()
+                               ->local_isolate()
+                               ->GetMainThreadIsolateUnsafe();
+        std::string func_name =
+            masm_->code_gen_state()->compilation_info()->function_name();
+        std::string filename = GetMaglevGraphFilename(
+            func_name,
+            masm_->code_gen_state()->compilation_info()->optimization_id());
+        int file_id =
+            isolate->LookupOrAddExternallyCompiledFilename(filename.c_str());
+        SourcePosition pos = SourcePosition::External(line_number, file_id);
+        code_gen_state()->source_position_table_builder()->AddPosition(
+            masm_->pc_offset(), pos, true);
+      }
+      handled_gdbjit = true;
+    }
+#endif
+    if (!handled_gdbjit && collect_source_positions_) {
+      // TODO(leszeks): Consider collecting source position in a more memory
+      // friendly way, if we don't need the whole graph labeller.
+      const auto& provenance = graph_labeller()->GetNodeProvenance(node);
+      if (provenance.position.IsKnown()) {
+        code_gen_state()->source_position_table_builder()->AddPosition(
+            masm_->pc_offset(), provenance.position, false);
+      }
     }
 
+    if (v8_flags.maglev_assert_stack_size) {
+      __ AssertStackSizeCorrect();
+    }
+
+    PatchJumps(node);
+
     // Emit Phi moves before visiting the control node.
-    if (std::is_base_of<UnconditionalControlNode, NodeT>::value) {
+    if (std::is_base_of_v<UnconditionalControlNode, NodeT>) {
       EmitBlockEndGapMoves(node->template Cast<UnconditionalControlNode>(),
                            state);
     }
 
+    if (v8_flags.slow_debug_code && !std::is_same_v<NodeT, Phi>) {
+      // Check that all int32/uint32 inputs are zero extended.
+      // Note that we don't do this for Phis, since they are virtual operations
+      // whose inputs aren't actual inputs but are injected on incoming
+      // branches. There's thus nothing to verify for the inputs we see for the
+      // phi.
+      for (Input input : node->inputs()) {
+        ValueRepresentation rep =
+            input.node()->properties().value_representation();
+        if (IsZeroExtendedRepresentation(rep)) {
+          // TODO(leszeks): Ideally we'd check non-register inputs too, but
+          // AssertZeroExtended needs the scratch register, so we'd have to do
+          // some manual push/pop here to free up another register.
+          if (input.location()->IsGeneralRegister()) {
+            __ AssertZeroExtended(ToRegister(input));
+          }
+        }
+      }
+    }
+
+    MaglevAssembler::TemporaryRegisterScope scratch_scope(masm());
+    scratch_scope.Include(node->regalloc_info()->general_temporaries());
+    scratch_scope.IncludeDouble(node->regalloc_info()->double_temporaries());
+
+#ifdef DEBUG
+    masm()->set_allow_allocate(node->properties().can_allocate());
+    masm()->set_allow_call(node->properties().is_call());
+    masm()->set_allow_deferred_call(node->properties().is_deferred_call());
+#endif
+
     node->GenerateCode(masm(), state);
 
-    if (std::is_base_of<ValueNode, NodeT>::value) {
+#ifdef DEBUG
+    masm()->set_allow_allocate(false);
+    masm()->set_allow_call(false);
+    masm()->set_allow_deferred_call(false);
+#endif
+
+    if (std::is_base_of_v<ValueNode, NodeT>) {
       ValueNode* value_node = node->template Cast<ValueNode>();
-      if (value_node->is_spilled()) {
+      RegallocValueNodeInfo* node_info = value_node->regalloc_info();
+      bool is_spilled = false;
+      if (node_info && node_info->has_valid_live_range()) {
+        is_spilled = node_info->is_spilled();
+      }
+      if (is_spilled) {
         compiler::AllocatedOperand source =
-            compiler::AllocatedOperand::cast(value_node->result().operand());
+            compiler::AllocatedOperand::cast(node_info->result().operand());
         // We shouldn't spill nodes which already output to the stack.
         if (!source.IsAnyStackSlot()) {
           if (v8_flags.code_comments) __ RecordComment("--   Spill:");
           if (source.IsRegister()) {
-            __ movq(masm()->GetStackSlot(value_node->spill_slot()),
+            __ Move(masm()->GetStackSlot(node_info->spill_slot()),
                     ToRegister(source));
           } else {
-            __ Movsd(masm()->GetStackSlot(value_node->spill_slot()),
-                     ToDoubleRegister(source));
+            __ StoreFloat64(masm()->GetStackSlot(node_info->spill_slot()),
+                            ToDoubleRegister(source));
           }
         } else {
           // Otherwise, the result source stack slot should be equal to the
           // spill slot.
-          DCHECK_EQ(source.index(), value_node->spill_slot().index());
+          DCHECK_EQ(source.index(), node_info->spill_slot().index());
         }
       }
+
+#ifdef ENABLE_GDB_JIT_INTERFACE
+      if (v8_flags.maglev_gdbjit && is_spilled) {
+        int node_id = graph_labeller()->NodeId(value_node);
+        if (node_id != -1) {
+          int start_pc = masm()->pc_offset();
+          code_gen_state()->AddVariableInfo(
+              {node_id, node_info->spill_slot().index(), start_pc});
+        }
+      }
+#endif
     }
+    return ProcessResult::kContinue;
   }
 
   void EmitBlockEndGapMoves(UnconditionalControlNode* node,
@@ -854,14 +981,19 @@ class MaglevCodeGeneratingNodeProcessor {
 
     int predecessor_id = state.block()->predecessor_id();
 
+    MaglevAssembler::TemporaryRegisterScope temps(masm_);
+    Register scratch = temps.AcquireScratch();
+    DoubleRegister double_scratch = temps.AcquireScratchDouble();
+
     // TODO(leszeks): Move these to fields, to allow their data structure
     // allocations to be reused. Will need some sort of state resetting.
-    ParallelMoveResolver<Register> register_moves(masm_);
-    ParallelMoveResolver<DoubleRegister> double_register_moves(masm_);
+    ParallelMoveResolver<Register, false> register_moves(masm_);
+    ParallelMoveResolver<DoubleRegister, false> double_register_moves(masm_);
 
     // Remember what registers were assigned to by a Phi, to avoid clobbering
     // them with RegisterMoves.
     RegList registers_set_by_phis;
+    DoubleRegList double_registers_set_by_phis;
 
     __ RecordComment("--   Gap moves:");
 
@@ -882,10 +1014,10 @@ class MaglevCodeGeneratingNodeProcessor {
           }
           continue;
         }
-        Input& input = phi->input(state.block()->predecessor_id());
-        ValueNode* node = input.node();
+        Input input = phi->input(state.block()->predecessor_id());
+        ValueNode* input_node = input.node();
         compiler::InstructionOperand source = input.operand();
-        compiler::AllocatedOperand target =
+        compiler::AllocatedOperand target_operand =
             compiler::AllocatedOperand::cast(phi->result().operand());
         if (v8_flags.code_comments) {
           std::stringstream ss;
@@ -893,9 +1025,21 @@ class MaglevCodeGeneratingNodeProcessor {
              << graph_labeller()->NodeId(phi) << ")";
           __ RecordComment(ss.str());
         }
-        register_moves.RecordMove(node, source, target);
-        if (target.IsAnyRegister()) {
-          registers_set_by_phis.set(target.GetRegister());
+        if (phi->use_double_register()) {
+          DCHECK(!phi->decompresses_tagged_result());
+          double_register_moves.RecordMove(input_node, source, target_operand,
+                                           false);
+        } else {
+          register_moves.RecordMove(input_node, source, target_operand,
+                                    kDoesNotNeedDecompression);
+        }
+        if (target_operand.IsAnyRegister()) {
+          if (phi->use_double_register()) {
+            double_registers_set_by_phis.set(
+                target_operand.GetDoubleRegister());
+          } else {
+            registers_set_by_phis.set(target_operand.GetRegister());
+          }
         }
       }
     }
@@ -915,16 +1059,20 @@ class MaglevCodeGeneratingNodeProcessor {
               ss << "--   * " << source << " → " << reg;
               __ RecordComment(ss.str());
             }
-            register_moves.RecordMove(node, source, reg);
+            register_moves.RecordMove(node, source, reg,
+                                      kDoesNotNeedDecompression);
           }
         });
 
-    register_moves.EmitMoves();
+    register_moves.EmitMoves(scratch);
 
     __ RecordComment("--   Double gap moves:");
 
     target->state()->register_state().ForEachDoubleRegister(
         [&](DoubleRegister reg, RegisterState& state) {
+          // Don't clobber registers set by a Phi.
+          if (double_registers_set_by_phis.has(reg)) return;
+
           ValueNode* node;
           RegisterMerge* merge;
           if (LoadMergeState(state, &node, &merge)) {
@@ -935,11 +1083,12 @@ class MaglevCodeGeneratingNodeProcessor {
               ss << "--   * " << source << " → " << reg;
               __ RecordComment(ss.str());
             }
-            double_register_moves.RecordMove(node, source, reg);
+            double_register_moves.RecordMove(node, source, reg,
+                                             kDoesNotNeedDecompression);
           }
         });
 
-    double_register_moves.EmitMoves();
+    double_register_moves.EmitMoves(double_scratch);
   }
 
   Isolate* isolate() const { return masm_->isolate(); }
@@ -952,9 +1101,106 @@ class MaglevCodeGeneratingNodeProcessor {
   }
 
  private:
+  // Jump threading: instead of jumping to an empty block A which just
+  // unconditionally jumps to B, redirect the jump to B directly.
+  template <typename NodeT>
+  void PatchJumps(NodeT* node) {
+    if constexpr (IsUnconditionalControlNode(Node::opcode_of<NodeT>)) {
+      UnconditionalControlNode* control_node =
+          node->template Cast<UnconditionalControlNode>();
+      control_node->set_target(
+          code_gen_state()->RealJumpTarget(control_node->target()));
+    } else if constexpr (IsBranchControlNode(Node::opcode_of<NodeT>)) {
+      BranchControlNode* control_node =
+          node->template Cast<BranchControlNode>();
+      control_node->set_if_true(
+          code_gen_state()->RealJumpTarget(control_node->if_true()));
+      control_node->set_if_false(
+          code_gen_state()->RealJumpTarget(control_node->if_false()));
+    } else if constexpr (Node::opcode_of<NodeT> == Opcode::kSwitch) {
+      Switch* switch_node = node->template Cast<Switch>();
+      BasicBlockRef* targets = switch_node->targets();
+      for (int i = 0; i < switch_node->size(); ++i) {
+        targets[i].set_block_ptr(
+            code_gen_state()->RealJumpTarget(targets[i].block_ptr()));
+      }
+      if (switch_node->has_fallthrough()) {
+        switch_node->set_fallthrough(
+            code_gen_state()->RealJumpTarget(switch_node->fallthrough()));
+      }
+    }
+  }
+
+  int ComputeDeferred(Graph* graph) {
+    int deferred_count = 0;
+    // Propagate deferredness: If a block is deferred, defer all its successors,
+    // except if a successor has another predecessor which is not deferred.
+
+    // In addition, if all successors of a block are deferred, defer it too.
+
+    // Work queue is a queue of blocks which are deferred, so we'll need to
+    // check whether to defer their successors and predecessors.
+    SmallZoneVector<BasicBlock*, 32> work_queue(zone_);
+    for (auto block_it = graph->begin(); block_it != graph->end(); ++block_it) {
+      BasicBlock* block = *block_it;
+      if (block->is_deferred()) {
+        ++deferred_count;
+        work_queue.emplace_back(block);
+      }
+    }
+
+    // The algorithm below is O(N * e^2) where e is the maximum number of
+    // predecessors / successors. We check whether we should defer a block at
+    // most e times. When doing the check, we check each predecessor / successor
+    // once.
+    while (!work_queue.empty()) {
+      BasicBlock* block = work_queue.back();
+      work_queue.pop_back();
+      DCHECK(block->is_deferred());
+
+      // Check if we should defer any successor.
+      block->ForEachSuccessor([&work_queue,
+                               &deferred_count](BasicBlock* successor) {
+        if (successor->is_deferred()) {
+          return;
+        }
+        bool should_defer = true;
+        successor->ForEachPredecessor([&should_defer](BasicBlock* predecessor) {
+          if (!predecessor->is_deferred()) {
+            should_defer = false;
+          }
+        });
+        if (should_defer) {
+          ++deferred_count;
+          work_queue.emplace_back(successor);
+          successor->set_deferred(true);
+        }
+      });
+
+      // Check if we should defer any predecessor.
+      block->ForEachPredecessor([&work_queue,
+                                 &deferred_count](BasicBlock* predecessor) {
+        if (predecessor->is_deferred()) {
+          return;
+        }
+        bool should_defer = true;
+        predecessor->ForEachSuccessor([&should_defer](BasicBlock* successor) {
+          if (!successor->is_deferred()) {
+            should_defer = false;
+          }
+        });
+        if (should_defer) {
+          ++deferred_count;
+          work_queue.emplace_back(predecessor);
+          predecessor->set_deferred(true);
+        }
+      });
+    }
+    return deferred_count;
+  }
   MaglevAssembler* const masm_;
-  Label deferred_call_stack_guard_;
-  Label deferred_call_stack_guard_return_;
+  Zone* zone_;
+  bool collect_source_positions_;
 };
 
 class SafepointingNodeProcessor {
@@ -964,87 +1210,99 @@ class SafepointingNodeProcessor {
 
   void PreProcessGraph(Graph* graph) {}
   void PostProcessGraph(Graph* graph) {}
-  void PreProcessBasicBlock(BasicBlock* block) {}
-  void Process(NodeBase* node, const ProcessingState& state) {
+  BlockProcessResult PostProcessBasicBlock(BasicBlock* block) {
+    return BlockProcessResult::kContinue;
+  }
+  BlockProcessResult PreProcessBasicBlock(BasicBlock* block) {
+    return BlockProcessResult::kContinue;
+  }
+  void PostPhiProcessing() {}
+  ProcessResult Process(NodeBase* node, const ProcessingState& state) {
     local_isolate_->heap()->Safepoint();
+    return ProcessResult::kContinue;
   }
 
  private:
   LocalIsolate* local_isolate_;
 };
 
-class MaglevTranslationArrayBuilder {
+namespace {
+DeoptimizationFrameTranslation::FrameCount GetFrameCount(
+    const DeoptFrame* deopt_frame) {
+  int total = 0;
+  int js_frame = 0;
+  do {
+    if (deopt_frame->IsJsFrame()) {
+      js_frame++;
+    }
+    total++;
+    deopt_frame = deopt_frame->parent();
+  } while (deopt_frame);
+  return {total, js_frame};
+}
+}  // namespace
+
+class MaglevFrameTranslationBuilder {
  public:
-  MaglevTranslationArrayBuilder(
+  MaglevFrameTranslationBuilder(
       LocalIsolate* local_isolate, MaglevAssembler* masm,
-      TranslationArrayBuilder* translation_array_builder,
-      IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals)
+      FrameTranslationBuilder* translation_array_builder,
+      IdentityMap<int, base::DefaultAllocationPolicy>* protected_deopt_literals,
+      IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals,
+      ZoneVector<IndirectHandle<TrustedObject>>*
+          protected_deopt_literals_vector,
+      ZoneVector<IndirectHandle<Object>>* deopt_literals_vector)
       : local_isolate_(local_isolate),
         masm_(masm),
         translation_array_builder_(translation_array_builder),
-        deopt_literals_(deopt_literals) {}
+        protected_deopt_literals_(protected_deopt_literals),
+        deopt_literals_(deopt_literals),
+        protected_deopt_literals_vector_(protected_deopt_literals_vector),
+        deopt_literals_vector_(deopt_literals_vector),
+        object_ids_(10) {}
 
   void BuildEagerDeopt(EagerDeoptInfo* deopt_info) {
-    int frame_count = 1 + deopt_info->unit.inlining_depth();
-    int jsframe_count = frame_count;
-    int update_feedback_count = 0;
-    deopt_info->translation_index =
-        translation_array_builder_->BeginTranslation(frame_count, jsframe_count,
-                                                     update_feedback_count);
+    BuildBeginDeopt(deopt_info);
 
-    const InputLocation* current_input_location = deopt_info->input_locations;
-    BuildDeoptFrame(deopt_info->unit, deopt_info->state,
-                    current_input_location);
+    const InputLocation* current_input_location = deopt_info->input_locations();
+    const VirtualObjectList& virtual_objects =
+        deopt_info->top_frame().GetVirtualObjects();
+    RecursiveBuildDeoptFrame(deopt_info->top_frame(), current_input_location,
+                             virtual_objects);
+    CHECK_EQ(current_input_location, deopt_info->input_locations_end());
   }
 
   void BuildLazyDeopt(LazyDeoptInfo* deopt_info) {
-    int frame_count = 1 + deopt_info->unit.inlining_depth();
-    int jsframe_count = frame_count;
-    int update_feedback_count = 0;
-    deopt_info->translation_index =
-        translation_array_builder_->BeginTranslation(frame_count, jsframe_count,
-                                                     update_feedback_count);
+    BuildBeginDeopt(deopt_info);
 
-    const MaglevCompilationUnit& unit = deopt_info->unit;
-    const InputLocation* current_input_location = deopt_info->input_locations;
+    const InputLocation* current_input_location = deopt_info->input_locations();
+    const VirtualObjectList& virtual_objects =
+        deopt_info->top_frame().GetVirtualObjects();
 
-    if (deopt_info->state.parent) {
+    if (deopt_info->top_frame().parent()) {
       // Deopt input locations are in the order of deopt frame emission, so
       // update the pointer after emitting the parent frame.
-      BuildDeoptFrame(*unit.caller(), *deopt_info->state.parent,
-                      current_input_location);
+      RecursiveBuildDeoptFrame(*deopt_info->top_frame().parent(),
+                               current_input_location, virtual_objects);
     }
 
-    // Return offsets are counted from the end of the translation frame, which
-    // is the array [parameters..., locals..., accumulator]. Since it's the end,
-    // we don't need to worry about earlier frames.
-    int return_offset;
-    if (deopt_info->result_location ==
-        interpreter::Register::virtual_accumulator()) {
-      return_offset = 0;
-    } else if (deopt_info->result_location.is_parameter()) {
-      // This is slightly tricky to reason about because of zero indexing and
-      // fence post errors. As an example, consider a frame with 2 locals and
-      // 2 parameters, where we want argument index 1 -- looking at the array
-      // in reverse order we have:
-      //   [acc, r1, r0, a1, a0]
-      //                  ^
-      // and this calculation gives, correctly:
-      //   2 + 2 - 1 = 3
-      return_offset = unit.register_count() + unit.parameter_count() -
-                      deopt_info->result_location.ToParameterIndex();
-    } else {
-      return_offset =
-          unit.register_count() - deopt_info->result_location.index();
+    const DeoptFrame& top_frame = deopt_info->top_frame();
+    switch (top_frame.type()) {
+      case DeoptFrame::FrameType::kInterpretedFrame:
+        return BuildSingleDeoptFrame(
+            top_frame.as_interpreted(), current_input_location, virtual_objects,
+            deopt_info->result_location(), deopt_info->result_size());
+      case DeoptFrame::FrameType::kInlinedArgumentsFrame:
+        // The inlined arguments frame can never be the top frame.
+        UNREACHABLE();
+      case DeoptFrame::FrameType::kConstructInvokeStubFrame:
+        return BuildSingleDeoptFrame(top_frame.as_construct_stub(),
+                                     current_input_location, virtual_objects);
+      case DeoptFrame::FrameType::kBuiltinContinuationFrame:
+        return BuildSingleDeoptFrame(top_frame.as_builtin_continuation(),
+                                     current_input_location, virtual_objects);
     }
-    translation_array_builder_->BeginInterpretedFrame(
-        deopt_info->state.bytecode_position,
-        GetDeoptLiteral(*unit.shared_function_info().object()),
-        unit.register_count(), return_offset, deopt_info->result_size);
-
-    BuildDeoptFrameValues(unit, deopt_info->state.register_frame,
-                          current_input_location, deopt_info->result_location,
-                          deopt_info->result_size);
+    CHECK_EQ(current_input_location, deopt_info->input_locations_end());
   }
 
  private:
@@ -1057,50 +1315,212 @@ class MaglevTranslationArrayBuilder {
         masm_->GetFramePointerOffsetForStackSlot(operand));
   }
 
-  bool InReturnValues(interpreter::Register reg,
-                      interpreter::Register result_location, int result_size) {
-    if (result_size == 0 || !result_location.is_valid()) {
-      return false;
+  void BuildBeginDeopt(DeoptInfo* deopt_info) {
+    object_ids_.clear();
+    auto [frame_count, jsframe_count] = GetFrameCount(&deopt_info->top_frame());
+    deopt_info->set_translation_index(
+        translation_array_builder_->BeginTranslation(
+            frame_count, jsframe_count,
+            deopt_info->feedback_to_update().IsValid()));
+    if (deopt_info->feedback_to_update().IsValid()) {
+      translation_array_builder_->AddUpdateFeedback(
+          GetDeoptLiteral(*deopt_info->feedback_to_update().vector),
+          deopt_info->feedback_to_update().index());
     }
-    return base::IsInRange(reg.index(), result_location.index(),
-                           result_location.index() + result_size - 1);
   }
 
-  void BuildDeoptFrame(const MaglevCompilationUnit& unit,
-                       const CheckpointedInterpreterState& state,
-                       const InputLocation*& current_input_location) {
-    if (state.parent) {
+  void RecursiveBuildDeoptFrame(const DeoptFrame& frame,
+                                const InputLocation*& current_input_location,
+                                const VirtualObjectList& virtual_objects) {
+    if (frame.parent()) {
       // Deopt input locations are in the order of deopt frame emission, so
       // update the pointer after emitting the parent frame.
-      BuildDeoptFrame(*unit.caller(), *state.parent, current_input_location);
+      RecursiveBuildDeoptFrame(*frame.parent(), current_input_location,
+                               virtual_objects);
     }
 
-    // Returns are used for updating an accumulator or register after a lazy
-    // deopt.
+    switch (frame.type()) {
+      case DeoptFrame::FrameType::kInterpretedFrame:
+        return BuildSingleDeoptFrame(frame.as_interpreted(),
+                                     current_input_location, virtual_objects);
+      case DeoptFrame::FrameType::kInlinedArgumentsFrame:
+        return BuildSingleDeoptFrame(frame.as_inlined_arguments(),
+                                     current_input_location, virtual_objects);
+      case DeoptFrame::FrameType::kConstructInvokeStubFrame:
+        return BuildSingleDeoptFrame(frame.as_construct_stub(),
+                                     current_input_location, virtual_objects);
+      case DeoptFrame::FrameType::kBuiltinContinuationFrame:
+        return BuildSingleDeoptFrame(frame.as_builtin_continuation(),
+                                     current_input_location, virtual_objects);
+    }
+  }
+
+  void BuildSingleDeoptFrame(const InterpretedDeoptFrame& frame,
+                             const InputLocation*& current_input_location,
+                             const VirtualObjectList& virtual_objects,
+                             interpreter::Register result_location,
+                             int result_size) {
+    int return_offset = frame.ComputeReturnOffset(result_location, result_size);
+    translation_array_builder_->BeginInterpretedFrame(
+        frame.bytecode_position(),
+        GetDeoptLiteral(frame.GetSharedFunctionInfo()),
+        GetProtectedDeoptLiteral(*frame.GetBytecodeArray().object()),
+        frame.unit().register_count(), return_offset, result_size);
+
+    BuildDeoptFrameValues(frame.unit(), frame.frame_state(), frame.closure(),
+                          current_input_location, virtual_objects);
+  }
+
+  void BuildSingleDeoptFrame(const InterpretedDeoptFrame& frame,
+                             const InputLocation*& current_input_location,
+                             const VirtualObjectList& virtual_objects) {
+    // Returns offset/count is used for updating an accumulator or register
+    // after a lazy deopt -- this function is overloaded to allow them to be
+    // passed in.
     const int return_offset = 0;
     const int return_count = 0;
     translation_array_builder_->BeginInterpretedFrame(
-        state.bytecode_position,
-        GetDeoptLiteral(*unit.shared_function_info().object()),
-        unit.register_count(), return_offset, return_count);
+        frame.bytecode_position(),
+        GetDeoptLiteral(frame.GetSharedFunctionInfo()),
+        GetProtectedDeoptLiteral(*frame.GetBytecodeArray().object()),
+        frame.unit().register_count(), return_offset, return_count);
 
-    BuildDeoptFrameValues(unit, state.register_frame, current_input_location,
-                          interpreter::Register::invalid_value(), return_count);
+    BuildDeoptFrameValues(frame.unit(), frame.frame_state(), frame.closure(),
+                          current_input_location, virtual_objects);
+  }
+
+  void BuildSingleDeoptFrame(const InlinedArgumentsDeoptFrame& frame,
+                             const InputLocation*& current_input_location,
+                             const VirtualObjectList& virtual_objects) {
+    translation_array_builder_->BeginInlinedExtraArguments(
+        GetDeoptLiteral(frame.GetSharedFunctionInfo()),
+        static_cast<uint32_t>(frame.arguments().size()),
+        frame.GetBytecodeArray().parameter_count());
+
+    // Closure
+    BuildDeoptFrameSingleValue(frame.closure(), current_input_location,
+                               virtual_objects);
+
+    // Arguments
+    // TODO(victorgomes): Technically we don't need all arguments, only the
+    // extra ones. But doing this at the moment, since it matches the
+    // TurboFan behaviour.
+    for (ValueNode* value : frame.arguments()) {
+      BuildDeoptFrameSingleValue(value, current_input_location,
+                                 virtual_objects);
+    }
+  }
+
+  void BuildSingleDeoptFrame(const ConstructInvokeStubDeoptFrame& frame,
+                             const InputLocation*& current_input_location,
+                             const VirtualObjectList& virtual_objects) {
+    translation_array_builder_->BeginConstructInvokeStubFrame(
+        GetDeoptLiteral(frame.GetSharedFunctionInfo()));
+
+    // Implicit receiver
+    BuildDeoptFrameSingleValue(frame.receiver(), current_input_location,
+                               virtual_objects);
+
+    // Context
+    BuildDeoptFrameSingleValue(frame.context(), current_input_location,
+                               virtual_objects);
+  }
+
+  void BuildSingleDeoptFrame(const BuiltinContinuationDeoptFrame& frame,
+                             const InputLocation*& current_input_location,
+                             const VirtualObjectList& virtual_objects) {
+    BytecodeOffset bailout_id =
+        Builtins::GetContinuationBytecodeOffset(frame.builtin_id());
+    int literal_id = GetDeoptLiteral(frame.GetSharedFunctionInfo());
+
+
+    if (frame.is_javascript()) {
+      translation_array_builder_->BeginJavaScriptBuiltinContinuationFrame(
+          bailout_id, literal_id, frame.translation_height());
+    } else {
+      translation_array_builder_->BeginBuiltinContinuationFrame(
+          bailout_id, literal_id, frame.translation_height());
+    }
+
+    // Closure
+    if (frame.is_javascript()) {
+      translation_array_builder_->StoreLiteral(
+          GetDeoptLiteral(frame.javascript_target()));
+    } else {
+      translation_array_builder_->StoreOptimizedOut();
+    }
+
+    // Parameters. For stubs, this is the parameters in the expected order (the
+    // first N parameters are in registers, then remaining parameters are stack
+    // parameters). For JS continuations, this is the stack parameters only,
+    // with the JS trampoline's register parameters handled second. This is
+    // because JS frame iteration requires the receiver to be the first
+    // parameter.
+    static_assert(TranslatedFrame::kReceiverIsFirstParameterInJSFrames);
+    for (ValueNode* value : frame.parameters()) {
+      BuildDeoptFrameSingleValue(value, current_input_location,
+                                 virtual_objects);
+    }
+
+    if (frame.is_javascript()) {
+      constexpr int kFixedJSFrameRegisterParameters =
+          JSTrampolineDescriptor::GetRegisterParameterCount();
+
+      // Fixed register parameters for JS frames.
+      DCHECK_EQ(Builtins::CallInterfaceDescriptorFor(frame.builtin_id())
+                    .GetRegisterParameterCount(),
+                kFixedJSFrameRegisterParameters);
+
+      // kJavaScriptCallTargetRegister
+      translation_array_builder_->StoreLiteral(
+          GetDeoptLiteral(frame.javascript_target()));
+      // kJavaScriptCallNewTargetRegister
+      translation_array_builder_->StoreLiteral(
+          GetDeoptLiteral(ReadOnlyRoots(local_isolate_).undefined_value()));
+      // kJavaScriptCallArgCountRegister
+      translation_array_builder_->StoreLiteral(GetDeoptLiteral(
+          Smi::FromInt(Builtins::GetStackParameterCount(frame.builtin_id()))));
+#ifdef V8_JS_LINKAGE_INCLUDES_DISPATCH_HANDLE
+      // kJavaScriptCallDispatchHandleRegister
+      translation_array_builder_->StoreLiteral(
+          GetDeoptLiteral(Smi::FromInt(kInvalidDispatchHandle.value())));
+      static_assert(kFixedJSFrameRegisterParameters == 4);
+#else
+      static_assert(kFixedJSFrameRegisterParameters == 3);
+#endif
+    }
+
+    // Context
+    ValueNode* value = frame.context();
+    BuildDeoptFrameSingleValue(value, current_input_location, virtual_objects);
   }
 
   void BuildDeoptStoreRegister(const compiler::AllocatedOperand& operand,
                                ValueRepresentation repr) {
     switch (repr) {
+      case ValueRepresentation::kIntPtr:
+        translation_array_builder_->StoreIntPtrRegister(operand.GetRegister());
+        break;
       case ValueRepresentation::kTagged:
         translation_array_builder_->StoreRegister(operand.GetRegister());
         break;
       case ValueRepresentation::kInt32:
         translation_array_builder_->StoreInt32Register(operand.GetRegister());
         break;
+      case ValueRepresentation::kUint32:
+        translation_array_builder_->StoreUint32Register(operand.GetRegister());
+        break;
       case ValueRepresentation::kFloat64:
         translation_array_builder_->StoreDoubleRegister(
             operand.GetDoubleRegister());
         break;
+      case ValueRepresentation::kHoleyFloat64:
+        translation_array_builder_->StoreHoleyDoubleRegister(
+            operand.GetDoubleRegister());
+        break;
+      case ValueRepresentation::kRawPtr:
+      case ValueRepresentation::kNone:
+        UNREACHABLE();
     }
   }
 
@@ -1108,26 +1528,165 @@ class MaglevTranslationArrayBuilder {
                                 ValueRepresentation repr) {
     int stack_slot = DeoptStackSlotFromStackSlot(operand);
     switch (repr) {
+      case ValueRepresentation::kIntPtr:
+        translation_array_builder_->StoreIntPtrStackSlot(stack_slot);
+        break;
       case ValueRepresentation::kTagged:
         translation_array_builder_->StoreStackSlot(stack_slot);
         break;
       case ValueRepresentation::kInt32:
         translation_array_builder_->StoreInt32StackSlot(stack_slot);
         break;
+      case ValueRepresentation::kUint32:
+        translation_array_builder_->StoreUint32StackSlot(stack_slot);
+        break;
       case ValueRepresentation::kFloat64:
         translation_array_builder_->StoreDoubleStackSlot(stack_slot);
+        break;
+      case ValueRepresentation::kHoleyFloat64:
+        translation_array_builder_->StoreHoleyDoubleStackSlot(stack_slot);
+        break;
+      case ValueRepresentation::kRawPtr:
+      case ValueRepresentation::kNone:
+        UNREACHABLE();
+    }
+  }
+
+  int GetDuplicatedId(intptr_t id) {
+    for (int idx = 0; idx < static_cast<int>(object_ids_.size()); idx++) {
+      if (object_ids_[idx] == id) {
+        // Although this is not technically necessary, the translated state
+        // machinery assign ids to duplicates, so we need to push something to
+        // get fresh ids.
+        object_ids_.push_back(id);
+        return idx;
+      }
+    }
+    object_ids_.push_back(id);
+    return kNotDuplicated;
+  }
+
+  int CreateUnduplicatableId() {
+    object_ids_.push_back(kNotDuplicated);
+    return kNotDuplicated;
+  }
+
+  void BuildNestedValue(const ValueNode* value,
+                        const InputLocation*& input_location,
+                        const VirtualObjectList& virtual_objects) {
+    const Opcode opcode = value->opcode();
+    // Identity nodes must have been unwrapped earlier using
+    // VirtualObject::UnwrapIdentities.
+    DCHECK_NE(opcode, Opcode::kIdentity);
+    if (IsConstantNode(opcode)) {
+      if (opcode == Opcode::kFloat64Constant) {
+        translation_array_builder_->StoreDoubleLiteral(
+            value->Cast<Float64Constant>()->value());
+        return;
+      }
+      if (opcode == Opcode::kHoleyFloat64Constant) {
+        translation_array_builder_->StoreHoleyDoubleLiteral(
+            value->Cast<HoleyFloat64Constant>()->value());
+        return;
+      }
+      translation_array_builder_->StoreLiteral(
+          GetDeoptLiteral(*value->Reify(local_isolate_)));
+      return;
+    }
+    // Special nodes.
+    switch (opcode) {
+      case Opcode::kArgumentsElements:
+        translation_array_builder_->ArgumentsElements(
+            value->Cast<ArgumentsElements>()->create_arguments_type());
+        // We simulate the deoptimizer deduplication machinery, which will give
+        // a fresh id to the ArgumentsElements. For that, we need to push
+        // something object_ids_ We push -1, since no object should have id -1.
+        object_ids_.push_back(-1);
+        break;
+      case Opcode::kArgumentsLength:
+        translation_array_builder_->ArgumentsLength();
+        break;
+      case Opcode::kRestLength:
+        translation_array_builder_->RestLength();
+        break;
+      case Opcode::kVirtualObject:
+        UNREACHABLE();
+      default:
+        BuildDeoptFrameSingleValue(value, input_location, virtual_objects);
         break;
     }
   }
 
-  void BuildDeoptFrameSingleValue(ValueNode* value,
-                                  const InputLocation& input_location) {
-    if (input_location.operand().IsConstant()) {
-      translation_array_builder_->StoreLiteral(
-          GetDeoptLiteral(*value->Reify(local_isolate_)));
+  void BuildVirtualObject(const VirtualObject* object,
+                          const InputLocation*& input_location,
+                          const VirtualObjectList& virtual_objects) {
+    vobj::ObjectType object_type = object->object_type();
+    DCHECK_NOT_NULL(object->allocation());
+    // HeapNumbers may be mutable object fields; each materialization must
+    // create a fresh box, so they are never deduplicated.
+    // TODO(victorgomes): Constrain which objects may contain mutable
+    // HeapNumbers. Immutable HeapNumbers can be stored as a literal object
+    // instead of a captured object.
+    int dup_id =
+        object_type == vobj::ObjectType::kHeapNumber
+            ? CreateUnduplicatableId()
+            : GetDuplicatedId(reinterpret_cast<intptr_t>(object->allocation()));
+    if (dup_id != kNotDuplicated) {
+      translation_array_builder_->DuplicateObject(dup_id);
+      object->ForEachNestedRuntimeInput(
+          virtual_objects, [&](ValueNode*) { input_location++; },
+          VirtualObject::ForEachSlotIterationMode::kForDeopt);
+      return;
+    }
+
+    if (object_type == vobj::ObjectType::kConsString) {
+      translation_array_builder_->StringConcat();
+    } else {
+      int fields = object->slot_count();
+#if TAGGED_SIZE_8_BYTES
+      // To keep the deoptimization data in sync with TF (which represents
+      // length and padding in a single Uint64), we skip the padding.
+      if (object_type == vobj::ObjectType::kFixedArray) {
+        fields--;
+      }
+#endif  // TAGGED_SIZE_8_BYTES
+      translation_array_builder_->BeginCapturedObject(fields);
+    }
+    auto callback = [&](ValueNode* node, const vobj::Field& desc) -> bool {
+      BuildNestedValue(node, input_location, virtual_objects);
+      return true;
+    };
+    object->ForEachSlot(callback,
+                        VirtualObject::ForEachSlotIterationMode::kForDeopt);
+  }
+
+  void BuildDeoptFrameSingleValue(const ValueNode* value,
+                                  const InputLocation*& input_location,
+                                  const VirtualObjectList& virtual_objects) {
+    value = value->UnwrapIdentities();
+    DCHECK(!value->Is<VirtualObject>());
+    if (const InlinedAllocation* alloc = value->TryCast<InlinedAllocation>()) {
+      VirtualObject* vobject = virtual_objects.FindAllocatedWith(alloc);
+      if (vobject && alloc->HasBeenElided()) {
+        DCHECK(alloc->HasBeenAnalysed());
+        BuildVirtualObject(vobject, input_location, virtual_objects);
+        return;
+      }
+    }
+    if (input_location->operand().IsConstant()) {
+      if (value->opcode() == Opcode::kFloat64Constant) {
+        translation_array_builder_->StoreDoubleLiteral(
+            value->Cast<Float64Constant>()->value());
+      } else if (value->opcode() == Opcode::kHoleyFloat64Constant) {
+        translation_array_builder_->StoreHoleyDoubleLiteral(
+            value->Cast<HoleyFloat64Constant>()->value());
+      } else {
+        translation_array_builder_->StoreLiteral(
+            GetDeoptLiteral(*value->Reify(local_isolate_)));
+      }
     } else {
       const compiler::AllocatedOperand& operand =
-          compiler::AllocatedOperand::cast(input_location.operand());
+          compiler::AllocatedOperand::cast(input_location->operand());
       ValueRepresentation repr = value->properties().value_representation();
       if (operand.IsAnyRegister()) {
         BuildDeoptStoreRegister(operand, repr);
@@ -1135,26 +1694,21 @@ class MaglevTranslationArrayBuilder {
         BuildDeoptStoreStackSlot(operand, repr);
       }
     }
+    input_location++;
   }
 
   void BuildDeoptFrameValues(
       const MaglevCompilationUnit& compilation_unit,
       const CompactInterpreterFrameState* checkpoint_state,
-      const InputLocation*& input_location,
-      interpreter::Register result_location, int result_size) {
-    // Closure
-    if (compilation_unit.inlining_depth() == 0) {
-      int closure_index = DeoptStackSlotIndexFromFPOffset(
-          StandardFrameConstants::kFunctionOffset);
-      translation_array_builder_->StoreStackSlot(closure_index);
-    } else {
-      translation_array_builder_->StoreLiteral(
-          GetDeoptLiteral(*compilation_unit.function().object()));
-    }
+      const ValueNode* closure, const InputLocation*& input_location,
+      const VirtualObjectList& virtual_objects) {
+    // TODO(leszeks): The input locations array happens to be in the same
+    // order as closure+parameters+context+locals+accumulator are accessed
+    // here. We should make this clearer and guard against this invariant
+    // failing.
 
-    // TODO(leszeks): The input locations array happens to be in the same order
-    // as parameters+context+locals+accumulator are accessed here. We should
-    // make this clearer and guard against this invariant failing.
+    // Closure
+    BuildDeoptFrameSingleValue(closure, input_location, virtual_objects);
 
     // Parameters
     {
@@ -1162,20 +1716,14 @@ class MaglevTranslationArrayBuilder {
       checkpoint_state->ForEachParameter(
           compilation_unit, [&](ValueNode* value, interpreter::Register reg) {
             DCHECK_EQ(reg.ToParameterIndex(), i);
-            if (InReturnValues(reg, result_location, result_size)) {
-              translation_array_builder_->StoreOptimizedOut();
-            } else {
-              BuildDeoptFrameSingleValue(value, *input_location);
-              input_location++;
-            }
+            BuildDeoptFrameSingleValue(value, input_location, virtual_objects);
             i++;
           });
     }
 
     // Context
-    ValueNode* value = checkpoint_state->context(compilation_unit);
-    BuildDeoptFrameSingleValue(value, *input_location);
-    input_location++;
+    ValueNode* context_value = checkpoint_state->context(compilation_unit);
+    BuildDeoptFrameSingleValue(context_value, input_location, virtual_objects);
 
     // Locals
     {
@@ -1183,14 +1731,12 @@ class MaglevTranslationArrayBuilder {
       checkpoint_state->ForEachLocal(
           compilation_unit, [&](ValueNode* value, interpreter::Register reg) {
             DCHECK_LE(i, reg.index());
-            if (InReturnValues(reg, result_location, result_size)) return;
             while (i < reg.index()) {
               translation_array_builder_->StoreOptimizedOut();
               i++;
             }
             DCHECK_EQ(i, reg.index());
-            BuildDeoptFrameSingleValue(value, *input_location);
-            input_location++;
+            BuildDeoptFrameSingleValue(value, input_location, virtual_objects);
             i++;
           });
       while (i < compilation_unit.register_count()) {
@@ -1201,31 +1747,67 @@ class MaglevTranslationArrayBuilder {
 
     // Accumulator
     {
-      if (checkpoint_state->liveness()->AccumulatorIsLive() &&
-          !InReturnValues(interpreter::Register::virtual_accumulator(),
-                          result_location, result_size)) {
+      if (checkpoint_state->liveness()->AccumulatorIsLive()) {
         ValueNode* value = checkpoint_state->accumulator(compilation_unit);
-        BuildDeoptFrameSingleValue(value, *input_location);
-        input_location++;
+        BuildDeoptFrameSingleValue(value, input_location, virtual_objects);
       } else {
         translation_array_builder_->StoreOptimizedOut();
       }
     }
   }
 
-  int GetDeoptLiteral(Object obj) {
+  int GetProtectedDeoptLiteral(Tagged<TrustedObject> obj) {
+    IdentityMapFindResult<int> res =
+        protected_deopt_literals_->FindOrInsert(obj);
+    if (!res.already_exists) {
+      DCHECK_EQ(0, *res.entry);
+      IndirectHandle<TrustedObject> canonical =
+          masm_->code_gen_state()
+              ->compilation_info()
+              ->broker()
+              ->CanonicalPersistentHandle(obj);
+      protected_deopt_literals_vector_->push_back(canonical);
+      *res.entry =
+          static_cast<int>(protected_deopt_literals_vector_->size() - 1);
+    }
+    return *res.entry;
+  }
+
+  int GetDeoptLiteral(Tagged<Object> obj) {
     IdentityMapFindResult<int> res = deopt_literals_->FindOrInsert(obj);
     if (!res.already_exists) {
       DCHECK_EQ(0, *res.entry);
-      *res.entry = deopt_literals_->size() - 1;
+      IndirectHandle<Object> canonical = masm_->code_gen_state()
+                                             ->compilation_info()
+                                             ->broker()
+                                             ->CanonicalPersistentHandle(obj);
+      deopt_literals_vector_->push_back(canonical);
+      *res.entry = static_cast<int>(deopt_literals_vector_->size() - 1);
+    }
+    return *res.entry;
+  }
+
+  int GetDeoptLiteral(compiler::HeapObjectRef ref) {
+    IdentityMapFindResult<int> res =
+        deopt_literals_->FindOrInsert(*ref.object());
+    if (!res.already_exists) {
+      DCHECK_EQ(0, *res.entry);
+      deopt_literals_vector_->push_back(ref.object());
+      *res.entry = static_cast<int>(deopt_literals_vector_->size() - 1);
     }
     return *res.entry;
   }
 
   LocalIsolate* local_isolate_;
   MaglevAssembler* masm_;
-  TranslationArrayBuilder* translation_array_builder_;
+  FrameTranslationBuilder* translation_array_builder_;
+  IdentityMap<int, base::DefaultAllocationPolicy>* protected_deopt_literals_;
   IdentityMap<int, base::DefaultAllocationPolicy>* deopt_literals_;
+  ZoneVector<IndirectHandle<TrustedObject>>* protected_deopt_literals_vector_;
+  ZoneVector<IndirectHandle<Object>>* deopt_literals_vector_;
+
+  static constexpr int kNotDuplicated = -1;
+  std::vector<intptr_t> object_ids_;
 };
 
 }  // namespace
@@ -1235,32 +1817,106 @@ MaglevCodeGenerator::MaglevCodeGenerator(
     Graph* graph)
     : local_isolate_(isolate),
       safepoint_table_builder_(compilation_info->zone(),
-                               graph->tagged_stack_slots(),
-                               graph->untagged_stack_slots()),
-      translation_array_builder_(compilation_info->zone()),
-      code_gen_state_(compilation_info, &safepoint_table_builder_),
-      masm_(isolate->GetMainThreadIsolateUnsafe(), &code_gen_state_),
+                               graph->tagged_stack_slots()),
+      frame_translation_builder_(compilation_info->zone()),
+      source_position_table_builder_(compilation_info->zone()),
+      code_gen_state_(compilation_info, &safepoint_table_builder_,
+                      &source_position_table_builder_, graph->max_block_id()),
+      masm_(isolate->GetMainThreadIsolateUnsafe(), compilation_info->zone(),
+            &code_gen_state_),
       graph_(graph),
-      deopt_literals_(isolate->heap()->heap()) {}
+      protected_deopt_literals_(isolate->heap()->heap()),
+      deopt_literals_(isolate->heap()->heap()),
+      protected_deopt_literals_vector_(compilation_info->zone()),
+      deopt_literals_vector_(compilation_info->zone()),
+      is_context_specialized_(
+          compilation_info->specialize_to_function_context()),
+      zone_(compilation_info->zone()) {
+  DCHECK(maglev::IsMaglevEnabled());
+  DCHECK_IMPLIES(compilation_info->toplevel_is_osr(),
+                 maglev::IsMaglevOsrEnabled());
+}
 
-void MaglevCodeGenerator::Assemble() {
-  EmitCode();
+bool MaglevCodeGenerator::Assemble() {
+  if (!EmitCode()) {
+    __ ClearInternalState();
+    return false;
+  }
+
   EmitMetadata();
+
+  if (v8_flags.maglev_build_code_on_background) {
+    code_ = local_isolate_->heap()->NewPersistentMaybeHandle(
+        BuildCodeObject(local_isolate_));
+    Handle<Code> code;
+    if (code_.ToHandle(&code)) {
+      retained_maps_ = OptimizedCompilationJob::CollectRetainedMaps(
+          code, code_gen_state_.compilation_info()->DetachCanonicalHandles());
+    }
+  } else if (v8_flags.maglev_deopt_data_on_background) {
+    // Only do this if not --maglev-build-code-on-background, since that will do
+    // it itself.
+    deopt_data_ = local_isolate_->heap()->NewPersistentHandle(
+        GenerateDeoptimizationData(local_isolate_));
+  }
+  return true;
 }
 
 MaybeHandle<Code> MaglevCodeGenerator::Generate(Isolate* isolate) {
-  return BuildCodeObject(isolate);
+  if (v8_flags.maglev_build_code_on_background) {
+    Handle<Code> code;
+    if (code_.ToHandle(&code)) {
+      return handle(*code, isolate);
+    }
+    return kNullMaybeHandle;
+  }
+
+  return BuildCodeObject(isolate->main_thread_local_isolate());
 }
 
-void MaglevCodeGenerator::EmitCode() {
+bool MaglevCodeGenerator::EmitCode() {
   GraphProcessor<NodeMultiProcessor<SafepointingNodeProcessor,
                                     MaglevCodeGeneratingNodeProcessor>>
       processor(SafepointingNodeProcessor{local_isolate_},
-                MaglevCodeGeneratingNodeProcessor{masm()});
+                MaglevCodeGeneratingNodeProcessor{masm(), zone_});
+  RecordInlinedFunctions();
+
+  if (graph_->is_osr()) {
+    masm_.Abort(AbortReason::kShouldNotDirectlyEnterOsrFunction);
+    masm_.RecordComment("-- OSR entrypoint --");
+    masm_.BindJumpTarget(code_gen_state_.osr_entry());
+  }
+
   processor.ProcessGraph(graph_);
   EmitDeferredCode();
-  EmitDeopts();
+  bool deopts_emitted = EmitDeopts();
+  protected_deopt_literals_.Clear();
+  deopt_literals_.Clear();
+  if (!deopts_emitted) return false;
   EmitExceptionHandlerTrampolines();
+  EmitRetainedObjects();
+  __ FinishCode();
+
+  code_gen_succeeded_ = true;
+  return true;
+}
+
+void MaglevCodeGenerator::RecordInlinedFunctions() {
+  // The inlined functions should be the first literals.
+  DCHECK_EQ(0u, deopt_literals_.size());
+  DCHECK_EQ(0u, deopt_literals_vector_.size());
+  for (OptimizedCompilationInfo::InlinedFunctionHolder& inlined :
+       graph_->inlined_functions()) {
+    IdentityMapFindResult<int> res =
+        deopt_literals_.FindOrInsert(inlined.shared_info);
+    if (!res.already_exists) {
+      DCHECK_EQ(0, *res.entry);
+      deopt_literals_vector_.push_back(inlined.shared_info);
+      *res.entry = static_cast<int>(deopt_literals_vector_.size() - 1);
+    }
+    inlined.RegisterInlinedFunctionId(*res.entry);
+  }
+  inlined_function_count_ = static_cast<int>(deopt_literals_vector_.size());
 }
 
 void MaglevCodeGenerator::EmitDeferredCode() {
@@ -1276,27 +1932,58 @@ void MaglevCodeGenerator::EmitDeferredCode() {
   }
 }
 
-void MaglevCodeGenerator::EmitDeopts() {
-  MaglevTranslationArrayBuilder translation_builder(
-      local_isolate_, &masm_, &translation_array_builder_, &deopt_literals_);
+bool MaglevCodeGenerator::EmitDeopts() {
+  const size_t num_deopts = code_gen_state_.eager_deopts().size() +
+                            code_gen_state_.lazy_deopts().size();
+  if (num_deopts > Deoptimizer::kMaxNumberOfEntries) {
+    return false;
+  }
+
+  MaglevFrameTranslationBuilder translation_builder(
+      local_isolate_, &masm_, &frame_translation_builder_,
+      &protected_deopt_literals_, &deopt_literals_,
+      &protected_deopt_literals_vector_, &deopt_literals_vector_);
+
+  // Deoptimization exits must be as small as possible, since their count grows
+  // with function size. These labels are an optimization which extracts the
+  // (potentially large) instruction sequence for the final jump to the
+  // deoptimization entry into a single spot per InstructionStream object. All
+  // deopt exits can then near-call to this label. Note: not used on all
+  // architectures.
+  Label eager_deopt_entry;
+  Label lazy_deopt_entry;
+  __ MaybeEmitDeoptBuiltinsCall(
+      code_gen_state_.eager_deopts().size(), &eager_deopt_entry,
+      code_gen_state_.lazy_deopts().size(), &lazy_deopt_entry);
 
   deopt_exit_start_offset_ = __ pc_offset();
 
   int deopt_index = 0;
-
+#ifdef V8_TARGET_ARCH_PPC64
+  Assembler::BlockTrampolinePoolScope block_trampoline_pool(masm());
+#endif
   __ RecordComment("-- Non-lazy deopts");
   for (EagerDeoptInfo* deopt_info : code_gen_state_.eager_deopts()) {
     local_isolate_->heap()->Safepoint();
     translation_builder.BuildEagerDeopt(deopt_info);
 
-    if (masm_.compilation_info()->collect_source_positions()) {
-      __ RecordDeoptReason(deopt_info->reason, 0, deopt_info->source_position,
+    __ bind(deopt_info->deopt_entry_label());
+
+    __ CallForDeoptimization(Builtin::kDeoptimizationEntry_Eager, deopt_index,
+                             deopt_info->deopt_entry_label(),
+                             DeoptimizeKind::kEager, nullptr,
+                             &eager_deopt_entry);
+    // RecordDeoptReason has to be right after the call so that the deopt is
+    // associated with the correct pc.
+    if (masm_.compilation_info()->collect_source_positions() ||
+        AlwaysPreserveDeoptReason(deopt_info->reason())) {
+      __ RecordDeoptReason(deopt_info->reason(), 0,
+                           masm_.compilation_info()->collect_source_positions()
+                               ? deopt_info->top_frame().GetSourcePosition()
+                               : SourcePosition::Unknown(),
                            deopt_index);
     }
-    __ bind(&deopt_info->deopt_entry_label);
-    __ CallForDeoptimization(Builtin::kDeoptimizationEntry_Eager, deopt_index,
-                             &deopt_info->deopt_entry_label,
-                             DeoptimizeKind::kEager, nullptr, nullptr);
+
     deopt_index++;
   }
 
@@ -1306,149 +1993,259 @@ void MaglevCodeGenerator::EmitDeopts() {
     local_isolate_->heap()->Safepoint();
     translation_builder.BuildLazyDeopt(deopt_info);
 
+    __ BindExceptionHandler(deopt_info->deopt_entry_label());
+
+    __ CallForDeoptimization(Builtin::kDeoptimizationEntry_Lazy, deopt_index,
+                             deopt_info->deopt_entry_label(),
+                             DeoptimizeKind::kLazy, nullptr, &lazy_deopt_entry);
+
+    // RecordDeoptReason has to be right after the call so that the deopt is
+    // associated with the correct pc.
     if (masm_.compilation_info()->collect_source_positions()) {
       __ RecordDeoptReason(DeoptimizeReason::kUnknown, 0,
-                           deopt_info->source_position, deopt_index);
+                           deopt_info->top_frame().GetSourcePosition(),
+                           deopt_index);
     }
-    __ bind(&deopt_info->deopt_entry_label);
-    __ CallForDeoptimization(Builtin::kDeoptimizationEntry_Lazy, deopt_index,
-                             &deopt_info->deopt_entry_label,
-                             DeoptimizeKind::kLazy, nullptr, nullptr);
 
     last_updated_safepoint = safepoint_table_builder_.UpdateDeoptimizationInfo(
-        deopt_info->deopting_call_return_pc,
-        deopt_info->deopt_entry_label.pos(), last_updated_safepoint,
+        deopt_info->deopting_call_return_pc(),
+        deopt_info->deopt_entry_label()->pos(), last_updated_safepoint,
         deopt_index);
     deopt_index++;
   }
+
+#if defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_RISCV64)
+  __ EndBlockPools();
+#endif  // defined(V8_TARGET_ARCH_RISCV32) || defined(V8_TARGET_ARCH_RISCV64)
+
+  return true;
 }
 
 void MaglevCodeGenerator::EmitExceptionHandlerTrampolines() {
-  if (code_gen_state_.handlers().size() == 0) return;
+  if (code_gen_state_.handlers().empty()) return;
   __ RecordComment("-- Exception handler trampolines");
+
+#ifdef DEBUG
+  // Exception trampolines can allocate HeapNumbers (when a Float64 value is
+  // used as input to a Tagged exception phi).
+  masm()->set_allow_allocate(true);
+#endif
+
   for (NodeBase* node : code_gen_state_.handlers()) {
+    DCHECK(node->properties().can_throw());
+    // Materializations of Phi inputs in the trampoline could allocate
+    // HeapNumbers.
+    DCHECK(node->properties().can_allocate());
     ExceptionHandlerTrampolineBuilder::Build(masm(), node);
+  }
+
+#ifdef DEBUG
+  masm()->set_allow_allocate(false);
+#endif
+}
+
+void MaglevCodeGenerator::EmitRetainedObjects() {
+  if (code_gen_state_.retained_objects().empty()) return;
+
+  // This code is never executed; it's just for inserting weak embedded objects
+  // into the code.
+  __ RecordComment("-- Retained objects");
+  __ Trap();
+
+  MaglevAssembler::TemporaryRegisterScope temps(masm());
+  Register scratch = temps.AcquireScratch();
+  for (Handle<HeapObject> heap_object : code_gen_state_.retained_objects()) {
+    __ Move(scratch, heap_object);
   }
 }
 
 void MaglevCodeGenerator::EmitMetadata() {
   // Final alignment before starting on the metadata section.
-  masm()->Align(Code::kMetadataAlignment);
+  masm()->Align(InstructionStream::kMetadataAlignment);
 
-  safepoint_table_builder_.Emit(masm());
+  safepoint_table_builder_.Emit(masm(), stack_slot_count_with_fixed_frame());
 
   // Exception handler table.
   handler_table_offset_ = HandlerTable::EmitReturnTableStart(masm());
   for (NodeBase* node : code_gen_state_.handlers()) {
     ExceptionHandlerInfo* info = node->exception_handler_info();
-    HandlerTable::EmitReturnEntry(masm(), info->pc_offset,
-                                  info->trampoline_entry.pos());
+    DCHECK_IMPLIES(info->ShouldLazyDeopt(),
+                   !info->trampoline_entry().is_bound());
+    int pos = info->ShouldLazyDeopt() ? HandlerTable::kLazyDeopt
+                                      : info->trampoline_entry().pos();
+    HandlerTable::EmitReturnEntry(masm(), info->pc_offset(), pos);
   }
 }
 
-MaybeHandle<Code> MaglevCodeGenerator::BuildCodeObject(Isolate* isolate) {
+MaybeHandle<Code> MaglevCodeGenerator::BuildCodeObject(
+    LocalIsolate* local_isolate) {
+  if (!code_gen_succeeded_) return {};
+
+  // Allocate the source position table.
+  Handle<TrustedByteArray> source_positions =
+      source_position_table_builder_.ToSourcePositionTable(local_isolate);
+
+  Handle<DeoptimizationData> deopt_data =
+      (v8_flags.maglev_deopt_data_on_background &&
+       !v8_flags.maglev_build_code_on_background)
+          ? deopt_data_
+          : GenerateDeoptimizationData(local_isolate);
+  CHECK(!deopt_data.is_null());
+
   CodeDesc desc;
-  masm()->GetCode(isolate, &desc, &safepoint_table_builder_,
+  masm()->GetCode(local_isolate, &desc, &safepoint_table_builder_,
                   handler_table_offset_);
-  return Factory::CodeBuilder{isolate, desc, CodeKind::MAGLEV}
-      .set_stack_slots(stack_slot_count_with_fixed_frame())
-      .set_deoptimization_data(GenerateDeoptimizationData(isolate))
-      .TryBuild();
+  auto builder =
+      Factory::CodeBuilder{local_isolate, desc, CodeKind::MAGLEV}
+          .set_stack_slots(stack_slot_count_with_fixed_frame())
+          .set_parameter_count(parameter_count())
+          .set_deoptimization_data(deopt_data)
+          .set_source_position_table(source_positions)
+          .set_inlined_bytecode_size(
+              graph_->total_inlined_bytecode_size() +
+              graph_->total_inlined_bytecode_size_small())
+          .set_osr_offset(
+              code_gen_state_.compilation_info()->toplevel_osr_offset());
+
+  if (is_context_specialized_) {
+    builder.set_is_context_specialized();
+  }
+
+  MaybeHandle<Code> maybe_code = builder.TryBuild();
+  Handle<Code> code;
+  if (maybe_code.ToHandle(&code)) {
+    Isolate* isolate = local_isolate->GetMainThreadIsolateUnsafe();
+#ifdef ENABLE_GDB_JIT_INTERFACE
+    if (v8_flags.maglev_gdbjit) {
+      GDBJITInterface::RegisterMaglevVariableLocations(
+          code->instruction_start(), code_gen_state_.maglev_variables());
+    }
+#endif
+    LOG_CODE_EVENT(isolate, CodeLinePosInfoRecordEvent(
+                                code->instruction_start(), *source_positions,
+                                JitCodeEvent::JIT_CODE));
+  }
+  return maybe_code;
 }
 
 Handle<DeoptimizationData> MaglevCodeGenerator::GenerateDeoptimizationData(
-    Isolate* isolate) {
+    LocalIsolate* local_isolate) {
   int eager_deopt_count =
       static_cast<int>(code_gen_state_.eager_deopts().size());
   int lazy_deopt_count = static_cast<int>(code_gen_state_.lazy_deopts().size());
   int deopt_count = lazy_deopt_count + eager_deopt_count;
-  if (deopt_count == 0) {
-    return DeoptimizationData::Empty(isolate);
+  if (deopt_count == 0 && !graph_->is_osr()) {
+    return DeoptimizationData::Empty(local_isolate);
   }
   Handle<DeoptimizationData> data =
-      DeoptimizationData::New(isolate, deopt_count, AllocationType::kOld);
+      DeoptimizationData::New(local_isolate, deopt_count);
 
-  Handle<TranslationArray> translation_array =
-      translation_array_builder_.ToTranslationArray(isolate->factory());
+  DirectHandle<DeoptimizationFrameTranslation> translations =
+      frame_translation_builder_.ToFrameTranslation(local_isolate->factory());
+
+  DirectHandle<SharedFunctionInfoWrapper> sfi_wrapper =
+      local_isolate->factory()->NewSharedFunctionInfoWrapper(
+          code_gen_state_.compilation_info()
+              ->toplevel_compilation_unit()
+              ->shared_function_info()
+              .object());
+
   {
     DisallowGarbageCollection no_gc;
-    auto raw_data = *data;
+    Tagged<DeoptimizationData> raw_data = *data;
 
-    raw_data.SetTranslationByteArray(*translation_array);
-    // TODO(leszeks): Fix with the real inlined function count.
-    raw_data.SetInlinedFunctionCount(Smi::zero());
-    // TODO(leszeks): Support optimization IDs
-    raw_data.SetOptimizationId(Smi::zero());
+    raw_data->SetFrameTranslation(*translations);
+    raw_data->SetInlinedFunctionCount(Smi::FromInt(inlined_function_count_));
+    raw_data->SetOptimizationId(
+        Smi::FromInt(code_gen_state_.compilation_info()->optimization_id()));
 
     DCHECK_NE(deopt_exit_start_offset_, -1);
-    raw_data.SetDeoptExitStart(Smi::FromInt(deopt_exit_start_offset_));
-    raw_data.SetEagerDeoptCount(Smi::FromInt(eager_deopt_count));
-    raw_data.SetLazyDeoptCount(Smi::FromInt(lazy_deopt_count));
-
-    raw_data.SetSharedFunctionInfo(*code_gen_state_.compilation_info()
-                                        ->toplevel_compilation_unit()
-                                        ->shared_function_info()
-                                        .object());
+    raw_data->SetDeoptExitStart(Smi::FromInt(deopt_exit_start_offset_));
+    raw_data->SetEagerDeoptCount(Smi::FromInt(eager_deopt_count));
+    raw_data->SetLazyDeoptCount(Smi::FromInt(lazy_deopt_count));
+    raw_data->SetWrappedSharedFunctionInfo(*sfi_wrapper);
   }
 
-  Handle<DeoptimizationLiteralArray> literals =
-      isolate->factory()->NewDeoptimizationLiteralArray(deopt_literals_.size() +
-                                                        1);
-  // TODO(leszeks): Fix with the real inlining positions.
-  Handle<PodArray<InliningPosition>> inlining_positions =
-      PodArray<InliningPosition>::New(isolate, 0);
+  uint32_t inlined_functions_size =
+      static_cast<uint32_t>(graph_->inlined_functions().size());
+  DirectHandle<ProtectedDeoptimizationLiteralArray> protected_literals =
+      local_isolate->factory()->NewProtectedFixedArray(
+          static_cast<uint32_t>(protected_deopt_literals_vector_.size()));
+  DirectHandle<DeoptimizationLiteralArray> literals =
+      local_isolate->factory()->NewDeoptimizationLiteralArray(
+          static_cast<uint32_t>(deopt_literals_vector_.size()));
+  DirectHandle<TrustedPodArray<InliningPosition>> inlining_positions =
+      TrustedPodArray<InliningPosition>::New(local_isolate,
+                                             inlined_functions_size);
+
   DisallowGarbageCollection no_gc;
 
-  auto raw_literals = *literals;
-  auto raw_data = *data;
-  IdentityMap<int, base::DefaultAllocationPolicy>::IteratableScope iterate(
-      &deopt_literals_);
-  for (auto it = iterate.begin(); it != iterate.end(); ++it) {
-    raw_literals.set(*it.entry(), it.key());
+  Tagged<ProtectedDeoptimizationLiteralArray> raw_protected_literals =
+      *protected_literals;
+  for (size_t i = 0; i < protected_deopt_literals_vector_.size(); ++i) {
+    raw_protected_literals->set(static_cast<int>(i),
+                                *protected_deopt_literals_vector_[i]);
   }
-  // Add the bytecode to the deopt literals to make sure it's held strongly.
-  // TODO(leszeks): Do this for inlined functions too.
-  raw_literals.set(deopt_literals_.size(), *code_gen_state_.compilation_info()
-                                                ->toplevel_compilation_unit()
-                                                ->bytecode()
-                                                .object());
-  raw_data.SetLiteralArray(raw_literals);
 
-  // TODO(leszeks): Fix with the real inlining positions.
-  raw_data.SetInliningPositions(*inlining_positions);
+  Tagged<DeoptimizationLiteralArray> raw_literals = *literals;
+  for (size_t i = 0; i < deopt_literals_vector_.size(); ++i) {
+    raw_literals->set(static_cast<int>(i), *deopt_literals_vector_[i]);
+  }
 
-  // TODO(leszeks): Fix once we have OSR.
-  BytecodeOffset osr_offset = BytecodeOffset::None();
-  raw_data.SetOsrBytecodeOffset(Smi::FromInt(osr_offset.ToInt()));
-  raw_data.SetOsrPcOffset(Smi::FromInt(-1));
+  for (uint32_t i = 0; i < inlined_functions_size; i++) {
+    auto inlined_function_info = graph_->inlined_functions()[i];
+    inlining_positions->set(i, inlined_function_info.position);
+  }
+
+  Tagged<DeoptimizationData> raw_data = *data;
+  raw_data->SetProtectedLiteralArray(raw_protected_literals);
+  raw_data->SetLiteralArray(raw_literals);
+  raw_data->SetInliningPositions(*inlining_positions);
+
+  auto info = code_gen_state_.compilation_info();
+  raw_data->SetOsrBytecodeOffset(
+      Smi::FromInt(info->toplevel_osr_offset().ToInt()));
+  if (graph_->is_osr()) {
+    raw_data->SetOsrPcOffset(Smi::FromInt(code_gen_state_.osr_entry()->pos()));
+  } else {
+    raw_data->SetOsrPcOffset(Smi::FromInt(-1));
+  }
 
   // Populate deoptimization entries.
   int i = 0;
   for (EagerDeoptInfo* deopt_info : code_gen_state_.eager_deopts()) {
-    DCHECK_NE(deopt_info->translation_index, -1);
-    raw_data.SetBytecodeOffset(i, deopt_info->state.bytecode_position);
-    raw_data.SetTranslationIndex(i,
-                                 Smi::FromInt(deopt_info->translation_index));
-    raw_data.SetPc(i, Smi::FromInt(deopt_info->deopt_entry_label.pos()));
+    DCHECK_NE(deopt_info->translation_index(), -1);
+    raw_data->SetBytecodeOffset(i, deopt_info->top_frame().GetBytecodeOffset());
+    raw_data->SetTranslationIndex(
+        i, Smi::FromInt(deopt_info->translation_index()));
+    raw_data->SetPc(i, Smi::FromInt(deopt_info->deopt_entry_label()->pos()));
 #ifdef DEBUG
-    raw_data.SetNodeId(i, Smi::FromInt(i));
+    raw_data->SetNodeId(i, Smi::FromInt(i));
 #endif  // DEBUG
     i++;
   }
   for (LazyDeoptInfo* deopt_info : code_gen_state_.lazy_deopts()) {
-    DCHECK_NE(deopt_info->translation_index, -1);
-    raw_data.SetBytecodeOffset(i, deopt_info->state.bytecode_position);
-    raw_data.SetTranslationIndex(i,
-                                 Smi::FromInt(deopt_info->translation_index));
-    raw_data.SetPc(i, Smi::FromInt(deopt_info->deopt_entry_label.pos()));
+    DCHECK_NE(deopt_info->translation_index(), -1);
+    raw_data->SetBytecodeOffset(i, deopt_info->top_frame().GetBytecodeOffset());
+    raw_data->SetTranslationIndex(
+        i, Smi::FromInt(deopt_info->translation_index()));
+    raw_data->SetPc(i, Smi::FromInt(deopt_info->deopt_entry_label()->pos()));
 #ifdef DEBUG
-    raw_data.SetNodeId(i, Smi::FromInt(i));
+    raw_data->SetNodeId(i, Smi::FromInt(i));
 #endif  // DEBUG
     i++;
   }
 
+#ifdef DEBUG
+  raw_data->Verify(code_gen_state_.compilation_info()
+                       ->toplevel_compilation_unit()
+                       ->bytecode()
+                       .object());
+#endif
+
   return data;
 }
+#undef __
 
 }  // namespace maglev
 }  // namespace internal

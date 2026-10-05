@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --expose-wasm --allow-natives-syntax
+// Flags: --allow-natives-syntax
 
 d8.file.execute('test/mjsunit/wasm/wasm-module-builder.js');
 
@@ -10,7 +10,8 @@ let kReturnValue = 17;
 
 let buffer = (() => {
   let builder = new WasmModuleBuilder();
-  builder.addMemory(1, 1, true);
+  builder.addMemory(1, 1);
+  builder.exportMemoryAs('memory');
   builder.addFunction('main', kSig_i_v)
       .addBody([kExprI32Const, kReturnValue])
       .exportFunc();
@@ -146,11 +147,11 @@ assertFalse(WebAssembly.validate(bytes(88, 88, 88, 88, 88, 88, 88, 88)));
   var module = new WebAssembly.Module(builder.toBuffer());
   var mem_1 = new WebAssembly.Memory({initial: 1});
   var mem_2 = new WebAssembly.Memory({initial: 1});
-  var view_1 = new Int32Array(mem_1.buffer);
-  var view_2 = new Int32Array(mem_2.buffer);
+  var view_1 = new DataView(mem_1.buffer);
+  var view_2 = new DataView(mem_2.buffer);
 
-  view_1[0] = 42;
-  view_2[0] = 1000;
+  view_1.setInt32(0, 42, true);
+  view_2.setInt32(0, 1000, true);
 
   var outval_1;
   var outval_2;
@@ -174,7 +175,7 @@ assertFalse(WebAssembly.validate(bytes(88, 88, 88, 88, 88, 88, 88, 88)));
 (function GlobalsArePrivateToTheInstance() {
   print('GlobalsArePrivateToTheInstance...');
   var builder = new WasmModuleBuilder();
-  builder.addGlobal(kWasmI32, true);
+  builder.addGlobal(kWasmI32, true, false);
   builder.addFunction('read', kSig_i_v)
       .addBody([kExprGlobalGet, 0])
       .exportFunc();
@@ -203,10 +204,10 @@ assertFalse(WebAssembly.validate(bytes(88, 88, 88, 88, 88, 88, 88, 88)));
 
   var mem_1 = new WebAssembly.Memory({initial: 1});
   var mem_2 = new WebAssembly.Memory({initial: 1});
-  var view_1 = new Int32Array(mem_1.buffer);
-  var view_2 = new Int32Array(mem_2.buffer);
-  view_1[0] = 1;
-  view_2[0] = 1000;
+  var view_1 = new DataView(mem_1.buffer);
+  var view_2 = new DataView(mem_2.buffer);
+  view_1.setInt32(0, 1, true);
+  view_2.setInt32(0, 1000, true);
 
   var module = new WebAssembly.Module(builder.toBuffer());
   var i1 = new WebAssembly.Instance(module, {'': {memory: mem_1}});
@@ -231,7 +232,7 @@ assertFalse(WebAssembly.validate(bytes(88, 88, 88, 88, 88, 88, 88, 88)));
 
 (function TestNoMemoryToExport() {
   let builder = new WasmModuleBuilder();
-  builder.exportMemoryAs('memory');
+  builder.exportMemoryAs('memory', 0);
   assertThrows(() => builder.instantiate(), WebAssembly.CompileError);
 })();
 
@@ -242,7 +243,7 @@ assertFalse(WebAssembly.validate(bytes(88, 88, 88, 88, 88, 88, 88, 88)));
   builder.addExport('b', builder.addFunction('', kSig_v_v).addBody([]));
   builder.addExport('c', builder.addFunction('', kSig_v_v).addBody([]));
   builder.addExport('d', builder.addFunction('', kSig_v_v).addBody([]));
-  builder.addExport('e', builder.addGlobal(kWasmI32, false));
+  builder.addExport('e', builder.addGlobal(kWasmI32, false, false));
 
   let module = new WebAssembly.Module(builder.toBuffer());
   let instance = new WebAssembly.Instance(module);

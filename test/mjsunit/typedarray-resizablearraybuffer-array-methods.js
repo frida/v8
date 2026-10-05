@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-rab-gsab --allow-natives-syntax
+// Flags: --allow-natives-syntax --js-staging
 
 'use strict';
 
@@ -373,8 +373,7 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
     const fixedLength = new ctor(rab, 0, 4);
     const evil = { valueOf: () => { rab.resize(2 * ctor.BYTES_PER_ELEMENT);
                                     return 0; }};
-    assertEquals([undefined, undefined, undefined, undefined],
-                sliceHelper(fixedLength, evil));
+    assertEquals(new Array(4), sliceHelper(fixedLength, evil));
     assertEquals(2 * ctor.BYTES_PER_ELEMENT, rab.byteLength);
   }
   for (let ctor of ctors) {
@@ -401,8 +400,7 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
     const fixedLength = new ctor(rab, 0, 4);
     const evil = { valueOf: () => { %ArrayBufferDetach(rab);
                                     return 0; }};
-    assertEquals([undefined, undefined, undefined, undefined],
-                 sliceHelper(fixedLength, evil));
+    assertEquals(new Array(4), sliceHelper(fixedLength, evil));
     assertEquals(0, rab.byteLength);
   }
   for (let ctor of ctors) {
@@ -414,8 +412,9 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
     }
     const evil = { valueOf: () => { %ArrayBufferDetach(rab);
                                     return 0; }};
-    assertEquals([undefined, undefined, undefined, undefined],
-                ToNumbers(sliceHelper(lengthTracking, evil)));
+    assertEquals(
+        [undefined, undefined, undefined, undefined],
+        ToNumbers(sliceHelper(lengthTracking, evil)));
     assertEquals(0, rab.byteLength);
   }
 })();

@@ -4,12 +4,8 @@
 
 #include "src/base/utils/random-number-generator.h"
 
+#include <stdio.h>
 #include <stdlib.h>
-#if !V8_OS_CYGWIN && !V8_OS_WIN
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 #if defined(V8_OS_STARBOARD)
 #include "starboard/system.h"
 #endif  //  V8_OS_STARBOARD
@@ -71,33 +67,12 @@ RandomNumberGenerator::RandomNumberGenerator() {
   SetSeed(SbSystemGetRandomUInt64());
 #else
   // Gather entropy from /dev/urandom if available.
-  int fd;
-  do {
-    fd = open("/dev/urandom", O_RDONLY);
-  } while (fd == -1 && errno == EINTR);
-  if (fd != -1) {
-    int64_t seed = 0;
-    bool got_seed = true;
-
-    size_t offset = 0;
-    do {
-      ssize_t n;
-      do {
-        n = read(fd, reinterpret_cast<char*>(&seed) + offset,
-                 sizeof(seed) - offset);
-      } while (n == -1 && errno == EINTR);
-
-      if (n == -1) {
-        got_seed = false;
-        break;
-      }
-
-      offset += n;
-    } while (offset != sizeof(seed));
-
-    close(fd);
-
-    if (got_seed) {
+  FILE* fp = base::Fopen("/dev/urandom", "rb");
+  if (fp != nullptr) {
+    int64_t seed;
+    size_t n = fread(&seed, sizeof(seed), 1, fp);
+    base::Fclose(fp);
+    if (n == 1) {
       SetSeed(seed);
       return;
     }
@@ -137,14 +112,12 @@ int RandomNumberGenerator::NextInt(int max) {
 
 
 double RandomNumberGenerator::NextDouble() {
-  XorShift128(&state0_, &state1_);
-  return ToDouble(state0_);
+  return ToDouble(XorShift128(&state0_, &state1_));
 }
 
 
 int64_t RandomNumberGenerator::NextInt64() {
-  XorShift128(&state0_, &state1_);
-  return base::bit_cast<int64_t>(state0_ + state1_);
+  return base::bit_cast<int64_t>(XorShift128(&state0_, &state1_));
 }
 
 
@@ -237,8 +210,8 @@ std::vector<uint64_t> RandomNumberGenerator::NextSampleSlow(
 int RandomNumberGenerator::Next(int bits) {
   DCHECK_LT(0, bits);
   DCHECK_GE(32, bits);
-  XorShift128(&state0_, &state1_);
-  return static_cast<int>((state0_ + state1_) >> (64 - bits));
+  uint64_t random = XorShift128(&state0_, &state1_);
+  return static_cast<int>(random >> (64 - bits));
 }
 
 

@@ -7,6 +7,16 @@
 
 #include <ostream>
 
+#include "src/base/logging.h"
+
+#define ARITHMETIC_BITWISE_OPERATION_LIST(V) \
+  V(BitwiseAnd)                              \
+  V(BitwiseOr)                               \
+  V(BitwiseXor)                              \
+  V(ShiftLeft)                               \
+  V(ShiftRight)                              \
+  V(ShiftRightLogical)
+
 #define ARITHMETIC_OPERATION_LIST(V) \
   V(Add)                             \
   V(Subtract)                        \
@@ -14,12 +24,7 @@
   V(Divide)                          \
   V(Modulus)                         \
   V(Exponentiate)                    \
-  V(BitwiseAnd)                      \
-  V(BitwiseOr)                       \
-  V(BitwiseXor)                      \
-  V(ShiftLeft)                       \
-  V(ShiftRight)                      \
-  V(ShiftRightLogical)
+  ARITHMETIC_BITWISE_OPERATION_LIST(V)
 
 #define UNARY_OPERATION_LIST(V) \
   V(BitwiseNot)                 \
@@ -40,11 +45,51 @@
   UNARY_OPERATION_LIST(V)      \
   COMPARISON_OPERATION_LIST(V)
 
-enum class Operation {
+enum class Operation : uint8_t {
 #define DEFINE_OP(name) k##name,
   OPERATION_LIST(DEFINE_OP)
 #undef DEFINE_OP
 };
+
+template <Operation kOperation>
+constexpr inline bool IsBitwiseBinaryOperation() {
+  switch (kOperation) {
+#define CASE(name) case Operation::k##name:
+    ARITHMETIC_BITWISE_OPERATION_LIST(CASE)
+#undef CASE
+    return true;
+    default:
+      return false;
+  }
+}
+
+constexpr inline bool IsUnaryOperation(Operation op) {
+  switch (op) {
+#define UNARY_CASE(name)   \
+  case Operation::k##name: \
+    return true;
+    UNARY_OPERATION_LIST(UNARY_CASE)
+#undef UNARY_CASE
+    default:
+      return false;
+  }
+}
+
+constexpr inline bool IsBinaryOperation(Operation op) {
+  return !IsUnaryOperation(op);
+}
+
+constexpr inline bool IsComparisonOperation(Operation op) {
+  switch (op) {
+#define COMPARISON_CASE(name) \
+  case Operation::k##name:    \
+    return true;
+    COMPARISON_OPERATION_LIST(COMPARISON_CASE)
+#undef COMPARISON_CASE
+    default:
+      return false;
+  }
+}
 
 inline std::ostream& operator<<(std::ostream& os, const Operation& operation) {
   switch (operation) {
@@ -54,6 +99,7 @@ inline std::ostream& operator<<(std::ostream& os, const Operation& operation) {
     OPERATION_LIST(CASE)
 #undef CASE
   }
+  UNREACHABLE();
 }
 
 #endif  // V8_COMMON_OPERATION_H_

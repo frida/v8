@@ -4,6 +4,9 @@
 
 #include "include/v8config.h"
 #include "src/trap-handler/trap-handler-simulator.h"
+#include "src/trap-handler/trap-handler.h"
+
+#if V8_TRAP_HANDLER_SUPPORTED
 
 #if V8_OS_DARWIN
 #define SYMBOL(name) "_" #name
@@ -11,39 +14,52 @@
 #define SYMBOL(name) #name
 #endif  // !V8_OS_DARWIN
 
-#if defined(_MSC_VER) && !defined(__clang__)
-// MSVC does not accept inline assembly
-#include <intrin.h>
-extern "C" uintptr_t ProbeMemory(uintptr_t address, uintptr_t pc) {
-  // @pc parameter is unused.
-  // This intrinsic guarantees that a load from address will be done.
-  __iso_volatile_load8(reinterpret_cast<char*>(address));
-  return 0;
-}
-extern "C" void v8_probe_memory_continuation() {}
-#else
-// Define the ProbeMemory function declared in trap-handler-simulators.h.
-asm(
-    ".globl " SYMBOL(ProbeMemory) "                 \n"
-    SYMBOL(ProbeMemory) ":                          \n"
+// Define the v8::internal::trap_handler::ProbeMemory function declared in
+// trap-handler-simulators.h.
+#if V8_HOST_ARCH_X64
+asm(".att_syntax                                                \n"
+    ".globl " SYMBOL(v8_internal_simulator_ProbeMemory) "       \n"
+    SYMBOL(v8_internal_simulator_ProbeMemory) ":                \n"
 // First parameter (address) passed in %rdi on Linux/Mac, and %rcx on Windows.
 // The second parameter (pc) is unused here. It is read by the trap handler
 // instead.
 #if V8_OS_WIN
-    "  movb (%rcx), %al                             \n"
+    "  movb (%rcx), %al                                         \n"
 #else
-    "  movb (%rdi), %al                             \n"
+    "  movb (%rdi), %al                                         \n"
 #endif  // V8_OS_WIN
     // Return 0 on success.
-    "  xorl %eax, %eax                              \n"
+    "  xorl %eax, %eax                                          \n"
     // Place an additional "ret" here instead of falling through to the one
     // below, because (some) toolchain(s) on Mac set ".subsections_via_symbols",
     // which can cause the "ret" below to be placed elsewhere. An alternative
     // prevention would be to add ".alt_entry" (see
     // https://reviews.llvm.org/D79926), but just adding a "ret" is simpler.
-    "  ret                                          \n"
-    ".globl " SYMBOL(v8_probe_memory_continuation) "\n"
-    SYMBOL(v8_probe_memory_continuation) ":         \n"
+    "  ret                                                      \n"
+    ".globl " SYMBOL(v8_simulator_probe_memory_continuation) "  \n"
+    SYMBOL(v8_simulator_probe_memory_continuation) ":           \n"
     // If the trap handler continues here, it wrote the landing pad in %rax.
-    "  ret                                          \n");
+    "  ret                                                      \n");
+#elif V8_HOST_ARCH_ARM64
+asm(".globl " SYMBOL(v8_internal_simulator_ProbeMemory) "       \n"
+    SYMBOL(v8_internal_simulator_ProbeMemory) ":                \n"
+    // First parameter (address) passed in x0.
+    // The second parameter (pc) is unused here. It is read by the trap handler
+    // instead.
+    "  ldrb wzr, [x0]                                           \n"
+    // Return 0 on success.
+    "  mov x0, xzr                                              \n"
+    // Place an additional "ret" here instead of falling through to the one
+    // below, because (some) toolchain(s) on Mac set ".subsections_via_symbols",
+    // which can cause the "ret" below to be placed elsewhere. An alternative
+    // prevention would be to add ".alt_entry" (see
+    // https://reviews.llvm.org/D79926), but just adding a "ret" is simpler.
+    "  ret                                                      \n"
+    ".globl " SYMBOL(v8_simulator_probe_memory_continuation) "  \n"
+    SYMBOL(v8_simulator_probe_memory_continuation) ":           \n"
+    // If the trap handler continues here, it wrote the landing pad in x0.
+    "  ret                                                      \n");
+#else
+#error "Unsupported architecture"
+#endif
 #endif

@@ -11,7 +11,8 @@
 #include "testing/gtest/include/gtest/gtest.h"
 
 #ifdef V8_USE_PERFETTO
-#include "perfetto/tracing.h"
+#include "perfetto/tracing/track_event.h"         // nogncheck
+#include "perfetto/tracing/track_event_legacy.h"  // nogncheck
 #include "protos/perfetto/trace/trace.pb.h"  // nogncheck
 #include "src/libplatform/tracing/trace-event-listener.h"
 #include "src/tracing/traced-value.h"
@@ -389,6 +390,10 @@ TEST_F(PlatformTracingTest, TestTracingControllerMultipleArgsAndCopy) {
 }
 #endif  // !defined(V8_USE_PERFETTO)
 
+// In Perfetto build there are no TracingObservers. Instead the code relies on
+// TrackEventSessionObserver to track tracing sessions, which is tested
+// upstream.
+#if !defined(V8_USE_PERFETTO)
 namespace {
 
 class TraceStateObserverImpl : public TracingController::TraceStateObserver {
@@ -412,16 +417,11 @@ TEST_F(PlatformTracingTest, TracingObservers) {
   v8::platform::tracing::TracingController* tracing_controller = tracing.get();
   static_cast<v8::platform::DefaultPlatform*>(default_platform.get())
       ->SetTracingController(std::move(tracing));
-#ifdef V8_USE_PERFETTO
-  std::ostringstream sstream;
-  tracing_controller->InitializeForPerfetto(&sstream);
-#else
   MockTraceWriter* writer = new MockTraceWriter();
   v8::platform::tracing::TraceBuffer* ring_buffer =
       v8::platform::tracing::TraceBuffer::CreateTraceBufferRingBuffer(1,
                                                                       writer);
   tracing_controller->Initialize(ring_buffer);
-#endif
   v8::platform::tracing::TraceConfig* trace_config =
       new v8::platform::tracing::TraceConfig();
   trace_config->AddIncludedCategory("v8");
@@ -469,6 +469,7 @@ TEST_F(PlatformTracingTest, TracingObservers) {
 
   i::V8::SetPlatformForTesting(old_platform);
 }
+#endif  // !defined(V8_USE_PERFETTO)
 
 // With Perfetto the tracing controller doesn't observe events.
 #if !defined(V8_USE_PERFETTO)
@@ -537,6 +538,22 @@ using TrackEvent = ::perfetto::protos::TrackEvent;
 
 class TestListener : public TraceEventListener {
  public:
+  void ParseFromArray(const std::vector<char>& array) {
+    perfetto::protos::Trace trace;
+    CHECK(trace.ParseFromArray(array.data(), static_cast<int>(array.size())));
+
+    for (int i = 0; i < trace.packet_size(); i++) {
+      // TODO(petermarshall): ChromeTracePacket instead.
+      const perfetto::protos::TracePacket& packet = trace.packet(i);
+      ProcessPacket(packet);
+    }
+  }
+
+  const std::string& get_event(size_t index) { return events_.at(index); }
+
+  size_t events_size() const { return events_.size(); }
+
+ private:
   void ProcessPacket(const ::perfetto::protos::TracePacket& packet) {
     if (packet.incremental_state_cleared()) {
       categories_.clear();
@@ -597,7 +614,12 @@ class TestListener : public TraceEventListener {
         if (!first_annotation) {
           slice += ",";
         }
-        slice += debug_annotation_names_[it.name_iid()] + "=";
+        if (!it.name().empty()) {
+          slice += it.name();
+        } else {
+          slice += debug_annotation_names_[it.name_iid()];
+        }
+        slice += "=";
         std::stringstream value;
         if (it.has_bool_value()) {
           value << "(bool)" << it.bool_value();
@@ -624,11 +646,6 @@ class TestListener : public TraceEventListener {
     events_.push_back(slice);
   }
 
-  const std::string& get_event(size_t index) { return events_.at(index); }
-
-  size_t events_size() const { return events_.size(); }
-
- private:
   std::vector<std::string> events_;
   std::map<uint64_t, std::string> categories_;
   std::map<uint64_t, std::string> event_names_;
@@ -836,6 +853,7 @@ TEST_F(PlatformTracingTest, MultipleArgsAndCopy) {
   for (size_t i = 0; i < 20; i++) CHECK_EQ("E:.", harness.get_event(24 + i));
 }
 
+#if defined(V8_USE_PERFETTO_JSON_EXPORT)
 TEST_F(PlatformTracingTest, JsonIntegrationTest) {
   // Check that tricky values are rendered correctly in the JSON output.
   double big_num = 1e100;
@@ -870,6 +888,7 @@ TEST_F(PlatformTracingTest, JsonIntegrationTest) {
   CHECK_EQ("\"3\":\"Infinity\"", all_args[i++]);
   CHECK_EQ("\"4\":\"-Infinity\"", all_args[i++]);
 }
+#endif  // V8_USE_PERFETTO_JSON_EXPORT
 
 #endif  // V8_USE_PERFETTO
 

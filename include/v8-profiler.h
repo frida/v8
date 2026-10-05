@@ -11,6 +11,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "cppgc/common.h"          // NOLINT(build/include_directory)
 #include "v8-local-handle.h"       // NOLINT(build/include_directory)
 #include "v8-message.h"            // NOLINT(build/include_directory)
 #include "v8-persistent-handle.h"  // NOLINT(build/include_directory)
@@ -24,7 +25,7 @@ enum class EmbedderStateTag : uint8_t;
 class HeapGraphNode;
 struct HeapStatsUpdate;
 class Object;
-enum StateTag : int;
+enum StateTag : uint16_t;
 
 using NativeObject = void*;
 using SnapshotObjectId = uint32_t;
@@ -46,6 +47,21 @@ template class V8_EXPORT std::vector<v8::CpuProfileDeoptFrame>;
 #endif
 
 namespace v8 {
+
+/**
+ * Identifies which component initiated CPU profiling for proper attribution.
+ */
+enum class CpuProfileSource : uint8_t {
+  /** Default value when no explicit source is specified. */
+  kUnspecified = 0,
+  /** Profiling initiated via the DevTools Inspector protocol. */
+  kInspector = 1,
+  /** Profiling initiated by the embedder (e.g., Blink) via self-profiling API.
+   */
+  kSelfProfiling = 2,
+  /** Profiling initiated internally by V8 (e.g., tracing CPU profiler). */
+  kInternal = 3,
+};
 
 struct V8_EXPORT CpuProfileDeoptInfo {
   /** A pointer to a static string owned by v8. */
@@ -69,6 +85,10 @@ class V8_EXPORT CpuProfileNode {
   struct LineTick {
     /** The 1-based number of the source line where the function originates. */
     int line;
+
+    /** The 1-based number of the source column where the function originates.
+     */
+    int column;
 
     /** The count of samples associated with the source line. */
     unsigned int hit_count;
@@ -175,6 +195,32 @@ class V8_EXPORT CpuProfileNode {
   static const int kNoColumnNumberInfo = Message::kNoColumnInfo;
 };
 
+/**
+ * An interface for exporting data from V8, using "push" model.
+ */
+class V8_EXPORT OutputStream {
+ public:
+  enum WriteResult { kContinue = 0, kAbort = 1 };
+  virtual ~OutputStream() = default;
+  /** Notify about the end of stream. */
+  virtual void EndOfStream() = 0;
+  /** Get preferred output chunk size. Called only once. */
+  virtual int GetChunkSize() { return 1024; }
+  /**
+   * Writes the next chunk of snapshot data into the stream. Writing
+   * can be stopped by returning kAbort as function result. EndOfStream
+   * will not be called in case writing was aborted.
+   */
+  virtual WriteResult WriteAsciiChunk(char* data, int size) = 0;
+  /**
+   * Writes the next chunk of heap stats data into the stream. Writing
+   * can be stopped by returning kAbort as function result. EndOfStream
+   * will not be called in case writing was aborted.
+   */
+  virtual WriteResult WriteHeapStatsChunk(HeapStatsUpdate* data, int count) {
+    return kAbort;
+  }
+};
 
 /**
  * CpuProfile contains a CPU profile in a form of top-down call tree
@@ -182,6 +228,9 @@ class V8_EXPORT CpuProfileNode {
  */
 class V8_EXPORT CpuProfile {
  public:
+  enum SerializationFormat {
+    kJSON = 0  // See format description near 'Serialize' method.
+  };
   /** Returns CPU profile title. */
   Local<String> GetTitle() const;
 
@@ -235,6 +284,25 @@ class V8_EXPORT CpuProfile {
    * All pointers to nodes previously returned become invalid.
    */
   void Delete();
+
+  /**
+   * Prepare a serialized representation of the profile. The result
+   * is written into the stream provided in chunks of specified size.
+   *
+   * For the JSON format, heap contents are represented as an object
+   * with the following structure:
+   *
+   *  {
+   *    nodes: [nodes array],
+   *    startTime: number,
+   *    endTime: number
+   *    samples: [strings array]
+   *    timeDeltas: [numbers array]
+   *  }
+   *
+   */
+  void Serialize(OutputStream* stream,
+                 SerializationFormat format = kJSON) const;
 };
 
 enum CpuProfilingMode {
@@ -325,11 +393,13 @@ class V8_EXPORT CpuProfilingOptions {
    *                             the profiler's sampling interval.
    * \param filter_context If specified, profiles will only contain frames
    *                       using this context. Other frames will be elided.
+   * \param profile_source Identifies the source of this CPU profile.
    */
   CpuProfilingOptions(
       CpuProfilingMode mode = kLeafNodeLineNumbers,
       unsigned max_samples = kNoSampleLimit, int sampling_interval_us = 0,
-      MaybeLocal<Context> filter_context = MaybeLocal<Context>());
+      MaybeLocal<Context> filter_context = MaybeLocal<Context>(),
+      CpuProfileSource profile_source = CpuProfileSource::kUnspecified);
 
   CpuProfilingOptions(CpuProfilingOptions&&) = default;
   CpuProfilingOptions& operator=(CpuProfilingOptions&&) = default;
@@ -337,6 +407,7 @@ class V8_EXPORT CpuProfilingOptions {
   CpuProfilingMode mode() const { return mode_; }
   unsigned max_samples() const { return max_samples_; }
   int sampling_interval_us() const { return sampling_interval_us_; }
+  CpuProfileSource profile_source() const { return profile_source_; }
 
  private:
   friend class internal::CpuProfile;
@@ -348,6 +419,7 @@ class V8_EXPORT CpuProfilingOptions {
   unsigned max_samples_;
   int sampling_interval_us_;
   Global<Context> filter_context_;
+  CpuProfileSource profile_source_;
 };
 
 /**
@@ -369,8 +441,11 @@ class V8_EXPORT CpuProfiler {
    * Synchronously collect current stack sample in all profilers attached to
    * the |isolate|. The call does not affect number of ticks recorded for
    * the current top node.
+   * |trace_id| is an optional identifier set to the collected sample.
+   * this is useful to associate the sample with a trace event.
    */
-  static void CollectSample(Isolate* isolate);
+  static void CollectSample(
+      Isolate* isolate, const std::optional<uint64_t> trace_id = std::nullopt);
 
   /**
    * Disposes the CPU profiler object.
@@ -576,37 +651,6 @@ class V8_EXPORT HeapGraphNode {
   const HeapGraphEdge* GetChild(int index) const;
 };
 
-
-/**
- * An interface for exporting data from V8, using "push" model.
- */
-class V8_EXPORT OutputStream {
- public:
-  enum WriteResult {
-    kContinue = 0,
-    kAbort = 1
-  };
-  virtual ~OutputStream() = default;
-  /** Notify about the end of stream. */
-  virtual void EndOfStream() = 0;
-  /** Get preferred output chunk size. Called only once. */
-  virtual int GetChunkSize() { return 1024; }
-  /**
-   * Writes the next chunk of snapshot data into the stream. Writing
-   * can be stopped by returning kAbort as function result. EndOfStream
-   * will not be called in case writing was aborted.
-   */
-  virtual WriteResult WriteAsciiChunk(char* data, int size) = 0;
-  /**
-   * Writes the next chunk of heap stats data into the stream. Writing
-   * can be stopped by returning kAbort as function result. EndOfStream
-   * will not be called in case writing was aborted.
-   */
-  virtual WriteResult WriteHeapStatsChunk(HeapStatsUpdate* data, int count) {
-    return kAbort;
-  }
-};
-
 /**
  * HeapSnapshots record the state of the JS heap at some moment.
  */
@@ -786,6 +830,17 @@ class V8_EXPORT AllocationProfile {
      * what samples were added or removed between two snapshots.
      */
     uint64_t sample_id;
+
+    /**
+     * Indicates whether the sampled allocation is still live or has already
+     * been collected by GC.
+     */
+    bool is_live;
+
+    /**
+     * Sample interval in bytes used when this sample was selected.
+     */
+    uint64_t sample_interval;
   };
 
   /**
@@ -865,6 +920,15 @@ class V8_EXPORT EmbedderGraph {
      */
     virtual Detachedness GetDetachedness() { return Detachedness::kUnknown; }
 
+    /**
+     * Returns the address of the object in the embedder heap, or nullptr to not
+     * specify the address. If this address is provided, then V8 can generate
+     * consistent IDs for objects across subsequent heap snapshots, which allows
+     * devtools to determine which objects were retained from one snapshot to
+     * the next. This value is used only if GetNativeObject returns nullptr.
+     */
+    virtual const void* GetAddress() { return nullptr; }
+
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
   };
@@ -872,8 +936,27 @@ class V8_EXPORT EmbedderGraph {
   /**
    * Returns a node corresponding to the given V8 value. Ownership is not
    * transferred. The result pointer is valid while the graph is alive.
+   *
+   * For now the variant that takes v8::Data is not marked as abstract for
+   * compatibility, but embedders who subclass EmbedderGraph are expected to
+   * implement it. Then in the implementation of the variant that takes
+   * v8::Value, they can simply forward the call to the one that takes
+   * v8::Local<v8::Data>.
    */
   virtual Node* V8Node(const v8::Local<v8::Value>& value) = 0;
+
+  /**
+   * Returns a node corresponding to the given V8 value. Ownership is not
+   * transferred. The result pointer is valid while the graph is alive.
+   *
+   * For API compatibility, this default implementation just checks that the
+   * data is a v8::Value and forward it to the variant that takes v8::Value,
+   * which is currently required to be implemented. In the future we'll remove
+   * the v8::Value variant, and make this variant that takes v8::Data abstract
+   * instead. If the embedder subclasses v8::EmbedderGraph and also use
+   * v8::TracedReference<v8::Data>, they must override this variant.
+   */
+  virtual Node* V8Node(const v8::Local<v8::Data>& value);
 
   /**
    * Adds the given node to the graph and takes ownership of the node.
@@ -891,7 +974,34 @@ class V8_EXPORT EmbedderGraph {
    */
   virtual void AddEdge(Node* from, Node* to, const char* name = nullptr) = 0;
 
+  /**
+   * Adds an edge that represents a weak reference from the given
+   * node |from| to the given node |to|. The nodes must be added to the graph
+   * before calling this function.
+   *
+   * If name is nullptr, the edge will have auto-increment indexes, otherwise
+   * it will be named accordingly.
+   */
+  virtual void AddWeakEdge(Node* from, Node* to, const char* name = nullptr) {
+    AddEdge(from, to, name);
+  }
+
+  /**
+   * Adds a count of bytes that are not associated with any particular Node.
+   * An embedder may use this to represent the size of nodes which were omitted
+   * from this EmbedderGraph despite being retained by the graph, or other
+   * overhead costs. This number will contribute to the total size in a heap
+   * snapshot, without being represented in the object graph.
+   */
+  virtual void AddNativeSize(size_t size) {}
+
   virtual ~EmbedderGraph() = default;
+};
+
+class QueryObjectPredicate {
+ public:
+  virtual ~QueryObjectPredicate() = default;
+  virtual bool Filter(v8::Local<v8::Object> object) = 0;
 };
 
 /**
@@ -900,6 +1010,10 @@ class V8_EXPORT EmbedderGraph {
  */
 class V8_EXPORT HeapProfiler {
  public:
+  void QueryObjects(v8::Local<v8::Context> context,
+                    QueryObjectPredicate* predicate,
+                    std::vector<v8::Global<v8::Object>>* objects);
+
   enum SamplingFlags {
     kSamplingNoFlags = 0,
     kSamplingForceGC = 1 << 0,
@@ -919,7 +1033,7 @@ class V8_EXPORT HeapProfiler {
 
   /**
    * Callback function invoked during heap snapshot generation to retrieve
-   * the detachedness state of an object referenced by a TracedReference.
+   * the detachedness state of a JS object referenced by a TracedReference.
    *
    * The callback takes Local<Value> as parameter to allow the embedder to
    * unpack the TracedReference into a Local and reuse that Local for different
@@ -969,8 +1083,11 @@ class V8_EXPORT HeapProfiler {
 
   /**
    * Callback interface for retrieving user friendly names of global objects.
+   *
+   * This interface will soon be deprecated in favour of ContextNameResolver.
    */
-  class ObjectNameResolver {
+  class V8_DEPRECATE_SOON("Use ContextNameResolver instead.")
+      ObjectNameResolver {
    public:
     /**
      * Returns name to be used in the heap snapshot for given node. Returned
@@ -980,6 +1097,23 @@ class V8_EXPORT HeapProfiler {
 
    protected:
     virtual ~ObjectNameResolver() = default;
+  };
+
+  /**
+   * Callback interface for retrieving user friendly names of a V8::Context
+   * objects.
+   */
+  class ContextNameResolver {
+   public:
+    /**
+     * Returns name to be used in the heap snapshot for given node. Returned
+     * string must stay alive until snapshot collection is completed.
+     * If no user friendly name is available return nullptr.
+     */
+    virtual const char* GetName(Local<Context> context) = 0;
+
+   protected:
+    virtual ~ContextNameResolver() = default;
   };
 
   enum class HeapSnapshotMode {
@@ -1016,9 +1150,10 @@ class V8_EXPORT HeapProfiler {
      */
     ActivityControl* control = nullptr;
     /**
-     * The resolver used by the snapshot generator to get names for V8 objects.
+     * The resolver used by the snapshot generator to get names for v8::Context
+     * objects.
      */
-    ObjectNameResolver* global_object_name_resolver = nullptr;
+    ContextNameResolver* context_name_resolver = nullptr;
     /**
      * Mode for taking the snapshot, see `HeapSnapshotMode`.
      */
@@ -1027,6 +1162,11 @@ class V8_EXPORT HeapProfiler {
      * Mode for dealing with numeric values, see `NumericsMode`.
      */
     NumericsMode numerics_mode = NumericsMode::kHideNumericValues;
+    /**
+     * Whether stack is considered as a root set.
+     */
+    cppgc::EmbedderStackState stack_state =
+        cppgc::EmbedderStackState::kMayContainHeapPointers;
   };
 
   /**
@@ -1043,10 +1183,16 @@ class V8_EXPORT HeapProfiler {
    *
    * \returns the snapshot.
    */
-  const HeapSnapshot* TakeHeapSnapshot(
-      ActivityControl* control,
-      ObjectNameResolver* global_object_name_resolver = nullptr,
-      bool hide_internals = true, bool capture_numeric_value = false);
+  const HeapSnapshot* TakeHeapSnapshot(ActivityControl* control,
+                                       ContextNameResolver* resolver = nullptr,
+                                       bool hide_internals = true,
+                                       bool capture_numeric_value = false);
+
+  /**
+   * Obtains list of Detached JS Wrapper Objects. This functon calls garbage
+   * collection, then iterates over traced handles in the isolate
+   */
+  std::vector<v8::Local<v8::Value>> GetDetachedJSWrapperObjects();
 
   /**
    * Starts tracking of heap objects population statistics. After calling
@@ -1117,6 +1263,22 @@ class V8_EXPORT HeapProfiler {
   void StopSamplingHeapProfiler();
 
   /**
+   * Updates the sampling interval for a currently running sampling heap
+   * profiler. The new interval is used for future sample scheduling.
+   *
+   * No-op if the sampling heap profiler is not running.
+   */
+  void SetSamplingHeapProfilerInterval(uint64_t sample_interval);
+
+  /**
+   * Returns the currently retained allocation samples without materializing
+   * the full allocation profile tree.
+   *
+   * Returns an empty vector if the sampling heap profiler is not running.
+   */
+  std::vector<AllocationProfile::Sample> GetSamplingHeapProfilerSamples();
+
+  /**
    * Returns the sampled profile of allocations allocated (and still live) since
    * StartSamplingHeapProfiler was called. The ownership of the pointer is
    * transferred to the caller. Returns nullptr if sampling heap profiler is not
@@ -1136,6 +1298,18 @@ class V8_EXPORT HeapProfiler {
                                         void* data);
 
   void SetGetDetachednessCallback(GetDetachednessCallback callback, void* data);
+
+  /**
+   * Returns whether the heap profiler is currently taking a snapshot.
+   */
+  bool IsTakingSnapshot();
+
+  /**
+   * Allocates a copy of the provided string within the heap snapshot generator
+   * and returns a pointer to the copy. May only be called during heap snapshot
+   * generation.
+   */
+  const char* CopyNameForHeapSnapshot(const char* name);
 
   /**
    * Default value of persistent handle class ID. Must not be used to

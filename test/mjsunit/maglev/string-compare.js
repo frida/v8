@@ -2,11 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 // Flags: --no-always-use-string-forwarding-table
+// Flags: --no-optimize-maglev-optimizes-to-turbofan
 
 let internalized1234 = %ConstructInternalizedString("1234123412341234");
-let nonInternalized1234 = "1234" + "1234" + "1234" + "1234";
+let nonInternalized1234 = %ConstructConsString("12341234", "12341234");
 let uniqueId = 0;
 
 function warmUpMaglevTestFn(test_fn_src) {
@@ -28,7 +29,7 @@ function warmUpMaglevTestFn(test_fn_src) {
 
   %OptimizeMaglevOnNextCall(test_fn);
   assertEquals(0, test_fn("1", "2"));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
   return test_fn;
 }
 
@@ -41,23 +42,23 @@ function test(test_fn_src, is_strict=false) {
 
   let test_fn = warmUpMaglevTestFn(test_fn_src);
   assertEquals(1, test_fn("1", "1"));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
 
   assertEquals(0, test_fn(internalized1234, "1"));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
 
   // The GC might have already migrated the thin string, create a new one
   let thin1234 = %ConstructThinString( "1234" + "1234" + "1234" + "1234");
   assertFalse(%IsInternalizedString(thin1234));
 
   assertEquals(1, test_fn(thin1234, "1234123412341234"));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
 
   assertEquals(1, test_fn(thin1234, thin1234));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
 
   assertEquals(1, test_fn(internalized1234, "1234123412341234"));
-  assertTrue(isMaglevved(test_fn));
+  assertMaglevved(test_fn);
 
   if (is_strict) {
     assertEquals(0, test_fn(internalized1234, 1234123412341234));

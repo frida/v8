@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --harmony-rab-gsab --allow-natives-syntax --harmony-array-find-last
+// Flags: --allow-natives-syntax --js-staging
 
 "use strict";
 
@@ -1763,3 +1763,45 @@ function AtParameterConversionDetaches(atHelper) {
 }
 AtParameterConversionDetaches(TypedArrayAtHelper);
 AtParameterConversionDetaches(ArrayAtHelper);
+
+(function TypedArrayFrom() {
+  AllBigIntMatchedCtorCombinations((targetCtor, sourceCtor) => {
+    const rab = CreateResizableArrayBuffer(
+        4 * sourceCtor.BYTES_PER_ELEMENT,
+        8 * sourceCtor.BYTES_PER_ELEMENT);
+    const fixedLength = new sourceCtor(rab, 0, 4);
+    const fixedLengthWithOffset = new sourceCtor(
+        rab, 2 * sourceCtor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new sourceCtor(rab, 0);
+    const lengthTrackingWithOffset = new sourceCtor(
+        rab, 2 * sourceCtor.BYTES_PER_ELEMENT);
+
+    %ArrayBufferDetach(rab);
+
+    assertThrows(() => { targetCtor.from(fixedLength); }, TypeError);
+    assertThrows(() => { targetCtor.from(fixedLengthWithOffset); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTracking); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTrackingWithOffset); },
+                 TypeError);
+  });
+
+  AllBigIntUnmatchedCtorCombinations((targetCtor, sourceCtor) => {
+    const rab = CreateResizableArrayBuffer(
+        4 * sourceCtor.BYTES_PER_ELEMENT,
+        8 * sourceCtor.BYTES_PER_ELEMENT);
+    const fixedLength = new sourceCtor(rab, 0, 4);
+    const fixedLengthWithOffset = new sourceCtor(
+        rab, 2 * sourceCtor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new sourceCtor(rab, 0);
+    const lengthTrackingWithOffset = new sourceCtor(
+        rab, 2 * sourceCtor.BYTES_PER_ELEMENT);
+
+    %ArrayBufferDetach(rab);
+
+    assertThrows(() => { targetCtor.from(fixedLength); }, TypeError);
+    assertThrows(() => { targetCtor.from(fixedLengthWithOffset); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTracking); }, TypeError);
+    assertThrows(() => { targetCtor.from(lengthTrackingWithOffset); },
+                 TypeError);
+  });
+})();

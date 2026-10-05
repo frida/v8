@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 
 export let x = 1;
 function foo(y) {
@@ -16,5 +16,5 @@ assertEquals(4, foo(1));
 %OptimizeMaglevOnNextCall(foo);
 assertEquals(5, foo(1));
 assertEquals(6, foo(1));
-assertTrue(isMaglevved(foo));
+assertMaglevved(foo);
 

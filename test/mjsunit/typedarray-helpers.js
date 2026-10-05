@@ -13,6 +13,7 @@ const builtinCtors = [
   Int16Array,
   Uint32Array,
   Int32Array,
+  Float16Array,
   Float32Array,
   Float64Array,
   Uint8ClampedArray,
@@ -28,6 +29,7 @@ const ctors = [
 ];
 
 const floatCtors = [
+  Float16Array,
   Float32Array,
   Float64Array,
   MyFloat32Array
@@ -57,6 +59,8 @@ const dataViewAccessorsAndSizes = [[DataView.prototype.getUint8,
                                     DataView.prototype.setInt16, 2, false],
                                    [DataView.prototype.getInt32,
                                     DataView.prototype.setInt32, 4, false],
+                                   [DataView.prototype.getFloat16,
+                                    DataView.prototype.setFloat16, 2, false],
                                    [DataView.prototype.getFloat32,
                                     DataView.prototype.setFloat32, 4, false],
                                    [DataView.prototype.getFloat64,
@@ -74,6 +78,16 @@ function CreateGrowableSharedArrayBuffer(byteLength, maxByteLength) {
   return new SharedArrayBuffer(byteLength, {maxByteLength: maxByteLength});
 }
 
+function CreateResizableArrayBufferViaWasm(initial, maximum) {
+  let mem = new WebAssembly.Memory({initial, maximum});
+  return mem.toResizableBuffer();
+}
+
+function CreateGrowableSharedArrayBufferViaWasm(initial, maximum) {
+  let mem = new WebAssembly.Memory({initial, maximum, shared: true});
+  return mem.toResizableBuffer();
+}
+
 function IsBigIntTypedArray(ta) {
   return (ta instanceof BigInt64Array) || (ta instanceof BigUint64Array);
 }
@@ -84,6 +98,18 @@ function AllBigIntMatchedCtorCombinations(test) {
       if (IsBigIntTypedArray(new targetCtor()) !=
           IsBigIntTypedArray(new sourceCtor())) {
         // Can't mix BigInt and non-BigInt types.
+        continue;
+      }
+      test(targetCtor, sourceCtor);
+    }
+  }
+}
+
+function AllBigIntUnmatchedCtorCombinations(test) {
+  for (let targetCtor of ctors) {
+    for (let sourceCtor of ctors) {
+      if (IsBigIntTypedArray(new targetCtor()) ==
+          IsBigIntTypedArray(new sourceCtor())) {
         continue;
       }
       test(targetCtor, sourceCtor);

@@ -11,11 +11,18 @@ import os
 import sys
 import re
 
+from pathlib import Path
+
 BASE_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 ANDROID_DIR = os.path.join(BASE_DIR, 'build', 'android')
 DEVICE_DIR = '/data/local/tmp/v8/'
 
+FILTER_LINES_EXPRESSIONS = [
+  r'WARNING: linker: .+ unsupported flags DT_FLAGS_1=0x8000001',
+  r'WARNING: linker: .+ unused DT entry:.*type 0x70000001 arg 0x0.*',
+]
+FILTER_LINES_EXPRESSIONS = [re.compile(exp) for exp in FILTER_LINES_EXPRESSIONS]
 
 class TimeoutException(Exception):
   def __init__(self, timeout, output=None):
@@ -59,7 +66,13 @@ class Driver(object):
     # Find specified device or a single attached device if none was specified.
     # In case none or multiple devices are attached, this raises an exception.
     self.device = device_utils.DeviceUtils.HealthyDevices(
-        retries=5, enable_usb_resets=True, device_arg=device)[0]
+        retries=5, enable_usb_resets=True, device_arg=device,
+        persistent_shell=False)[0]
+
+    # Retrieve device parameters.
+    product_prop = 'getprop ro.build.product'
+    self.device_type = self.device.adb.Shell(product_prop).rstrip('\n')
+    assert self.device_type, 'No device type found in android environment.'
 
     # This remembers what we have already pushed to the device.
     self.pushed = set()
@@ -98,6 +111,10 @@ class Driver(object):
         logging.critical('Missing file on host: %s' % file_on_host)
       return
 
+    if os.path.isdir(file_on_host):
+      self.push_files_rec(file_on_host, os.path.join(target_rel, file_name))
+      return
+
     # Work-around for 'text file busy' errors. Push the files to a temporary
     # location and then copy them with a shell command.
     output = self.device.adb.Push(file_on_host, file_on_device_tmp)
@@ -108,6 +125,13 @@ class Driver(object):
     self.device.adb.Shell('mkdir -p %s' % folder_on_device)
     self.device.adb.Shell('cp %s %s' % (file_on_device_tmp, file_on_device))
     self.pushed.add(file_on_host)
+
+  def push_files_rec(self, host_dir, target_rel='.'):
+    """As above, but push the whole directory tree under host_dir."""
+    root = Path(host_dir)
+    for entry in root.rglob('*'):
+      if entry.is_file():
+        self.push_file(host_dir, entry.relative_to(root), target_rel)
 
   def push_executable(self, shell_dir, target_dir, binary):
     """Push files required to run a V8 executable.
@@ -141,8 +165,20 @@ class Driver(object):
         skip_if_missing=True,
     )
 
-  def run(self, target_dir, binary, args, rel_path, timeout, env=None,
-          logcat_file=False):
+  def filter_line(self, line):
+    for exp in FILTER_LINES_EXPRESSIONS:
+      if exp.match(line):
+        return False
+    return True
+
+  def run(self,
+          target_dir,
+          binary,
+          args,
+          rel_path,
+          timeout,
+          env=None,
+          logcat_file=None):
     """Execute a command on the device's shell.
 
     Args:
@@ -167,7 +203,8 @@ class Driver(object):
             timeout=timeout,
             retries=0,
         )
-        return '\n'.join(output)
+        # Return output without linker warnings (https://crbug.com/1454414).
+        return '\n'.join(filter(self.filter_line, output))
       except device_errors.AdbCommandFailedError as e:
         raise CommandFailedException(e.status, e.output)
       except device_errors.CommandTimeoutError as e:

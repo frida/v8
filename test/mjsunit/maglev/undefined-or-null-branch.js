@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Flags: --allow-natives-syntax --maglev --no-always-turbofan
+// Flags: --allow-natives-syntax --maglev
 
 function foo(x) {
   return x ?? 10
@@ -16,4 +16,4 @@ assertEquals(1, foo(1));
 assertEquals(10, foo(undefined));
 assertEquals(10, foo(null));
 assertEquals(1, foo(1));
-assertTrue(isMaglevved(foo));
+assertMaglevved(foo);

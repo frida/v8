@@ -26,7 +26,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 // Flags: --allow-natives-syntax --concurrent-recompilation
-// Flags: --no-always-turbofan
 
 function f1(a, i) {
   return a[i] + 0.5;
@@ -52,6 +51,6 @@ assertUnoptimized(f1);
 // Sync with background thread to conclude optimization, which bails out
 // due to map dependency.
 %FinalizeOptimization();
-assertUnoptimized(f1, "sync");
+assertUnoptimized(f1);
 // Clear type info for stress runs.
 %ClearFunctionFeedback(f1);

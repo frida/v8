@@ -13,7 +13,7 @@ namespace internal {
 
 class Disassembler : public AllStatic {
  public:
-  // Decode instructions in the the interval [begin, end) and print the
+  // Decode instructions in the interval [begin, end) and print the
   // code into os. Returns the number of bytes disassembled or 1 if no
   // instruction could be decoded.
   // Does not abort on unimplemented opcodes, but prints them as 'Unimplemented
@@ -21,9 +21,10 @@ class Disassembler : public AllStatic {
   // the code object is used for name resolution and may be null.
   // TODO(titzer): accept a {WasmCodeManager*} if {isolate} is null
   V8_EXPORT_PRIVATE static int Decode(Isolate* isolate, std::ostream& os,
-                                      byte* begin, byte* end,
+                                      uint8_t* begin, uint8_t* end,
                                       CodeReference code = {},
-                                      Address current_pc = kNullAddress);
+                                      Address current_pc = kNullAddress,
+                                      size_t range_limit = 0);
 };
 
 }  // namespace internal
