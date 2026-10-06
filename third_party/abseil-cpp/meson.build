@@ -165,7 +165,7 @@ foreach native : absl_natives
 
   time_sources = absl_time_sources
   if os == 'win'
-    time_sources += files('src' / 'absl' / 'time' / 'internal' / 'cctz' / 'src' / 'time_zone_name_win.cc')
+    time_sources += files('time_zone_name_win.cc')
   endif
 
   force_include = (compiler.get_argument_syntax() == 'msvc') ? '/FI' : '-include'
