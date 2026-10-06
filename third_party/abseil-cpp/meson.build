@@ -168,12 +168,22 @@ foreach native : absl_natives
     time_sources += files('src' / 'absl' / 'time' / 'internal' / 'cctz' / 'src' / 'time_zone_name_win.cc')
   endif
 
+  force_include = (compiler.get_argument_syntax() == 'msvc') ? '/FI' : '-include'
+  compat_args = []
+  debugging_args = []
+  if os == 'win'
+    debugging_args += force_include + meson.current_source_dir() / 'winxp-compat.h'
+  elif os == 'linux'
+    compat_args += force_include + meson.current_source_dir() / 'linux-compat.h'
+  endif
+
   libs = []
   foreach name : absl_libs
     sources = (name == 'time') ? time_sources : get_variable('absl_' + name + '_sources')
     libs += static_library('absl-' + name + suffix, sources,
       override_options: cpp_options,
       include_directories: absl_incdirs,
+      cpp_args: compat_args + ((name == 'debugging') ? debugging_args : []),
       dependencies: deps,
       native: native,
     )
