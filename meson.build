@@ -502,11 +502,6 @@ if host_os == 'win'
   if host_is_64bit
     config_args += '-DV8_WIN64_UNWINDING_INFO'
   endif
-elif host_os == 'linux'
-  config_args += [
-    # Needed for older versions of glibc
-    '-D__STDC_FORMAT_MACROS',
-  ]
 endif
 
 if host_arch == 'arm'
@@ -543,6 +538,10 @@ if host_arch == 'arm'
       '-DCAN_USE_VFP32DREGS',
       '-DCAN_USE_NEON',
     ]
+  endif
+
+  if arm_fpu != 'none-or-vfpv2' and not cpp.compiles('int main() { int r; asm volatile("vmrs %0, FPSCR" : "=r"(r)); return r; }', name: 'FPSCR access')
+    config_args += ['-mfloat-abi=softfp', '-mfpu=' + arm_fpu]
   endif
 
   config_args += '-DUSE_EABI_HARDFLOAT=' + (cpp.get_define('__ARM_PCS_VFP') != '' ? '1' : '0')
@@ -648,6 +647,31 @@ compiler_args_for_compiler = {
 
 host_compiler_args = cpp.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp.get_id(), [])
 build_compiler_args = cpp_native.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp_native.get_id(), [])
+
+linux_compat_args = {}
+foreach entry : [['host', cpp, host_os], ['build', cpp_native, build_os]]
+  compiler = entry[1]
+  args = []
+  if entry[2] == 'linux'
+    # Needed for older versions of glibc
+    args += '-D__STDC_FORMAT_MACROS'
+    if not compiler.has_header('sys/auxv.h')
+      args += '-I' + meson.current_source_dir() / 'compat' / 'auxv'
+    endif
+    if not compiler.has_header_symbol('linux/auxvec.h', 'AT_HWCAP2')
+      args += '-DAT_HWCAP2=26'
+    endif
+    if not compiler.has_header_symbol('math.h', 'math_errhandling')
+      args += ['-DMATH_ERRNO=1', '-DMATH_ERREXCEPT=2', '-Dmath_errhandling=3']
+    endif
+    if not compiler.has_header_symbol('sys/mman.h', 'MADV_DODUMP')
+      args += ['-DMADV_DONTDUMP=16', '-DMADV_DODUMP=17']
+    endif
+  endif
+  linux_compat_args += {entry[0]: args}
+endforeach
+host_compiler_args += linux_compat_args['host']
+build_compiler_args += linux_compat_args['build']
 
 add_project_arguments(
   config_args + host_compiler_args,
