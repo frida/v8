@@ -33,7 +33,7 @@ class InnerPointerToCodeCache final {
       MaglevSafepointEntry maglev_safepoint_entry;
     };
 
-    Entry() = default;
+    Entry() : safepoint_entry() {}
     ~Entry() {
       if (safepoint_kind == kSafepoint) {
         safepoint_entry.~SafepointEntry();

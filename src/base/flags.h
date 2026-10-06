@@ -41,8 +41,8 @@ class Flags final {
   constexpr explicit Flags(mask_type mask)
       : mask_(static_cast<mask_type>(mask)) {}
 
-  constexpr bool operator==(const Flags& flags) const = default;
-  constexpr bool operator!=(const Flags& flags) const = default;
+  bool operator==(const Flags& flags) const = default;
+  bool operator!=(const Flags& flags) const = default;
   constexpr bool operator==(flag_type flag) const {
     return mask_ == static_cast<mask_type>(flag);
   }
