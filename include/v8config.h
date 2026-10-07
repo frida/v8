@@ -522,6 +522,11 @@ path. Add it with -I<path> to the command line
 
 # define V8_HAS___FORCEINLINE 1
 
+# if !defined(__clang__)
+#  define V8_HAS_CPP_ATTRIBUTE_NO_UNIQUE_ADDRESS \
+     V8_HAS_CPP_ATTRIBUTE(msvc::no_unique_address)
+# endif
+
 #endif
 
 
