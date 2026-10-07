@@ -629,6 +629,7 @@ compiler_args_for_compiler = {
   ],
   'msvc': [
     '/Zc:__cplusplus',
+    '/Zc:preprocessor',
     '/bigobj',
     '/wd4146',
     '/wd4244',
