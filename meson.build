@@ -145,6 +145,7 @@ endif
 
 system_lib_names = {
   'win': [
+    'psapi',
     'winmm',
     'ws2_32',
   ],
