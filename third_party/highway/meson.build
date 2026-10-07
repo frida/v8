@@ -15,7 +15,12 @@ highway_defines_for_arch = {
   'arm64': ['-DHWY_BROKEN_TARGETS=HWY_ALL_SVE'],
 }
 
+bf16_check = 'int main() { asm(".arch armv8.2-a+bf16\\nbfdot v0.4s, v1.8h, v2.8h"); return 0; }'
+
 highway_args = highway_defines_for_arch.get(host_arch, [])
+if host_arch == 'arm64' and not cpp.compiles(bf16_check, name: 'BF16 assembly')
+  highway_args += '-DHWY_DISABLED_TARGETS=HWY_NEON_BF16'
+endif
 highway = static_library('highway', highway_sources,
   override_options: cpp_options,
   include_directories: highway_incdirs,
@@ -31,6 +36,9 @@ if meson.can_run_host_binaries()
   highway_runnable_dep = highway_dep
 else
   highway_native_args = highway_defines_for_arch.get(build_arch, [])
+  if build_arch == 'arm64' and not cpp_native.compiles(bf16_check, name: 'BF16 assembly (native)')
+    highway_native_args += '-DHWY_DISABLED_TARGETS=HWY_NEON_BF16'
+  endif
   highway_native = static_library('highway-native', highway_sources,
     override_options: cpp_options,
     include_directories: highway_incdirs,
