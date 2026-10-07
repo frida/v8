@@ -6,12 +6,14 @@
 #define V8_WASM_EFFECT_HANDLER_H_
 
 #include "src/base/bit-field.h"
+#include "src/base/compiler-specific.h"
 
 namespace v8 {
 namespace internal {
 namespace wasm {
 
-struct __attribute__((packed)) EffectHandlerTagIndex {
+V8_PACKED_BEGIN
+struct V8_PACKED EffectHandlerTagIndex {
   using IsSwitchField = base::BitField<bool, 0, 1>;
   using IndexField = IsSwitchField::Next<uint32_t, 31>;
   uint32_t tag_and_kind;
@@ -26,6 +28,7 @@ struct __attribute__((packed)) EffectHandlerTagIndex {
 
   uint32_t raw_value() const { return tag_and_kind; }
 };
+V8_PACKED_END
 }  // namespace wasm
 }  // namespace internal
 }  // namespace v8
