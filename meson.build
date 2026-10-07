@@ -667,6 +667,9 @@ foreach entry : [['host', cpp, host_os], ['build', cpp_native, build_os]]
     if not compiler.has_header_symbol('sys/mman.h', 'MADV_DODUMP')
       args += ['-DMADV_DONTDUMP=16', '-DMADV_DODUMP=17']
     endif
+    if not compiler.links('#include <ctype.h>\nint main() { int (*f)(int) = isalpha; asm volatile("" : "+r"(f)); return f(0); }', name: 'copy relocations against libc')
+      args += '-fPIC'
+    endif
   endif
   linux_compat_args += {entry[0]: args}
 endforeach
