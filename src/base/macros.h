@@ -239,6 +239,13 @@ V8_INLINE constexpr Dest bit_cast(Source const& source) noexcept {
 // DISABLE_CFI_PERF -- Disable Control Flow Integrity checks for Perf reasons.
 #define DISABLE_CFI_PERF V8_CLANG_NO_SANITIZE("cfi")
 
+// V8_NODEBUG -- Keep debug info out of trivial trampolines.
+#if V8_CC_MSVC && !defined(__clang__)
+#define V8_NODEBUG
+#else
+#define V8_NODEBUG __attribute__((nodebug))
+#endif
+
 // DISABLE_CFI_ICALL -- Disable Control Flow Integrity indirect call checks,
 // useful because calls into JITed code can not be CFI verified. Same for
 // UBSan's function pointer type checks.
