@@ -30,32 +30,12 @@ inline void ExternalPointerMember<kTagRange>::Init(Address host_address,
 }
 
 template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void ExternalPointerMember<kTagRange>::Init(Address host_address,
-                                                   IsolateForSandbox isolate,
-                                                   Address value) {
-  InitExternalPointerField<kTag>(host_address,
-                                 reinterpret_cast<Address>(storage_), isolate,
-                                 RedirectValue(isolate, value));
-}
-
-template <ExternalPointerTagRange kTagRange>
 template <ExternalPointerTagRange tag_range>
 inline Address ExternalPointerMember<kTagRange>::load(
     const IsolateForSandbox isolate) const {
   static_assert(kTagRange.Contains(tag_range));
   return ReadExternalPointerField<tag_range>(
       reinterpret_cast<Address>(storage_), isolate);
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline Address ExternalPointerMember<kTagRange>::load(
-    const IsolateForSandbox isolate) const {
-  Address value = load_raw(isolate);
-  if (!USE_SIMULATOR_BOOL) return value;
-  if (value == kNullAddress) return kNullAddress;
-  return ExternalReference::UnwrapRedirection(value);
 }
 
 template <ExternalPointerTagRange kTagRange>
@@ -68,13 +48,6 @@ inline void ExternalPointerMember<kTagRange>::store(IsolateForSandbox isolate,
 }
 
 template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void ExternalPointerMember<kTagRange>::store(IsolateForSandbox isolate,
-                                                    Address value) {
-  store_raw(isolate, RedirectValue(isolate, value));
-}
-
-template <ExternalPointerTagRange kTagRange>
 template <ExternalPointerTag tag>
 inline Address ExternalPointerMember<kTagRange>::exchange(
     IsolateForSandbox isolate, Address value) {
@@ -84,22 +57,6 @@ inline Address ExternalPointerMember<kTagRange>::exchange(
 }
 
 template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline Address ExternalPointerMember<kTagRange>::load_raw(
-    const IsolateForSandbox isolate) const {
-  return ReadExternalPointerField<kTag>(reinterpret_cast<Address>(storage_),
-                                        isolate);
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void ExternalPointerMember<kTagRange>::store_raw(
-    IsolateForSandbox isolate, Address value) {
-  WriteExternalPointerField<kTag>(reinterpret_cast<Address>(storage_), isolate,
-                                  value);
-}
-
-template <ExternalPointerTagRange kTagRange>
 inline ExternalPointer_t ExternalPointerMember<kTagRange>::load_encoded()
     const {
   return base::bit_cast<ExternalPointer_t>(storage_);
@@ -109,46 +66,6 @@ template <ExternalPointerTagRange kTagRange>
 inline void ExternalPointerMember<kTagRange>::store_encoded(
     ExternalPointer_t value) {
   memcpy(storage_, &value, sizeof(ExternalPointer_t));
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline ExternalPointer_t ExternalPointerMember<kTagRange>::load_encoded()
-    const {
-  return base::bit_cast<ExternalPointer_t>(storage_);
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void ExternalPointerMember<kTagRange>::store_encoded(
-    ExternalPointer_t value) {
-  memcpy(storage_, &value, sizeof(ExternalPointer_t));
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void
-ExternalPointerMember<kTagRange>::RemoveCallbackRedirectionForSerialization(
-    IsolateForSandbox isolate) {
-  CHECK(USE_SIMULATOR_BOOL);
-  store_raw(isolate, load(isolate));
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline void ExternalPointerMember<kTagRange>::
-    RestoreCallbackRedirectionAfterDeserialization(IsolateForSandbox isolate) {
-  CHECK(USE_SIMULATOR_BOOL);
-  store(isolate, load_raw(isolate));
-}
-
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-inline Address ExternalPointerMember<kTagRange>::RedirectValue(
-    IsolateForSandbox isolate, Address value) {
-  if (!USE_SIMULATOR_BOOL) return value;
-  if (value == kNullAddress) return kNullAddress;
-  return ExternalReference::Redirect(value, kRedirectionType);
 }
 
 template <ExternalPointerTag tag>

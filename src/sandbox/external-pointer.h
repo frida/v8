@@ -5,6 +5,8 @@
 #ifndef V8_SANDBOX_EXTERNAL_POINTER_H_
 #define V8_SANDBOX_EXTERNAL_POINTER_H_
 
+#include <cstring>
+
 #include "src/codegen/external-reference.h"
 #include "src/common/globals.h"
 #include "src/sandbox/isolate.h"
@@ -94,45 +96,6 @@ concept TagWithRedirection =
     (kTagRange.Size() == 1 &&
      TryGetCallbackRedirectionType(kTagRange.first).has_value());
 
-// Specialization of ExternalPointerMember for tags that need callback
-// redirection on the simulator.
-//
-// Currently only supports a single tag instead of a tag range, since different
-// tags need different redirection types.
-template <ExternalPointerTagRange kTagRange>
-  requires TagWithRedirection<kTagRange>
-class ExternalPointerMember<kTagRange> {
- public:
-  static constexpr ExternalPointerTag kTag = kTagRange.first;
-  static constexpr ExternalReference::Type kRedirectionType =
-      TryGetCallbackRedirectionType(kTag).value();
-
-  ExternalPointerMember() = default;
-
-  void Init(Address host_address, IsolateForSandbox isolate, Address value);
-
-  inline Address load(const IsolateForSandbox isolate) const;
-  inline void store(IsolateForSandbox isolate, Address value);
-
-  inline Address load_raw(const IsolateForSandbox isolate) const;
-  inline void store_raw(const IsolateForSandbox isolate, Address value);
-
-  inline ExternalPointer_t load_encoded() const;
-  inline void store_encoded(ExternalPointer_t value);
-
-  Address storage_address() { return reinterpret_cast<Address>(storage_); }
-
-  inline void RemoveCallbackRedirectionForSerialization(
-      IsolateForSandbox isolate);
-  inline void RestoreCallbackRedirectionAfterDeserialization(
-      IsolateForSandbox isolate);
-
- private:
-  static Address RedirectValue(IsolateForSandbox isolate, Address value);
-
-  alignas(alignof(Tagged_t)) char storage_[sizeof(ExternalPointer_t)];
-};
-
 // Writes the null handle or kNullAddress into the external pointer field.
 V8_INLINE void InitLazyExternalPointerField(Address field_address);
 
@@ -178,6 +141,75 @@ template <ExternalPointerTag tag>
 V8_INLINE Address ExchangeExternalPointerField(Address field_address,
                                                IsolateForSandbox isolate,
                                                Address value);
+
+// Specialization of ExternalPointerMember for tags that need callback
+// redirection on the simulator.
+//
+// Currently only supports a single tag instead of a tag range, since different
+// tags need different redirection types.
+template <ExternalPointerTagRange kTagRange>
+  requires TagWithRedirection<kTagRange>
+class ExternalPointerMember<kTagRange> {
+ public:
+  static constexpr ExternalPointerTag kTag = kTagRange.first;
+  static constexpr ExternalReference::Type kRedirectionType =
+      TryGetCallbackRedirectionType(kTag).value();
+
+  ExternalPointerMember() = default;
+
+  void Init(Address host_address, IsolateForSandbox isolate, Address value) {
+    InitExternalPointerField<kTag>(host_address,
+                                   reinterpret_cast<Address>(storage_), isolate,
+                                   RedirectValue(isolate, value));
+  }
+
+  Address load(const IsolateForSandbox isolate) const {
+    Address value = load_raw(isolate);
+    if (!USE_SIMULATOR_BOOL) return value;
+    if (value == kNullAddress) return kNullAddress;
+    return ExternalReference::UnwrapRedirection(value);
+  }
+  void store(IsolateForSandbox isolate, Address value) {
+    store_raw(isolate, RedirectValue(isolate, value));
+  }
+
+  Address load_raw(const IsolateForSandbox isolate) const {
+    return ReadExternalPointerField<kTag>(reinterpret_cast<Address>(storage_),
+                                          isolate);
+  }
+  void store_raw(const IsolateForSandbox isolate, Address value) {
+    WriteExternalPointerField<kTag>(reinterpret_cast<Address>(storage_),
+                                    isolate, value);
+  }
+
+  ExternalPointer_t load_encoded() const {
+    return base::bit_cast<ExternalPointer_t>(storage_);
+  }
+  void store_encoded(ExternalPointer_t value) {
+    memcpy(storage_, &value, sizeof(ExternalPointer_t));
+  }
+
+  Address storage_address() { return reinterpret_cast<Address>(storage_); }
+
+  void RemoveCallbackRedirectionForSerialization(IsolateForSandbox isolate) {
+    CHECK(USE_SIMULATOR_BOOL);
+    store_raw(isolate, load(isolate));
+  }
+  void RestoreCallbackRedirectionAfterDeserialization(
+      IsolateForSandbox isolate) {
+    CHECK(USE_SIMULATOR_BOOL);
+    store(isolate, load_raw(isolate));
+  }
+
+ private:
+  static Address RedirectValue(IsolateForSandbox isolate, Address value) {
+    if (!USE_SIMULATOR_BOOL) return value;
+    if (value == kNullAddress) return kNullAddress;
+    return ExternalReference::Redirect(value, kRedirectionType);
+  }
+
+  alignas(alignof(Tagged_t)) char storage_[sizeof(ExternalPointer_t)];
+};
 
 }  // namespace internal
 }  // namespace v8
