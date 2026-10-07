@@ -88,6 +88,20 @@ struct JSBuiltinDispatchHandleRoot {
 // and compiled code (including builtins, interpreter bytecode handlers and
 // optimized code). The compiled code accesses the isolate data fields
 // indirectly via the root register.
+#if V8_CC_MSVC && !defined(__clang__)
+template <size_t N, typename Tag>
+struct IsolateDataPadding {
+  uint8_t bytes[N];
+};
+template <typename Tag>
+struct IsolateDataPadding<0, Tag> {};
+#define ISOLATE_DATA_PADDING(Size, Name) \
+  struct Name##tag_ {};                  \
+  V8_NO_UNIQUE_ADDRESS IsolateDataPadding<Size, Name##tag_> Name
+#else
+#define ISOLATE_DATA_PADDING(Size, Name) V8_NO_UNIQUE_ADDRESS uint8_t Name[Size]
+#endif
+
 class IsolateData final {
  public:
   IsolateData(Isolate* isolate, IsolateGroup* group)
@@ -346,8 +360,7 @@ class IsolateData final {
   uint8_t has_lazy_closures_ = 0;
 
   // Ensure the following tables are kSystemPointerSize-byte aligned.
-  V8_NO_UNIQUE_ADDRESS uint8_t
-      tables_alignment_padding_[kTablesAlignmentPaddingSize];
+  ISOLATE_DATA_PADDING(kTablesAlignmentPaddingSize, tables_alignment_padding_);
 
   // A pointer to the static offsets vector (used to pass results from the
   // irregexp engine to the rest of V8), or nullptr if the static offsets
@@ -457,7 +470,7 @@ class IsolateData final {
   uint8_t is_date_cache_used_ = false;
 
   // Padding for aligning raw_arguments_.
-  V8_NO_UNIQUE_ADDRESS uint8_t raw_arguments_padding_[kRawArgumentsPaddingSize];
+  ISOLATE_DATA_PADDING(kRawArgumentsPaddingSize, raw_arguments_padding_);
 
   // Storage for raw values passed from CSA/Torque to runtime functions.
   struct RawArgument {
@@ -482,7 +495,7 @@ class IsolateData final {
   // following the IsolateData field predictable. This solves the issue with
   // C++ compilers for 32-bit platforms which are not consistent at aligning
   // int64_t fields.
-  V8_NO_UNIQUE_ADDRESS uint8_t trailing_padding_[kTrailingPaddingSize];
+  ISOLATE_DATA_PADDING(kTrailingPaddingSize, trailing_padding_);
 
   V8_INLINE static void AssertPredictableLayout();
 
@@ -506,7 +519,8 @@ void IsolateData::AssertPredictableLayout() {
   static_assert(std::is_standard_layout_v<LinearAllocationArea>);
 #define V(PureName, Size, Name)                                             \
   static_assert(std::is_standard_layout_v<decltype(IsolateData::Name##_)>); \
-  static_assert(offsetof(IsolateData, Name##_) == k##PureName##Offset);
+  static_assert(offsetof(IsolateData, Name##_) == k##PureName##Offset ||      \
+                std::is_empty_v<decltype(IsolateData::Name##_)>);
   ISOLATE_DATA_FIELDS(V)
 #undef V
   static_assert(sizeof(IsolateData) == IsolateData::kSizeOffset);
