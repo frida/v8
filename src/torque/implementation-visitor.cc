@@ -4256,6 +4256,7 @@ void CppClassGenerator::GenerateCppObjectLayoutDefinitionAsserts() {
     // position_info_end_), so there's no single member to take offsetof
     // of.
     if (f.name_and_type.type->IsStructType()) continue;
+    if (f.name_and_type.type == TypeOracle::GetVoidType()) continue;
     bool is_indexed = f.index.has_value() && !f.index_is_constant;
     if (is_indexed) {
       if (first_indexed_field_emitted) continue;
