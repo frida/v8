@@ -510,6 +510,20 @@ class IsolateData final {
 // cross-compiling to another platform. Otherwise there may be compatibility
 // issues because of different compilers used for snapshot generator and
 // actual V8 code.
+// Checked through templates so that a mismatch names the field and both
+// values in every compiler's error message.
+template <IsolateFieldId field, size_t actual, size_t expected, bool empty>
+struct IsolateDataOffsetCheck {
+  static_assert(actual == expected || empty);
+  static constexpr bool value = true;
+};
+
+template <size_t actual, size_t expected>
+struct IsolateDataSizeCheck {
+  static_assert(actual == expected);
+  static constexpr bool value = true;
+};
+
 void IsolateData::AssertPredictableLayout() {
   static_assert(std::is_standard_layout_v<StackGuard>);
   static_assert(std::is_standard_layout_v<RootsTable>);
@@ -519,11 +533,15 @@ void IsolateData::AssertPredictableLayout() {
   static_assert(std::is_standard_layout_v<LinearAllocationArea>);
 #define V(PureName, Size, Name)                                             \
   static_assert(std::is_standard_layout_v<decltype(IsolateData::Name##_)>); \
-  static_assert(offsetof(IsolateData, Name##_) == k##PureName##Offset ||      \
-                std::is_empty_v<decltype(IsolateData::Name##_)>);
+  static_assert(                                                            \
+      IsolateDataOffsetCheck<                                               \
+          IsolateFieldId::k##PureName, offsetof(IsolateData, Name##_),      \
+          k##PureName##Offset,                                              \
+          std::is_empty_v<decltype(IsolateData::Name##_)>>::value);
   ISOLATE_DATA_FIELDS(V)
 #undef V
-  static_assert(sizeof(IsolateData) == IsolateData::kSizeOffset);
+  static_assert(IsolateDataSizeCheck<sizeof(IsolateData),
+                                     IsolateData::kSizeOffset>::value);
 }
 
 }  // namespace internal
