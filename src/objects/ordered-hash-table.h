@@ -1006,8 +1006,6 @@ V8_OBJECT class SmallOrderedNameDictionary
   int32_t hash_;
 #if TAGGED_SIZE_8_BYTES
   int32_t padding_0_;
-#else
-  char padding_0_[0];
 #endif
   uint8_t number_of_elements_;
   uint8_t number_of_deleted_elements_;
