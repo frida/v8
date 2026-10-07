@@ -48,14 +48,20 @@
   _Pragma("pack(push)") _Pragma("pack(1)") _Pragma("GCC diagnostic push") \
       _Pragma("GCC diagnostic error \"-Wpadded\"")
 #define V8_OBJECT_POP _Pragma("pack(pop)") _Pragma("GCC diagnostic pop")
+#define V8_OBJECT_INNER_PUSH V8_OBJECT_POP
+#define V8_OBJECT_INNER_POP V8_OBJECT_PUSH
 #elif V8_CC_MSVC
-#define V8_OBJECT_PUSH                                           \
-  __pragma(pack(push)) __pragma(pack(4)) __pragma(warning(push)) \
+#define V8_OBJECT_PUSH                                                     \
+  __pragma(pack(push, v8_object)) __pragma(pack(4)) __pragma(warning(push)) \
       __pragma(warning(default : 4820))
-#define V8_ABSTRACT_OBJECT_PUSH                                  \
-  __pragma(pack(push)) __pragma(pack(1)) __pragma(warning(push)) \
+#define V8_ABSTRACT_OBJECT_PUSH                                            \
+  __pragma(pack(push, v8_object)) __pragma(pack(1)) __pragma(warning(push)) \
       __pragma(warning(default : 4820))
-#define V8_OBJECT_POP __pragma(pack(pop)) __pragma(warning(pop))
+#define V8_OBJECT_POP __pragma(pack(pop, v8_object)) __pragma(warning(pop))
+#define V8_OBJECT_INNER_PUSH                                              \
+  __pragma(pack(push, v8_inner)) __pragma(pack()) __pragma(warning(push)) \
+      __pragma(warning(disable : 4820))
+#define V8_OBJECT_INNER_POP __pragma(warning(pop)) __pragma(pack(pop, v8_inner))
 #else
 #error Unsupported compiler
 #endif
@@ -70,10 +76,10 @@
   ;                   \
   V8_OBJECT_POP static_assert(true)
 
-#define V8_OBJECT_INNER_CLASS V8_OBJECT_POP
+#define V8_OBJECT_INNER_CLASS V8_OBJECT_INNER_PUSH
 #define V8_OBJECT_INNER_CLASS_END \
   ;                               \
-  V8_OBJECT_PUSH static_assert(true)
+  V8_OBJECT_INNER_POP static_assert(true)
 
 // Instance-type markers for V8_OBJECT classes. They exist solely for the
 // libclang-driven instance-type generator, which harvests them to drive
