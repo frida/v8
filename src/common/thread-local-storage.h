@@ -40,6 +40,12 @@
 #endif
 #endif
 
+#if V8_CC_MSVC && !defined(__clang__)
+#define V8_TLS_MODEL_ATTRIBUTE
+#else
+#define V8_TLS_MODEL_ATTRIBUTE __attribute__((tls_model(V8_TLS_MODEL)))
+#endif
+
 #if V8_TLS_LIBRARY_MODE
 
 #define V8_TLS_DECLARE_GETTER(Name, Type, Member) \
