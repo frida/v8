@@ -21,6 +21,9 @@ highway_args = highway_defines_for_arch.get(host_arch, [])
 if host_arch == 'arm64' and not cpp.compiles(bf16_check, name: 'BF16 assembly')
   highway_args += '-DHWY_DISABLED_TARGETS=HWY_NEON_BF16'
 endif
+if host_arch == 'arm' and host_machine.endian() == 'big'
+  highway_args += '-DHWY_BROKEN_EMU128=0'
+endif
 highway = static_library('highway', highway_sources,
   override_options: cpp_options,
   include_directories: highway_incdirs,
