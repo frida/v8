@@ -8,6 +8,10 @@
 
 #include "include/v8config.h"
 
+#if defined(V8_HOST_ARCH_ARM64) && defined(V8_CC_MSVC)
+#include <intrin.h>
+#endif
+
 namespace v8::base {
 
 #if defined(V8_HOST_ARCH_X64) || defined(V8_HOST_ARCH_IA32)
@@ -62,7 +66,9 @@ namespace {
 constexpr int kFlushDenormToZeroBit = (1 << 24);
 int GetStatusWord() {
   int result;
-#if defined(V8_HOST_ARCH_ARM64)
+#if defined(V8_HOST_ARCH_ARM64) && defined(V8_CC_MSVC)
+  result = static_cast<int>(_ReadStatusReg(ARM64_FPCR));
+#elif defined(V8_HOST_ARCH_ARM64)
   asm volatile("mrs %x[result], FPCR" : [result] "=r"(result));
 #else
   asm volatile("vmrs %[result], FPSCR" : [result] "=r"(result));
@@ -71,7 +77,9 @@ int GetStatusWord() {
 }
 
 void SetStatusWord(int a) {
-#if defined(V8_HOST_ARCH_ARM64)
+#if defined(V8_HOST_ARCH_ARM64) && defined(V8_CC_MSVC)
+  _WriteStatusReg(ARM64_FPCR, a);
+#elif defined(V8_HOST_ARCH_ARM64)
   asm volatile("msr FPCR, %x[src]" : : [src] "r"(a));
 #else
   asm volatile("vmsr FPSCR, %[src]" : : [src] "r"(a));
