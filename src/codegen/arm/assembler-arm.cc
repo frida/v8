@@ -53,10 +53,10 @@
 namespace v8 {
 namespace internal {
 
-static const CpuFeatureSet kArmv6{};
-static const CpuFeatureSet kArmv7 = kArmv6 | ARMv7;
-static const CpuFeatureSet kArmv7WithSudiv = kArmv7 | ARMv7_SUDIV;
-static const CpuFeatureSet kArmv8 = kArmv7WithSudiv | ARMv8;
+static constexpr CpuFeatureSet kArmv6{};
+static constexpr CpuFeatureSet kArmv7 = kArmv6 | ARMv7;
+static constexpr CpuFeatureSet kArmv7WithSudiv = kArmv7 | ARMv7_SUDIV;
+static constexpr CpuFeatureSet kArmv8 = kArmv7WithSudiv | ARMv8;
 
 static CpuFeatureSet CpuFeaturesFromCommandLine() {
   CpuFeatureSet result;
