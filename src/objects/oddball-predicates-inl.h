@@ -11,6 +11,7 @@
 #include "src/common/globals.h"
 #include "src/common/ptr-compr.h"
 #include "src/objects/heap-object.h"
+#include "src/objects/hole.h"
 #include "src/objects/tagged-impl-inl.h"
 #include "src/roots/roots-inl.h"
 
