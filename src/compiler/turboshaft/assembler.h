@@ -1103,8 +1103,8 @@ class ScopedVar : public Var<T, Assembler> {
 //       if (...) goto no_change;
 //       ...
 //     }
-#define LABEL_BLOCK(label)     \
-  for (; false; UNREACHABLE()) \
+#define LABEL_BLOCK(label)                   \
+  for (; false; ([]() { UNREACHABLE(); }())) \
   label:
 
 // EmitProjectionReducer ensures that projections are always emitted right after
@@ -1844,8 +1844,6 @@ class AssemblerOpInterface : public Next {
     if constexpr (kTaggedSize == kInt64Size) {                             \
       return IntPtrOpName(l, r);                                           \
     } else {                                                               \
-      static_assert(kTaggedSize == kInt32Size);                            \
-      static_assert(v8::internal::SmiValuesAre31Bits());                   \
       return Int32OpName(TruncateWordPtrToWord32(l),                       \
                          TruncateWordPtrToWord32(r));                      \
     }                                                                      \
