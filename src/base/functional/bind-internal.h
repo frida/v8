@@ -106,11 +106,14 @@ template <typename Callable,
           typename Signature = decltype(&Callable::operator())>
 struct ExtractCallableRunTypeImpl;
 
-#define BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS(quals)     \
-  template <typename Callable, typename R, typename... Args>          \
-  struct ExtractCallableRunTypeImpl<Callable,                         \
-                                    R (Callable::*)(Args...) quals> { \
-    using Type = R(Args...);                                          \
+// The call operator may be inherited, as std::function's is in MSVC's STL,
+// so the class in the pointer to member is matched separately from Callable.
+#define BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS(...)          \
+  template <typename Callable, typename Class, typename R,               \
+            typename... Args>                                            \
+  struct ExtractCallableRunTypeImpl<Callable,                            \
+                                    R (Class::*)(Args...) __VA_ARGS__> { \
+    using Type = R(Args...);                                             \
   }
 
 BIND_INTERNAL_EXTRACT_CALLABLE_RUN_TYPE_WITH_QUALS();
