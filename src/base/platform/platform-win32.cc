@@ -753,31 +753,38 @@ static LazyMutex rng_mutex = LAZY_MUTEX_INITIALIZER;
 namespace {
 
 bool UserShadowStackEnabled() {
+  // Declared by hand so that builds targeting older Windows compile too.
+  using IsUserCetAvailableInEnvironmentFunction = BOOL(WINAPI*)(DWORD);
+  using GetProcessMitigationPolicyFunction = BOOL(WINAPI*)(HANDLE, int,
+                                                           PVOID, SIZE_T);
+  constexpr DWORD kUserCetEnvironmentWin32Process = 0;
+  constexpr int kProcessUserShadowStackPolicy = 15;
+  constexpr DWORD kEnableUserShadowStack = 1;
+
   auto is_user_cet_available_in_environment =
-      reinterpret_cast<decltype(&IsUserCetAvailableInEnvironment)>(
+      reinterpret_cast<IsUserCetAvailableInEnvironmentFunction>(
           ::GetProcAddress(::GetModuleHandleW(L"kernel32.dll"),
                            "IsUserCetAvailableInEnvironment"));
   auto get_process_mitigation_policy =
-      reinterpret_cast<decltype(&GetProcessMitigationPolicy)>(::GetProcAddress(
+      reinterpret_cast<GetProcessMitigationPolicyFunction>(::GetProcAddress(
           ::GetModuleHandle(L"Kernel32.dll"), "GetProcessMitigationPolicy"));
 
   if (!is_user_cet_available_in_environment || !get_process_mitigation_policy) {
     return false;
   }
 
-  if (!is_user_cet_available_in_environment(
-          USER_CET_ENVIRONMENT_WIN32_PROCESS)) {
+  if (!is_user_cet_available_in_environment(kUserCetEnvironmentWin32Process)) {
     return false;
   }
 
-  PROCESS_MITIGATION_USER_SHADOW_STACK_POLICY uss_policy;
+  DWORD uss_policy = 0;
   if (!get_process_mitigation_policy(GetCurrentProcess(),
-                                     ProcessUserShadowStackPolicy, &uss_policy,
+                                     kProcessUserShadowStackPolicy, &uss_policy,
                                      sizeof(uss_policy))) {
     return false;
   }
 
-  return uss_policy.EnableUserShadowStack;
+  return (uss_policy & kEnableUserShadowStack) != 0;
 }
 
 }  // namespace
@@ -1223,16 +1230,26 @@ void PreciseSleepTimer::Close() {
 
 void PreciseSleepTimer::TryInit() {
   Close();
+  // Declared by hand so that builds targeting older Windows compile too.
+  using CreateWaitableTimerExWFunction = HANDLE(WINAPI*)(LPSECURITY_ATTRIBUTES,
+                                                         LPCWSTR, DWORD, DWORD);
+  auto create_waitable_timer_ex =
+      reinterpret_cast<CreateWaitableTimerExWFunction>(::GetProcAddress(
+          ::GetModuleHandleW(L"kernel32.dll"), "CreateWaitableTimerExW"));
+  if (create_waitable_timer_ex == NULL) {
+    return;
+  }
   // This flag allows precise sleep times, but is only available since Windows
   // 10 version 1803.
-  DWORD flags = CREATE_WAITABLE_TIMER_HIGH_RESOLUTION;
+  constexpr DWORD kCreateWaitableTimerHighResolution = 0x2;
+  DWORD flags = kCreateWaitableTimerHighResolution;
   // The TIMER_MODIFY_STATE permission allows setting the timer, and SYNCHRONIZE
   // allows waiting for it.
   DWORD desired_access = TIMER_MODIFY_STATE | SYNCHRONIZE;
   timer_ =
-      CreateWaitableTimerExW(NULL,  // Cannot be inherited by child processes
-                             NULL,  // Cannot be looked up by name
-                             flags, desired_access);
+      create_waitable_timer_ex(NULL,  // Cannot be inherited by child processes
+                               NULL,  // Cannot be looked up by name
+                               flags, desired_access);
 }
 
 void PreciseSleepTimer::Sleep(TimeDelta interval) const {
