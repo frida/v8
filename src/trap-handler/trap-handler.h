@@ -33,7 +33,7 @@ namespace v8::internal::trap_handler {
 #elif defined(USING_V8_SHARED_PRIVATE)
 #define TH_EXPORT_PRIVATE __declspec(dllimport)
 #else
-#define TH_EXPORT_PRIVATE __attribute__((visibility("default")))
+#define TH_EXPORT_PRIVATE
 #endif  // BUILDING_V8_SHARED_PRIVATE
 
 #else  // V8_OS_WIN
