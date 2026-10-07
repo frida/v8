@@ -18,6 +18,17 @@
 #define V8_ALLOW_UNUSED
 #endif
 
+#if V8_CC_MSVC && !defined(__clang__)
+#define V8_PACKED_BEGIN __pragma(pack(push, 1))
+#define V8_PACKED
+#define V8_PACKED_END __pragma(pack(pop))
+#else
+#define V8_PACKED_BEGIN
+#define V8_PACKED __attribute__((packed))
+#define V8_PACKED_END
+#endif
+
+
 // Tell the compiler a function is using a printf-style format string.
 // |format_param| is the one-based index of the format string parameter;
 // |dots_param| is the one-based index of the "..." parameter.
