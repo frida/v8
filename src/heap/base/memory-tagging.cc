@@ -8,7 +8,8 @@
 #include "src/base/logging.h"
 #include "v8config.h"
 
-#if defined(V8_OS_LINUX) && defined(V8_HOST_ARCH_ARM64)
+#if defined(V8_OS_LINUX) && defined(V8_HOST_ARCH_ARM64) && \
+    !defined(V8_ASSEMBLER_LACKS_MTE)
 #define V8_HAS_MTE_SUPPORT
 #endif
 
