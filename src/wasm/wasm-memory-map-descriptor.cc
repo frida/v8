@@ -21,6 +21,10 @@
 #include "src/execution/isolate.h"
 #include "src/handles/global-handles-inl.h"
 #include "src/wasm/wasm-memory-map-descriptor.h"
+
+#if V8_OS_LINUX
+#include <dlfcn.h>
+#endif
 #include "src/wasm/wasm-objects-inl.h"
 
 namespace v8::internal::wasm {
@@ -75,7 +79,12 @@ v8::MaybeLocal<v8::Object> WasmMemoryMapDescriptor::NewFromAnonymous(
     v8::Isolate* isolate, size_t length, v8::Local<v8::Object> wrapper) {
   CHECK(v8_flags.wasm_memory_control);
 #if V8_OS_LINUX && !V8_OS_ANDROID
-  int fd = memfd_create("wasm_memory_map_descriptor", MFD_CLOEXEC);
+  using memfd_create_t = int (*)(const char*, unsigned int);
+  memfd_create_t memfd_create =
+      reinterpret_cast<memfd_create_t>(dlsym(RTLD_DEFAULT, "memfd_create"));
+  if (memfd_create == nullptr) return {};
+  constexpr unsigned int kMfdCloexec = 1;
+  int fd = memfd_create("wasm_memory_map_descriptor", kMfdCloexec);
   if (fd == -1) return {};
   if (ftruncate(fd, length) == -1) {
     close(fd);
