@@ -237,7 +237,7 @@ if host_os != 'android'
   config_args += '-DCPPGC_SUPPORTS_OBJECT_NAMES'
 endif
 
-if host_os in ['linux', 'macos'] and get_option('default_library') == 'static'
+if host_os in ['linux', 'macos'] and get_option('default_library') == 'static' and cpp.get_id() == 'clang'
   config_args += '-DCPPGC_ENABLE_OBJECT_SECTION_GCINFO'
 endif
 
