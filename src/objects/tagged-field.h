@@ -192,22 +192,41 @@ static_assert(sizeof(JSDispatchHandleMember) == sizeof(uint32_t));
 // which can lose aliasing information.
 // Place V8_TQ_* annotations before the member. After the [0] declarator, an
 // attribute would apply to the type instead.
+#if V8_CC_MSVC && !defined(__clang__)
+#define FLEXIBLE_ARRAY_MEMBER_DATA(Type, name, ...)                       \
+  Type* name() {                                                          \
+    return reinterpret_cast<Type*>(reinterpret_cast<char*>(this) +        \
+                                   sizeof(*this));                        \
+  }                                                                       \
+  const Type* name() const {                                              \
+    return reinterpret_cast<const Type*>(                                 \
+        reinterpret_cast<const char*>(this) + sizeof(*this));             \
+  }
+#define FLEXIBLE_ARRAY_MEMBER_CHECK(Class) static_assert(true)
+#define FLEXIBLE_ARRAY_MEMBER_OFFSET(Class) sizeof(Class)
+#else
+#define FLEXIBLE_ARRAY_MEMBER_DATA(Type, name, ...)                       \
+  using FlexibleDataReturnType = Type[0];                                 \
+  FlexibleDataReturnType& name() { return flexible_array_member_data_; }  \
+  const FlexibleDataReturnType& name() const {                            \
+    return flexible_array_member_data_;                                   \
+  }                                                                       \
+  __VA_ARGS__ Type flexible_array_member_data_[0];
+#define FLEXIBLE_ARRAY_MEMBER_CHECK(Class)                              \
+  static_assert(base::tmp::lazy_true<decltype(                          \
+                    std::declval<Class>().flexible_array_member_data_)>::value)
+#define FLEXIBLE_ARRAY_MEMBER_OFFSET(Class) \
+  offsetof(Class, flexible_array_member_data_)
+#endif
 #define FLEXIBLE_ARRAY_MEMBER(Type, name, ...)                             \
-  using FlexibleDataReturnType = Type[0];                                  \
-  FlexibleDataReturnType& name() { return flexible_array_member_data_; }   \
-  const FlexibleDataReturnType& name() const {                             \
-    return flexible_array_member_data_;                                    \
-  }                                                                        \
-  __VA_ARGS__ Type flexible_array_member_data_[0];                         \
+  FLEXIBLE_ARRAY_MEMBER_DATA(Type, name, __VA_ARGS__)                      \
                                                                            \
  public:                                                                   \
   template <typename Class>                                                \
   static constexpr int OffsetOfDataStart() {                               \
     /* Produce a compiler error if {Class} is not this class */            \
-    static_assert(base::tmp::lazy_true<                                    \
-                  decltype(std::declval<Class>()                           \
-                               .flexible_array_member_data_)>::value);     \
-    return static_cast<int>(offsetof(Class, flexible_array_member_data_)); \
+    FLEXIBLE_ARRAY_MEMBER_CHECK(Class);                                    \
+    return static_cast<int>(FLEXIBLE_ARRAY_MEMBER_OFFSET(Class));          \
   }                                                                        \
                                                                            \
  private:                                                                  \
