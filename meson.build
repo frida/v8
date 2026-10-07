@@ -649,11 +649,16 @@ compiler_args_for_compiler = {
 host_compiler_args = cpp.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp.get_id(), [])
 build_compiler_args = cpp_native.get_supported_arguments(compiler_args_generic) + compiler_args_for_compiler.get(cpp_native.get_id(), [])
 
+mte_check = 'int main() { asm(".arch_extension memtag\\nmsr tco, #0"); return 0; }'
+
 linux_compat_args = {}
-foreach entry : [['host', cpp, host_os], ['build', cpp_native, build_os]]
+foreach entry : [['host', cpp, host_os, host_arch], ['build', cpp_native, build_os, build_arch]]
   compiler = entry[1]
   args = []
   if entry[2] == 'linux'
+    if entry[3] == 'arm64' and not compiler.compiles(mte_check, name: 'MTE assembly')
+      args += '-DV8_ASSEMBLER_LACKS_MTE'
+    endif
     # Needed for older versions of glibc
     args += '-D__STDC_FORMAT_MACROS'
     if not compiler.has_header('sys/auxv.h')
