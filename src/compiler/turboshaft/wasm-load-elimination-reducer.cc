@@ -729,7 +729,7 @@ bool WasmLoadEliminationAnalyzer::BeginBlock(const Block* block) {
     // either the entire block N times, or visiting each Phi consumer of a
     // replaced Phi, we could replace all of them.
     for (auto [phi_idx, backup] : phi_replacements_backups_) {
-      const PhiOp& phi = graph_.Get(phi_idx).Cast<PhiOp>();
+      const PhiOp& phi = graph_.Get(phi_idx).template Cast<PhiOp>();
       OpIndex new_replacement = MaybeReplacePhi(phi);
       replacements_[phi_idx] = new_replacement;
       if (new_replacement != backup) {
