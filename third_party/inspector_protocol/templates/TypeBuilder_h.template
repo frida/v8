@@ -128,7 +128,12 @@ public:
       {% if property.optional %}
         {{type.id}}Builder<STATE>& {{"set" | to_method_case}}{{property_name}}({{property_type.pass_type}} value);  // Defined below
       {% else %}
-        {{type.id}}Builder<STATE | {{property_name}}Set>& {{"set" | to_method_case}}{{property_name}}({{property_type.pass_type}} value);  // Defined below
+        {{type.id}}Builder<STATE | {{property_name}}Set>& {{"set" | to_method_case}}{{property_name}}({{property_type.pass_type}} value)
+        {
+            static_assert(!(STATE & {{property_name}}Set), "property {{property.name}} should not be set yet");
+            m_result->{{"set" | to_method_case}}{{property_name}}({{property_type.to_rvalue % "value"}});
+            return castState<{{property_name}}Set>();
+        }
       {% endif %}
     {% endfor %}
 
@@ -195,14 +200,6 @@ template<int STATE>
 inline {{type.id}}::{{type.id}}Builder<STATE>& {{type.id}}::{{type.id}}Builder<STATE>::{{"set" | to_method_case}}{{property_name}}({{property_type.pass_type}} value) {
   m_result->{{"set" | to_method_case}}{{property_name}}({{property_type.to_rvalue % "value"}});
   return *this;
-}
-      {% else %}
-template<int STATE>
-inline {{type.id}}::{{type.id}}Builder<STATE | {{type.id}}::{{type.id}}Builder<STATE>::{{property_name}}Set>&
-{{type.id}}::{{type.id}}Builder<STATE>::{{"set" | to_method_case}}{{property_name}}({{property_type.pass_type}} value) {
-  static_assert(!(STATE & {{property_name}}Set), "property {{property.name}} should not be set yet");
-  m_result->{{"set" | to_method_case}}{{property_name}}({{property_type.to_rvalue % "value"}});
-  return castState<{{property_name}}Set>();
 }
       {% endif %}
     {% endfor %}
