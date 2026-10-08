@@ -103,7 +103,8 @@ class ReschedulingReducer : public Next {
 };
 
 class RandomRescheduler : public Assembler<ReschedulingReducer, GraphVisitor> {
-  using Base = Assembler<ReschedulingReducer, GraphVisitor>;
+  using Base =
+      Assembler<turboshaft::ReschedulingReducer, turboshaft::GraphVisitor>;
 
  public:
   RandomRescheduler(PipelineData* data, Graph& input_graph, Graph& output_graph,

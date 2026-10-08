@@ -296,8 +296,9 @@ class TurboshaftBytecodeHandlerAssembler
           compiler::turboshaft::VariableReducer> {
  public:
   using Base = compiler::turboshaft::Assembler<
-      Reducer, BytecodeHandlerReducer, BuiltinsReducer,
-      FeedbackCollectorReducer, compiler::turboshaft::MachineLoweringReducer,
+      Reducer, interpreter::BytecodeHandlerReducer,
+      v8::internal::BuiltinsReducer, v8::internal::FeedbackCollectorReducer,
+      compiler::turboshaft::MachineLoweringReducer,
       compiler::turboshaft::VariableReducer>;
   TurboshaftBytecodeHandlerAssembler(compiler::turboshaft::PipelineData* data,
                                      compiler::turboshaft::Graph& graph,
