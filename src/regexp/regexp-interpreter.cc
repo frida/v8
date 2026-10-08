@@ -401,12 +401,13 @@ bool IndexIsInBounds(int index, int length) {
 #define INIT(Name, ...)                                                     \
   constexpr Bytecode current_bc = Bytecode::k##Name;                        \
   using Operands = BytecodeOperands<current_bc>;                            \
-  __VA_OPT__(auto argument_tuple = std::apply(                              \
-                 [&](auto... ops) {                                         \
+  __VA_OPT__(auto argument_tuple =                                          \
+                 [&]<size_t... I>(std::index_sequence<I...>) {              \
                    return std::make_tuple(                                  \
-                       Operands::template Get<ops.value>(pc, no_gc)...);    \
-                 },                                                         \
-                 Operands::GetOperandsTuple());                             \
+                       Operands::template Get<                              \
+                           static_cast<typename Operands::Operand>(I)>(     \
+                           pc, no_gc)...);                                  \
+                 }(std::make_index_sequence<Operands::kCount>{});           \
              auto [__VA_ARGS__] = argument_tuple;)                          \
   static_assert((IS_VA_EMPTY(__VA_ARGS__)) == (Operands::kCount == 0),      \
                 "Number of arguments to VISIT doesn't match the bytecodes " \

@@ -217,8 +217,11 @@ class BytecodeOperandsBase {
   template <typename Func>
   static constexpr void ForEachOperand(Func&& f) {
     constexpr auto filtered_ops = GetOperandsTuple();
-    std::apply([&](auto... ops) { (..., f.template operator()<ops.value>()); },
-               filtered_ops);
+    [&]<size_t... I>(std::index_sequence<I...>) {
+      (...,
+       f.template operator()<
+           std::tuple_element_t<I, decltype(filtered_ops)>::value>());
+    }(std::make_index_sequence<std::tuple_size_v<decltype(filtered_ops)>>{});
   }
 
   // Similar to ForEachOperand, but additionally provides the current index as
