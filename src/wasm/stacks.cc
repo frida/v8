@@ -168,8 +168,7 @@ void StackMemory::IterateWasmFXRoots(v8::internal::RootVisitor* v) {
     if (static_cast<int>(index) < num_bound_args_ &&
         param_types_[index].is_ref()) {
       v->VisitRootPointer(Root::kStackRoots, "wasm cont ref bound argument",
-                          FullObjectSlot(reinterpret_cast<Address>(
-                              this->arg_buffer_ + offset)));
+                          FullObjectSlot(this->arg_buffer_ + offset));
     }
   });
 }
