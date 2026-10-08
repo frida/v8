@@ -1235,7 +1235,7 @@ class TurboshaftBuiltinsAssembler
   DEFINE_TURBOSHAFT_ALIASES()
 
   using Base = compiler::turboshaft::Assembler<
-      Reducer, BuiltinsReducer, FeedbackReducer,
+      Reducer, v8::internal::BuiltinsReducer, FeedbackReducer,
       compiler::turboshaft::MachineLoweringReducer,
       compiler::turboshaft::VariableReducer>;
   TurboshaftBuiltinsAssembler(compiler::turboshaft::PipelineData* data,
