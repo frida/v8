@@ -67,12 +67,11 @@ auto CodeGenerator::GetArgumentValue() {
 
 template <typename Operands>
 auto CodeGenerator::GetArgumentValuesAsTuple() {
-  constexpr auto filtered_ops = Operands::GetOperandsTuple();
-  return std::apply(
-      [&](auto... ops) {
-        return std::make_tuple(GetArgumentValue<Operands, ops.value>()...);
-      },
-      filtered_ops);
+  return [&]<size_t... I>(std::index_sequence<I...>) {
+    return std::make_tuple(
+        GetArgumentValue<Operands,
+                         static_cast<typename Operands::Operand>(I)>()...);
+  }(std::make_index_sequence<Operands::kCount>{});
 }
 
 #ifdef V8_CODE_COMMENTS
