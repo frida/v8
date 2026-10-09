@@ -138,12 +138,14 @@ void EmbeddedFileWriter::WriteBuiltin(PlatformEmbeddedFileWriterBase* w,
     if (i == next_cmt_offset) {
       const char* comment = cmt_it->GetComment();
       if (strncmp(comment, "CFI:", 4) == 0) {
-        std::string dir(comment + 4);
-        size_t pos = dir.find(" - ");
-        if (pos != std::string::npos) {
-          dir = dir.substr(0, pos);
+        if (w->SupportsCfi()) {
+          std::string dir(comment + 4);
+          size_t pos = dir.find(" - ");
+          if (pos != std::string::npos) {
+            dir = dir.substr(0, pos);
+          }
+          fprintf(w->fp(), "%s\n", dir.c_str());
         }
-        fprintf(w->fp(), "%s\n", dir.c_str());
       } else {
         w->Comment(comment);
       }

@@ -45,6 +45,8 @@ class PlatformEmbeddedFileWriterWin : public PlatformEmbeddedFileWriterBase {
 
   int IndentedDataDirective(DataDirective directive) override;
 
+  bool SupportsCfi() const override;
+
   DataDirective ByteChunkDataDirective() const override;
   int WriteByteChunk(const uint8_t* data) override;
 

@@ -682,6 +682,14 @@ int PlatformEmbeddedFileWriterWin::IndentedDataDirective(
 
 #endif
 
+bool PlatformEmbeddedFileWriterWin::SupportsCfi() const {
+#if defined(V8_COMPILER_IS_MSVC)
+  return false;
+#else
+  return true;
+#endif
+}
+
 DataDirective PlatformEmbeddedFileWriterWin::ByteChunkDataDirective() const {
 #if defined(V8_COMPILER_IS_MSVC)
   // Windows MASM doesn't have an .octa directive, use QWORDs instead.

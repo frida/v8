@@ -81,6 +81,8 @@ class PlatformEmbeddedFileWriterBase {
   virtual void Comment(const char* string) = 0;
   virtual void Newline() { fprintf(fp_, "\n"); }
 
+  virtual bool SupportsCfi() const { return true; }
+
   virtual void FilePrologue() = 0;
   virtual void DeclareExternalFilename(int fileid, const char* filename) = 0;
   virtual void FileEpilogue() = 0;
