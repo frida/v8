@@ -159,11 +159,12 @@ foreach native : absl_natives
       and not compiler.links('int main () { __sync_synchronize (); }', name: 'atomic builtins')
     deps += compiler.find_library('atomic')
   endif
-  if os in apple_oses
-    deps += dependency('appleframeworks', modules: 'CoreFoundation', native: native)
-  endif
 
+  time_incdirs = absl_incdirs
   time_sources = absl_time_sources
+  if os in apple_oses
+    time_incdirs = [include_directories('apple-compat'), absl_incdirs]
+  endif
   if os == 'win'
     time_sources += files('time_zone_name_win.cc')
   endif
@@ -182,7 +183,7 @@ foreach native : absl_natives
     sources = (name == 'time') ? time_sources : get_variable('absl_' + name + '_sources')
     libs += static_library('absl-' + name + suffix, sources,
       override_options: cpp_options,
-      include_directories: absl_incdirs,
+      include_directories: (name == 'time') ? time_incdirs : absl_incdirs,
       cpp_args: compat_args + ((name == 'debugging') ? debugging_args : []),
       dependencies: deps,
       native: native,
