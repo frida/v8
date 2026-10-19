@@ -16,6 +16,8 @@
 // Calling convention source:
 // https://en.wikipedia.org/wiki/Calling_convention#ARM_(A64)
 
+#include "src/base/build_config.h"
+
 asm(
 #if defined(__APPLE__)
     ".globl _PushAllRegistersAndIterateStack            \n"
@@ -69,7 +71,13 @@ asm(
     "  mov x7, x2                                       \n"
     // Pass 3rd parameter as sp (stack pointer).
     "  mov x2, sp                                       \n"
+#ifdef V8_HOST_PTRAUTH
+    // The callback is a C function pointer, signed with the IA key and a
+    // zero discriminator.
+    "  blraaz x7                                        \n"
+#else
     "  blr x7                                           \n"
+#endif
     // Drop all callee-saved registers.
     "  add sp, sp, #80                                  \n"
     // Load return address and frame pointer.
