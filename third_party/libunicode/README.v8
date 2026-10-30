@@ -1,0 +1,13 @@
+Name: libunicode
+Short Name: libunicode
+URL: https://github.com/frida/quickjs
+Version: cd41bdbf0c6c14a22f4a514bfe8efd6cbca50af3 (Unicode 17.0.0)
+License: MIT
+License File: LICENSE
+
+Description:
+Unicode property tables and lookup code from QuickJS. Used to implement
+RegExp property escapes (\p{...}) when V8 is built without ICU.
+
+Local Modifications:
+None. v8-libunicode-prefix.h renames the global symbols.

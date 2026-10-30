@@ -23,7 +23,13 @@
 #include "unicode/unistr.h"
 #include "unicode/usetiter.h"
 #include "unicode/utf16.h"  // For U16_NEXT
-#endif                      // V8_INTL_SUPPORT
+#else
+#include <algorithm>
+#include <vector>
+
+#include "src/base/platform/memory.h"
+#include "third_party/libunicode/v8-libunicode.h"
+#endif  // V8_INTL_SUPPORT
 
 namespace v8 {
 namespace internal {
@@ -2571,10 +2577,361 @@ ClassSetResult<mode> ParserImpl<CharT, mode>::AddPropertyClassRange(
 
 #else  // V8_INTL_SUPPORT
 
+// Without ICU, property escapes are resolved with libunicode, the Unicode
+// tables that ship with QuickJS. The logic mirrors the ICU version above.
+
+namespace {
+
+void* LibUnicodeRealloc(void* opaque, void* ptr, size_t size) {
+  if (size == 0) {
+    base::Free(ptr);
+    return nullptr;
+  }
+  void* result = base::Realloc(ptr, size);
+  if (result == nullptr) FATAL("Out of memory in RegExp property lookup");
+  return result;
+}
+
+// A set of code points, stored as sorted half-open intervals.
+class CodePointSet {
+ public:
+  CodePointSet() { cr_init(&cr_, nullptr, LibUnicodeRealloc); }
+  ~CodePointSet() { cr_free(&cr_); }
+  CodePointSet(const CodePointSet&) = delete;
+  CodePointSet& operator=(const CodePointSet&) = delete;
+
+  CharRange* get() { return &cr_; }
+  bool IsEmpty() const { return cr_.len == 0; }
+
+  bool Contains(base::uc32 c) const {
+    const uint32_t* begin = cr_.points;
+    const uint32_t* end = begin + cr_.len;
+    return ((std::upper_bound(begin, end, c) - begin) & 1) != 0;
+  }
+
+  // Adds the sorted, duplicate-free code points in |values|.
+  void AddSorted(const std::vector<base::uc32>& values) {
+    CodePointSet other;
+    for (size_t i = 0; i < values.size();) {
+      size_t j = i + 1;
+      while (j < values.size() && values[j] == values[j - 1] + 1) j++;
+      CHECK_EQ(cr_add_interval(other.get(), values[i], values[j - 1] + 1), 0);
+      i = j;
+    }
+    CHECK_EQ(cr_op1(&cr_, other.cr_.points, other.cr_.len, CR_OP_UNION), 0);
+  }
+
+  void Complement() { CHECK_EQ(cr_invert(&cr_), 0); }
+
+  void AddTo(ZoneList<CharacterRange>* ranges, Zone* zone) const {
+    for (int i = 0; i < cr_.len; i += 2) {
+      base::uc32 from = cr_.points[i];
+      if (from > String::kMaxCodePoint) break;
+      base::uc32 to = std::min<base::uc32>(cr_.points[i + 1] - 1,
+                                           String::kMaxCodePoint);
+      ranges->Add(CharacterRange::Range(from, to), zone);
+    }
+  }
+
+ private:
+  CharRange cr_;
+};
+
+// (simple case folding, code point) for every code point that shares its
+// folding with at least one other code point, sorted.
+using CaseFoldingPairs = std::vector<std::pair<base::uc32, base::uc32>>;
+
+const CaseFoldingPairs& GetCaseFoldingPairs() {
+  static const CaseFoldingPairs* const pairs = [] {
+    auto* result = new CaseFoldingPairs();
+    // A code point that folds to another one changes when case folded or
+    // case mapped. Changes_When_Casefolded alone is not enough, as it is
+    // defined on the NFD form: U+1FD3 folds to U+0390, yet is not in it.
+    CodePointSet changes;
+    CodePointSet case_mapped;
+    CHECK_EQ(unicode_prop(changes.get(), "Changes_When_Casefolded"), 0);
+    CHECK_EQ(unicode_prop(case_mapped.get(), "Changes_When_Casemapped"), 0);
+    CHECK_EQ(cr_op1(changes.get(), case_mapped.get()->points,
+                    case_mapped.get()->len, CR_OP_UNION),
+             0);
+#ifdef DEBUG
+    for (base::uc32 c = 0; c <= String::kMaxCodePoint; c++) {
+      DCHECK_IMPLIES(lre_canonicalize(c, true) != c, changes.Contains(c));
+    }
+#endif
+    const CharRange* cr = changes.get();
+    for (int i = 0; i < cr->len; i += 2) {
+      for (base::uc32 c = cr->points[i]; c < cr->points[i + 1]; c++) {
+        base::uc32 folded = lre_canonicalize(c, true);
+        if (folded != c) {
+          result->emplace_back(folded, c);
+          result->emplace_back(folded, folded);
+        }
+      }
+    }
+    std::sort(result->begin(), result->end());
+    result->erase(std::unique(result->begin(), result->end()), result->end());
+    return result;
+  }();
+  return *pairs;
+}
+
+// Same as icu::UnicodeSet::closeOver(USET_SIMPLE_CASE_INSENSITIVE).
+void CloseOverSimpleCaseFolding(CodePointSet* set) {
+  const CaseFoldingPairs& pairs = GetCaseFoldingPairs();
+  std::vector<base::uc32> additions;
+  for (size_t i = 0; i < pairs.size();) {
+    size_t end = i;
+    bool has_member = false;
+    while (end < pairs.size() && pairs[end].first == pairs[i].first) {
+      has_member |= set->Contains(pairs[end].second);
+      end++;
+    }
+    if (has_member) {
+      for (size_t j = i; j < end; j++) additions.push_back(pairs[j].second);
+    }
+    i = end;
+  }
+  std::sort(additions.begin(), additions.end());
+  additions.erase(std::unique(additions.begin(), additions.end()),
+                  additions.end());
+  set->AddSorted(additions);
+}
+
+enum class PropertyKind {
+  kGeneralCategory,
+  kScript,
+  kScriptExtensions,
+  kBinary,
+};
+
+bool LookupCodePoints(PropertyKind kind, const char* name, CodePointSet* set) {
+  int result = -2;
+  switch (kind) {
+    case PropertyKind::kGeneralCategory:
+      result = unicode_general_category(set->get(), name);
+      break;
+    case PropertyKind::kScript:
+      result = unicode_script(set->get(), name, false);
+      break;
+    case PropertyKind::kScriptExtensions:
+      result = unicode_script(set->get(), name, true);
+      break;
+    case PropertyKind::kBinary:
+      result = unicode_prop(set->get(), name);
+      break;
+  }
+  // -1 means out of memory, which LibUnicodeRealloc never reports.
+  DCHECK_NE(result, -1);
+  return result == 0;
+}
+
+template <ParseMode mode>
+ClassSetResult<mode> AddCodePoints(CodePointSet* set, bool negate,
+                                   ZoneList<CharacterRange>* result_ranges,
+                                   Flags flags, Zone* zone) {
+  if (set->IsEmpty()) return ClassSetResult<mode>::Failure();
+  if constexpr (mode == ParseMode::kVerifySyntax) {
+    return ClassSetResult<mode>(false);
+  }
+  if (IsUnicodeSets(flags) && IsIgnoreCase(flags)) {
+    CloseOverSimpleCaseFolding(set);
+  }
+  if (negate) set->Complement();
+  DCHECK_NOT_NULL(result_ranges);
+  set->AddTo(result_ranges, zone);
+  return ClassSetResult<mode>(nullptr, false);
+}
+
+struct BinaryProperty {
+  // Long name, as libunicode knows it.
+  const char* name;
+  const char* aliases[2];
+};
+
+// The binary properties the spec allows, except Any, ASCII and Assigned:
+// https://tc39.es/ecma262/#table-binary-unicode-properties
+// libunicode knows a few more, such as IDS_Unary_Operator, which must be
+// rejected. The aliases come from PropertyAliases.txt, as with ICU.
+constexpr BinaryProperty kBinaryProperties[] = {
+    {"ASCII_Hex_Digit", {"AHex"}},
+    {"Alphabetic", {"Alpha"}},
+    {"Bidi_Control", {"Bidi_C"}},
+    {"Bidi_Mirrored", {"Bidi_M"}},
+    {"Case_Ignorable", {"CI"}},
+    {"Cased", {}},
+    {"Changes_When_Casefolded", {"CWCF"}},
+    {"Changes_When_Casemapped", {"CWCM"}},
+    {"Changes_When_Lowercased", {"CWL"}},
+    {"Changes_When_NFKC_Casefolded", {"CWKCF"}},
+    {"Changes_When_Titlecased", {"CWT"}},
+    {"Changes_When_Uppercased", {"CWU"}},
+    {"Dash", {}},
+    {"Default_Ignorable_Code_Point", {"DI"}},
+    {"Deprecated", {"Dep"}},
+    {"Diacritic", {"Dia"}},
+    {"Emoji", {}},
+    {"Emoji_Component", {"EComp"}},
+    {"Emoji_Modifier", {"EMod"}},
+    {"Emoji_Modifier_Base", {"EBase"}},
+    {"Emoji_Presentation", {"EPres"}},
+    {"Extended_Pictographic", {"ExtPict"}},
+    {"Extender", {"Ext"}},
+    {"Grapheme_Base", {"Gr_Base"}},
+    {"Grapheme_Extend", {"Gr_Ext"}},
+    {"Hex_Digit", {"Hex"}},
+    {"IDS_Binary_Operator", {"IDSB"}},
+    {"IDS_Trinary_Operator", {"IDST"}},
+    {"ID_Continue", {"IDC"}},
+    {"ID_Start", {"IDS"}},
+    {"Ideographic", {"Ideo"}},
+    {"Join_Control", {"Join_C"}},
+    {"Logical_Order_Exception", {"LOE"}},
+    {"Lowercase", {"Lower"}},
+    {"Math", {}},
+    {"Noncharacter_Code_Point", {"NChar"}},
+    {"Pattern_Syntax", {"Pat_Syn"}},
+    {"Pattern_White_Space", {"Pat_WS"}},
+    {"Quotation_Mark", {"QMark"}},
+    {"Radical", {}},
+    {"Regional_Indicator", {"RI"}},
+    {"Sentence_Terminal", {"STerm"}},
+    {"Soft_Dotted", {"SD"}},
+    {"Terminal_Punctuation", {"Term"}},
+    {"Unified_Ideograph", {"UIdeo"}},
+    {"Uppercase", {"Upper"}},
+    {"Variation_Selector", {"VS"}},
+    {"White_Space", {"space", "WSpace"}},
+    {"XID_Continue", {"XIDC"}},
+    {"XID_Start", {"XIDS"}},
+};
+
+const char* LookupBinaryProperty(const char* name) {
+  for (const BinaryProperty& property : kBinaryProperties) {
+    if (strcmp(name, property.name) == 0) return property.name;
+    for (const char* alias : property.aliases) {
+      if (alias != nullptr && strcmp(name, alias) == 0) return property.name;
+    }
+  }
+  return nullptr;
+}
+
+// Only allowed with /v, and never negated.
+bool IsBinaryPropertyOfStrings(const char* name) {
+  static constexpr const char* kNames[] = {
+      "Basic_Emoji",
+      "Emoji_Keycap_Sequence",
+      "RGI_Emoji_Modifier_Sequence",
+      "RGI_Emoji_Flag_Sequence",
+      "RGI_Emoji_Tag_Sequence",
+      "RGI_Emoji_ZWJ_Sequence",
+      "RGI_Emoji",
+  };
+  for (const char* candidate : kNames) {
+    if (strcmp(name, candidate) == 0) return true;
+  }
+  return false;
+}
+
+struct SequenceCollector {
+  std::vector<base::uc32> code_points;
+  std::vector<std::vector<base::uc32>> strings;
+};
+
+void CollectSequence(void* opaque, const uint32_t* buf, int len) {
+  auto* collector = static_cast<SequenceCollector*>(opaque);
+  if (len == 1) {
+    collector->code_points.push_back(buf[0]);
+  } else {
+    collector->strings.emplace_back(buf, buf + len);
+  }
+}
+
+template <ParseMode mode>
+ClassSetResult<mode> AddPropertyOfStrings(
+    const char* name, ZoneList<CharacterRange>* result_ranges,
+    CharacterClassStrings* result_strings, Flags flags, Zone* zone) {
+  DCHECK(IsUnicodeSets(flags));
+  if constexpr (mode == ParseMode::kVerifySyntax) {
+    return ClassSetResult<mode>(true);
+  }
+
+  SequenceCollector collector;
+  {
+    CodePointSet scratch;
+    int result =
+        unicode_sequence_prop(name, CollectSequence, &collector, scratch.get());
+    DCHECK_EQ(result, 0);
+    USE(result);
+  }
+
+  TextBuilder<ParseMode::kBuildAST>::SmallTreeVector string_storage(zone);
+  TextBuilder<ParseMode::kBuildAST> string_builder(zone, &string_storage,
+                                                   flags);
+  const bool needs_case_folding = IsIgnoreCase(flags);
+  for (const std::vector<base::uc32>& s : collector.strings) {
+    ZoneList<base::uc32>* string =
+        zone->template New<ZoneList<base::uc32>>(static_cast<int>(s.size()),
+                                                 zone);
+    for (base::uc32 c : s) {
+      string_builder.AddUnicodeCharacter(c);
+      if (needs_case_folding) c = lre_canonicalize(c, true);
+      string->Add(c, zone);
+    }
+    result_strings->emplace(string->ToVector(), string_builder.ToRegExp());
+    string_storage.clear();
+  }
+
+  std::sort(collector.code_points.begin(), collector.code_points.end());
+  collector.code_points.erase(
+      std::unique(collector.code_points.begin(), collector.code_points.end()),
+      collector.code_points.end());
+  CodePointSet set;
+  set.AddSorted(collector.code_points);
+  if (needs_case_folding) CloseOverSimpleCaseFolding(&set);
+  set.AddTo(result_ranges, zone);
+  return ClassSetResult<mode>(nullptr, true);
+}
+
+bool IsUnicodePropertyValueCharacter(char c) {
+  // https://tc39.es/proposal-regexp-unicode-property-escapes/
+  if ('a' <= c && c <= 'z') return true;
+  if ('A' <= c && c <= 'Z') return true;
+  if ('0' <= c && c <= '9') return true;
+  return (c == '_');
+}
+
+}  // namespace
+
 template <class CharT, ParseMode mode>
 bool ParserImpl<CharT, mode>::ParsePropertyClassName(ZoneVector<char>* name_1,
                                                      ZoneVector<char>* name_2) {
-  return false;
+  DCHECK(name_1->empty());
+  DCHECK(name_2->empty());
+  // Same as the ICU version: \p{name} or \p{name=value}.
+  if (current() == '{') {
+    for (Advance(); current() != '}' && current() != '='; Advance()) {
+      if (!IsUnicodePropertyValueCharacter(current())) return false;
+      if (!has_next()) return false;
+      name_1->push_back(static_cast<char>(current()));
+    }
+    if (current() == '=') {
+      for (Advance(); current() != '}'; Advance()) {
+        if (!IsUnicodePropertyValueCharacter(current())) return false;
+        if (!has_next()) return false;
+        name_2->push_back(static_cast<char>(current()));
+      }
+      name_2->push_back(0);  // null-terminate string.
+    }
+  } else {
+    return false;
+  }
+  Advance();
+  name_1->push_back(0);  // null-terminate string.
+
+  DCHECK(name_1->size() - 1 == std::strlen(name_1->data()));
+  DCHECK(name_2->empty() || name_2->size() - 1 == std::strlen(name_2->data()));
+  return true;
 }
 
 template <class CharT, ParseMode mode>
@@ -2582,7 +2939,75 @@ ClassSetResult<mode> ParserImpl<CharT, mode>::AddPropertyClassRange(
     ZoneList<CharacterRange>* add_to_ranges,
     CharacterClassStrings* add_to_strings, bool negate,
     const ZoneVector<char>& name_1, const ZoneVector<char>& name_2) {
-  return ClassSetResult<mode>::Failure();
+  if (name_2.empty()) {
+    const char* name = name_1.data();
+    // First attempt to interpret as general category property value name.
+    {
+      CodePointSet set;
+      if (LookupCodePoints(PropertyKind::kGeneralCategory, name, &set)) {
+        return AddCodePoints<mode>(&set, negate, add_to_ranges, flags(),
+                                   zone());
+      }
+    }
+    // Interpret "Any", "ASCII", and "Assigned".
+    if (strcmp(name, "Any") == 0) {
+      if constexpr (mode == ParseMode::kBuildAST) {
+        if (!negate) add_to_ranges->Add(CharacterRange::Everything(), zone());
+      }
+      return ClassSetResult<mode>(nullptr, false);
+    }
+    if (strcmp(name, "ASCII") == 0) {
+      if constexpr (mode == ParseMode::kBuildAST) {
+        add_to_ranges->Add(
+            negate ? CharacterRange::Range(0x80, String::kMaxCodePoint)
+                   : CharacterRange::Range(0x0, 0x7F),
+            zone());
+      }
+      return ClassSetResult<mode>(nullptr, false);
+    }
+    if (strcmp(name, "Assigned") == 0) {
+      CodePointSet set;
+      CHECK(LookupCodePoints(PropertyKind::kGeneralCategory, "Unassigned",
+                             &set));
+      return AddCodePoints<mode>(&set, !negate, add_to_ranges, flags(),
+                                 zone());
+    }
+    // Then attempt to interpret as binary property name.
+    if (const char* property = LookupBinaryProperty(name)) {
+      CodePointSet set;
+      CHECK(LookupCodePoints(PropertyKind::kBinary, property, &set));
+      return AddCodePoints<mode>(&set, negate, add_to_ranges, flags(), zone());
+    }
+    // Negation of properties with strings is not allowed.
+    // See https://tc39.es/ecma262/#sec-static-semantics-maycontainstrings
+    if (unicode_sets() && !negate && IsBinaryPropertyOfStrings(name)) {
+      return AddPropertyOfStrings<mode>(name, add_to_ranges, add_to_strings,
+                                        flags(), zone());
+    }
+    return ClassSetResult<mode>::Failure();
+  }
+
+  // Both property name and value name are specified.
+  const char* property_name = name_1.data();
+  const char* value_name = name_2.data();
+  PropertyKind kind;
+  if (strcmp(property_name, "General_Category") == 0 ||
+      strcmp(property_name, "gc") == 0) {
+    kind = PropertyKind::kGeneralCategory;
+  } else if (strcmp(property_name, "Script") == 0 ||
+             strcmp(property_name, "sc") == 0) {
+    kind = PropertyKind::kScript;
+  } else if (strcmp(property_name, "Script_Extensions") == 0 ||
+             strcmp(property_name, "scx") == 0) {
+    kind = PropertyKind::kScriptExtensions;
+  } else {
+    return ClassSetResult<mode>::Failure();
+  }
+  CodePointSet set;
+  if (!LookupCodePoints(kind, value_name, &set)) {
+    return ClassSetResult<mode>::Failure();
+  }
+  return AddCodePoints<mode>(&set, negate, add_to_ranges, flags(), zone());
 }
 
 #endif  // V8_INTL_SUPPORT
@@ -2986,7 +3411,7 @@ ClassSetResult<mode> ParserImpl<CharT, mode>::ParseClassStringDisjunction(
 #ifdef V8_INTL_SUPPORT
         c = u_foldCase(c, U_FOLD_CASE_DEFAULT);
 #else
-        c = AsciiAlphaToLower(c);
+        c = lre_canonicalize(c, true);
 #endif
       }
       string->Add(c, zone());

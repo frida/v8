@@ -33,3 +33,9 @@ endif
 
 third_party_deps = [absl_dep, simdutf_dep, highway_dep, llvm_libc_dep, fp16_dep]
 third_party_runnable_deps = [absl_native_dep, simdutf_runnable_dep, highway_runnable_dep, llvm_libc_dep, fp16_dep]
+
+if not enable_i18n
+  subdir('libunicode')
+  third_party_deps += libunicode_dep
+  third_party_runnable_deps += libunicode_runnable_dep
+endif
